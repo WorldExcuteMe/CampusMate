@@ -25,6 +25,10 @@ import { parseFile, type Attachment } from "@/lib/ingest/files";
 
 const CONTEXT_CAP = 16000;
 
+// 统一控件鼠标反馈：悬停边框+阴影+图标放大、聚焦环、按压缩放
+const CONTROL_FEEDBACK =
+  "group cursor-pointer rounded-md border border-transparent bg-muted transition-all duration-150 hover:border-ring/40 hover:bg-accent hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.97]";
+
 const WORKSPACES = [
   { id: "local", name: "本地工作区", path: "C:\\Users\\Asus\\Documents\\QQ工具", python: "miniconda3 (64-bit)" },
 ];
@@ -39,6 +43,7 @@ export function AgentChatPage() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSetup, setShowSetup] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [showOnboard, setShowOnboard] = useState(() => !localStorage.getItem("campusmate.onboarded"));
   const [wsPath, setWsPath] = useState(() => localStorage.getItem("campusmate.workspace") || "");
   const fileRef = useRef<HTMLInputElement>(null);
   const [providerId, setProviderId] = useState(
@@ -161,6 +166,22 @@ export function AgentChatPage() {
         </div>
       </header>
 
+      {showOnboard && (
+        <div className="border-b border-border bg-secondary/40 px-4 py-2 text-xs text-secondary-foreground">
+          <div className="mx-auto flex max-w-3xl items-center gap-2">
+            <span className="flex-1">
+              首次使用：点「选择工作区文件夹」设定本地目录；粘贴/拖拽通知或附件即可解析；输入「去QQ/微信群获取信息」会自动引导配置环境并摄取、更新 Dashboard。
+            </span>
+            <button
+              className={cn(CONTROL_FEEDBACK, "shrink-0 px-2 py-1")}
+              onClick={() => { localStorage.setItem("campusmate.onboarded", "1"); setShowOnboard(false); }}
+            >
+              知道了
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 无边框消息流 */}
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6">
@@ -220,7 +241,7 @@ export function AgentChatPage() {
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {active?.mode === "auto" && (
               <button
-                className="group flex max-w-56 cursor-pointer items-center gap-1 rounded-md border border-transparent bg-muted px-2 py-1 text-xs transition-all duration-150 hover:border-ring/40 hover:bg-accent hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.97]"
+                className={cn(CONTROL_FEEDBACK, "flex max-w-56 items-center gap-1 px-2 py-1 text-xs")}
                 title="点击选择工作区文件夹"
                 onClick={pickWorkspace}
                 disabled={picking}
@@ -241,11 +262,17 @@ export function AgentChatPage() {
               className="hidden"
               onChange={(e) => { if (e.target.files) handleFiles(e.target.files); e.target.value = ""; }}
             />
-            <Button size="icon-sm" variant="outline" aria-label="添加附件" onClick={() => fileRef.current?.click()}>
-              <Paperclip className="size-4" />
-            </Button>
+            <button
+              type="button"
+              aria-label="添加附件"
+              title="添加图片/文档附件"
+              onClick={() => fileRef.current?.click()}
+              className={cn(CONTROL_FEEDBACK, "flex size-8 items-center justify-center")}
+            >
+              <Paperclip className="size-4 text-primary transition-transform group-hover:scale-110" />
+            </button>
             <Select value={providerId} onValueChange={chooseProvider}>
-              <SelectTrigger className="h-8 w-40 text-xs"><SelectValue placeholder="模型" /></SelectTrigger>
+              <SelectTrigger className={cn("h-8 w-40 text-xs", CONTROL_FEEDBACK)}><SelectValue placeholder="模型" /></SelectTrigger>
               <SelectContent>
                 {providers.map((p: ProviderPublic) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
                 {providers.length === 0 && <SelectItem value="builtin-deepseek">DeepSeek（内置）</SelectItem>}
