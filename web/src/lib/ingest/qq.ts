@@ -10,6 +10,7 @@ export interface GroupRecord {
   text: string;
   display: string;
   reasons: string[];
+  attachment?: { kind: string; name: string; source: string | null };
 }
 
 export interface SyncSummary {

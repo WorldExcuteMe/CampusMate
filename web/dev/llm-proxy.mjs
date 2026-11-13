@@ -165,7 +165,7 @@ const server = http.createServer(async (req, res) => {
     if (uin) args.push("--uin", uin);
     else if (name) args.push("--name", name);
     else return json(res, 400, { error: "name 或 uin 必填；先调 /api/ingest/qq/groups 定位群" });
-    execFile(py64, args, { cwd: qqDir, timeout: 120000 }, (err, stdout, stderr) => {
+    execFile(py64, args, { cwd: qqDir, timeout: 180000 }, (err, stdout, stderr) => {
       if (err) return json(res, 503, { error: `group_export 失败: ${stderr || err.message}`, hint: "先运行 qq_cli.py key + decrypt，且 QQ 已登录" });
       try {
         const data = JSON.parse(fs.readFileSync(path.join(qqDir, "out", "last_group_info.json"), "utf8"));
