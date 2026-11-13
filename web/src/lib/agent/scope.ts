@@ -31,7 +31,9 @@ export function detectScope(message: string): TaskScope {
   const m = message ?? "";
   const isQQ = QQ_RE.test(m);
   const isWX = WX_RE.test(m);
-  const isWeb = WEB_RE.test(m);
+  // 否定意图（"不要网页搜索/别联网"）不算 web 意图，避免误放开 scope
+  const negWeb = /(不要|别|不用|禁止|不)\s*(网页|搜索|联网|web)/i.test(m);
+  const isWeb = WEB_RE.test(m) && !negWeb;
   let source: SourceKind = "any";
   let locked = false;
   if (isQQ && !isWeb) { source = "qq"; locked = true; }

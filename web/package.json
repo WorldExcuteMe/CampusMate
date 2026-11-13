@@ -17,7 +17,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "dev:function": "deno run --allow-net=127.0.0.1:8000 dev/function-local.ts",
-    "check:function": "deno check functions/index.ts"
+    "check:function": "deno check functions/index.ts",
+    "benchmark": "vitest run benchmark"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
