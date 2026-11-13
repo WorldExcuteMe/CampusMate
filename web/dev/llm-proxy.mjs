@@ -5,6 +5,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { execFile, execSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -49,6 +50,41 @@ function json(res, code, obj) {
 }
 
 const env = loadEnv();
+
+// 预热常驻 PowerShell 对话框进程：启动时加载 WinForms，点击时立即弹出，消除每次冷启动延迟。
+let dialogChild = null;
+let pickResolve = null;
+let outBuf = "";
+function ensureDialog() {
+  if (dialogChild && dialogChild.exitCode === null) return dialogChild;
+  const script = [
+    "Add-Type -AssemblyName System.Windows.Forms;",
+    "while (($line = [Console]::In.ReadLine()) -ne $null) {",
+    "  if ($line -eq 'pick') {",
+    "    $f = New-Object System.Windows.Forms.FolderBrowserDialog;",
+    "    $f.Description = '选择 CampusMate 工作区文件夹';",
+    "    $f.ShowNewFolderButton = $true;",
+    "    if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.WriteLine($f.SelectedPath) } else { [Console]::Out.WriteLine('') };",
+    "    [Console]::Out.Flush();",
+    "  }",
+    "}",
+  ].join("\n");
+  dialogChild = spawn("powershell", ["-STA", "-NoProfile", "-Command", script], { stdio: ["pipe", "pipe", "pipe"] });
+  dialogChild.stdout.on("data", (d) => {
+    outBuf += d.toString("utf8");
+    let i;
+    while ((i = outBuf.indexOf("\n")) >= 0) {
+      const line = outBuf.slice(0, i).replace(/\r$/, "");
+      outBuf = outBuf.slice(i + 1);
+      if (pickResolve) { const r = pickResolve; pickResolve = null; r(line); }
+    }
+  });
+  dialogChild.on("exit", () => {
+    dialogChild = null;
+    if (pickResolve) { const r = pickResolve; pickResolve = null; r(null); }
+  });
+  return dialogChild;
+}
 
 const server = http.createServer(async (req, res) => {
   const url = req.url || "";
@@ -104,9 +140,68 @@ const server = http.createServer(async (req, res) => {
       return json(res, 502, { error: String(err) });
     }
   }
+  // 群通知摄取（本地运行 QQ工具 group_export，信息本位过滤；不涉外部 URL）
+  if (req.method === "GET" && url.startsWith("/api/ingest/qq")) {
+    const name = new URL(url, "http://local").searchParams.get("name") || "网安2401官方群";
+    const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
+    const script = path.join(qqDir, "group_export.py");
+    execFile("py", ["-3", script, "--name", name], { cwd: qqDir, timeout: 120000 }, (err, stdout, stderr) => {
+      if (err) return json(res, 503, { error: `group_export 失败: ${stderr || err.message}`, hint: "先运行 qq_cli.py key + decrypt，且 QQ 已登录" });
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(qqDir, "out", "last_group_info.json"), "utf8"));
+        return json(res, 200, data);
+      } catch (e) {
+        return json(res, 503, { error: `读取导出失败: ${e.message}`, stdout });
+      }
+    });
+    return;
+  }
+  // 微信群通知摄取（本地运行 wechat_cli，信息本位；不涉外部 URL）
+  if (req.method === "GET" && url.startsWith("/api/ingest/wechat")) {
+    const name = new URL(url, "http://local").searchParams.get("name") || "网安2401班";
+    const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
+    const py64 = env.PY64 || "C:\\Users\\Asus\\miniconda3\\python.exe";
+    const script = path.join(qqDir, "wechat_cli.py");
+    execFile(py64, [script, "run", "--name", name, "--auto"], { cwd: qqDir, timeout: 180000 }, (err, stdout, stderr) => {
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(qqDir, "out", "last_wechat_group_info.json"), "utf8"));
+        return json(res, 200, data);
+      } catch (e) {
+        return json(res, 503, { error: `微信摄取失败: ${stderr || err.message}`, hint: "先 wechat_cli.py key（或 --key）+ decrypt，且微信已登录" });
+      }
+    });
+    return;
+  }
+  // 环境检测（零配置引导 / grill me）：本地进程/文件检查，不涉外部 URL
+  if (req.method === "GET" && url === "/api/env/check") {
+    const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
+    const py64 = env.PY64 || "C:\\Users\\Asus\\miniconda3\\python.exe";
+    let tasks = "";
+    try { tasks = execSync("tasklist", { encoding: "utf8", timeout: 10000 }); } catch {}
+    const lower = tasks.toLowerCase();
+    return json(res, 200, {
+      python64: fs.existsSync(py64),
+      qqRunning: lower.includes("qq.exe"),
+      wechatRunning: lower.includes("weixin.exe"),
+      qqKey: fs.existsSync(path.join(qqDir, "data", "key.txt")),
+      wechatKey: fs.existsSync(path.join(qqDir, "data", "wechat_key.txt")),
+      workspace: qqDir,
+    });
+  }
+  // 原生「选择文件夹」对话框：预热进程即时弹出，返回绝对路径，不让用户手填
+  if (req.method === "GET" && url === "/api/workspace/pick") {
+    const child = ensureDialog();
+    const result = await new Promise((resolve) => {
+      pickResolve = resolve;
+      child.stdin.write("pick\n");
+      setTimeout(() => { if (pickResolve) { pickResolve = null; resolve(null); } }, 120000);
+    });
+    return json(res, 200, { path: result || null });
+  }
   json(res, 404, { error: "not found" });
 });
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`[llm-proxy] http://127.0.0.1:${PORT} (keys server-side only)`);
+  ensureDialog(); // 预热对话框进程，首次点击即弹出
 });
