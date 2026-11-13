@@ -115,10 +115,14 @@ export const AGENT_TOOLS: ToolDef[] = [
     type: "function",
     function: {
       name: "rag_search",
-      description: "在已摄取的群通知/本地文档中检索相关片段（RAG）。",
+      description: "在已摄取的群通知/本地文档中检索相关片段（RAG）。group 指定时仅检索该群（源内检索，避免群外噪音）。",
       parameters: {
         type: "object",
-        properties: { query: { type: "string" }, k: { type: "number" } },
+        properties: {
+          query: { type: "string" },
+          k: { type: "number" },
+          group: { type: "string", description: "群号/群名（可选；锁定信息源时由系统强制指定）" },
+        },
         required: ["query"],
       },
     },

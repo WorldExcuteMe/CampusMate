@@ -262,11 +262,13 @@ const server = http.createServer(async (req, res) => {
   }
   // RAG 检索：本地摄取数据 + 文档关键词召回
   if (req.method === "POST" && url === "/api/rag/search") {
-    const { query, k } = JSON.parse(await readBody(req));
+    const { query, k, group } = JSON.parse(await readBody(req));
     const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
+    // 源内检索：group 为纯数字群号时读该群导出文件，否则读最近一次摄取；防路径注入仅允许数字
+    const file = group && /^\d+$/.test(String(group)) ? `group_${group}_info.json` : "last_group_info.json";
     let docs = [];
     try {
-      const d = JSON.parse(fs.readFileSync(path.join(qqDir, "out", "last_group_info.json"), "utf8"));
+      const d = JSON.parse(fs.readFileSync(path.join(qqDir, "out", file), "utf8"));
       docs = (d.records || []).map((r) => ({ src: "qq:" + d.group, time: r.time || "", text: r.text }));
     } catch {}
     const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);

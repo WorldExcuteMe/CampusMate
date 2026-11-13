@@ -9,6 +9,7 @@ import { uid, type Repository, type Profile } from "../data/types";
 import { guardUrl } from "../security/urlGuard";
 import { composeContext, trimToBudget, resolveContextCap, messagesTokens, toolsTokens } from "./context";
 import { DEFAULT_REASONING } from "../llm/reasoning";
+import { detectScope, allowedTools, checkToolScope, type TaskScope } from "./scope";
 
 export interface ChatOutcome {
   reply: string;
@@ -65,7 +66,12 @@ async function executeTool(
   repo: Repository,
   profile: Profile,
   actions: string[],
+  scope: TaskScope,
 ): Promise<string> {
+  // 执行期门控：越界工具拒绝；源内检索/同步强制限定用户指定群（确定性，不依赖模型自觉）
+  const gate = checkToolScope(scope, name, args);
+  if (!gate.ok) return JSON.stringify({ error: gate.reason });
+  args = gate.args ?? args;
   if (name === "extract_notice") {
     const raw = cleanGroupMessage(String(args.rawText ?? ""));
     const e = ruleExtract(raw, null);
@@ -139,8 +145,9 @@ async function executeTool(
   if (name === "rag_search") {
     const query = String(args.query ?? "");
     const k = Number(args.k ?? 5);
-    const r = await toolPost("/api/rag/search", { query, k });
-    actions.push(`RAG 检索：${query}`);
+    const group = args.group ? String(args.group) : undefined;
+    const r = await toolPost("/api/rag/search", { query, k, group });
+    actions.push(`RAG 检索：${query}${group ? `（群 ${group}）` : ""}`);
     return JSON.stringify(r.error ? { error: r.error } : { results: r.results ?? [] });
   }
   if (name === "create_daily_task") {
@@ -221,7 +228,7 @@ function parseJsonTool(content: string): { name: string; args: Record<string, un
 }
 
 // 工具循环轮次上限：多工具（发现/同步/合并/RAG）需更多轮；上下文有 trimToBudget 保底不会爆窗。
-const MAX_TOOL_ROUNDS = 12;
+const MAX_TOOL_ROUNDS = 20;
 
 export async function runChat(opts: {
   message: string;
@@ -243,12 +250,15 @@ export async function runChat(opts: {
       if (!(env.qqKey || env.wechatKey)) needsSetup = true;
     } catch {}
   }
-  const tools =
+  const scope = detectScope(opts.message);
+  const baseTools =
     mode === "daily"
       ? AGENT_TOOLS.filter((t) => ["extract_notice", "create_daily_task"].includes(t.function.name))
       : ingestIntent
         ? AGENT_TOOLS
         : AGENT_TOOLS.filter((t) => t.function.name !== "sync_group_notices");
+  // 动作空间掩码：锁定源时只暴露源内工具，越界工具模型根本看不到（确定性防漂移）
+  const tools = allowedTools(scope, baseTools);
   if (needsSetup) {
     return {
       reply: "检测到你要从 QQ/微信获取信息，已打开环境配置引导。完成配置后重新发送该请求，即可自动摄取并更新 Dashboard。",
@@ -262,7 +272,7 @@ export async function runChat(opts: {
   const cap = resolveContextCap(opts.model, opts.contextCap);
   const tTools = toolsTokens(tools);
   const composed = composeContext({
-    system: SYSTEM(opts.profile, mode),
+    system: SYSTEM(opts.profile, mode) + "\n" + scope.contract,
     history: opts.history,
     user: opts.message,
     tools,
@@ -283,7 +293,7 @@ export async function runChat(opts: {
         for (const call of res.toolCalls) {
           let args: Record<string, unknown> = {};
           try { args = JSON.parse(call.function.arguments || "{}"); } catch {}
-          const out = await executeTool(call.function.name, args, opts.repository, opts.profile, actions);
+          const out = await executeTool(call.function.name, args, opts.repository, opts.profile, actions, scope);
           messages.push({ role: "tool", content: out, tool_call_id: call.id });
         }
         const trimmed = trimToBudget(messages, cap, tTools);
@@ -301,7 +311,7 @@ export async function runChat(opts: {
       const jt = parseJsonTool(res.content);
       if (jt) {
         messages.push({ role: "assistant", content: res.content });
-        const out = await executeTool(jt.name, jt.args, opts.repository, opts.profile, actions);
+        const out = await executeTool(jt.name, jt.args, opts.repository, opts.profile, actions, scope);
         messages.push({ role: "user", content: `工具 ${jt.name} 返回：${out}` });
         const trimmed = trimToBudget(messages, cap, tTools);
         messages = trimmed.messages;
