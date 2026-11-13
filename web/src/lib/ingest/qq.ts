@@ -1,6 +1,6 @@
 import { ruleExtract } from "../llm/mock";
 import { classify } from "../agent/classifier";
-import { cleanGroupMessage, dedupKey, extractDailyTime, isDailyNotice } from "./clean";
+import { cleanGroupMessage, dedupKey, extractDailyTime, isDailyNotice, isExpired, todayBeijing } from "./clean";
 import { uid, type Repository } from "../data/types";
 
 export interface GroupRecord {
@@ -17,6 +17,7 @@ export interface SyncSummary {
   daily: number;
   opportunity: number;
   skipped: number;
+  expired: number;
 }
 
 const OPP_KEYWORDS = ["竞赛", "比赛", "大赛", "实习", "招聘", "科研", "奖学金", "助学金", "开源", "招募"];
@@ -59,8 +60,9 @@ export async function fetchWechatNotices(name: string): Promise<GroupRecord[]> {
 // 信息本位：不关注发送人，只按 日期/关键词/文件 过滤后的记录同步进容器。
 export async function syncGroupRecords(records: GroupRecord[], repo: Repository): Promise<SyncSummary> {
   const seen: string[] = JSON.parse(localStorage.getItem(SEEN_KEY) || "[]");
-  const sum: SyncSummary = { inbox: 0, daily: 0, opportunity: 0, skipped: 0 };
+  const sum: SyncSummary = { inbox: 0, daily: 0, opportunity: 0, skipped: 0, expired: 0 };
   const userId = repo.mode === "demo" ? "demo-user" : "me";
+  const today = todayBeijing();
 
   for (const r of records) {
     const raw = cleanGroupMessage(r.display || r.text);
@@ -70,6 +72,8 @@ export async function syncGroupRecords(records: GroupRecord[], repo: Repository)
     seen.push(key);
 
     const extracted = ruleExtract(raw, null);
+    // 结合当前北京时间：截止日期已过的通知不纳入（过期历史不作为当前机会/待办）。
+    if (isExpired(extracted.deadline)) { sum.expired++; continue; }
     const classification = classify(extracted, raw);
     const base = {
       userId, rawText: raw, sourceUrl: null, sourceType: "text" as const,
@@ -77,7 +81,9 @@ export async function syncGroupRecords(records: GroupRecord[], repo: Repository)
     };
 
     if (isDailyNotice(raw)) {
-      const t = extractDailyTime(raw);
+      // 相对日期相对消息发送时间解析；解析出的 dueAt 已过则视为过期。
+      const t = extractDailyTime(raw, r.time ? new Date(r.time) : undefined);
+      if (t.dueAt && t.dueAt < today) { sum.expired++; continue; }
       await repo.createTask({
         id: uid(), userId, title: raw.split("\n")[0].slice(0, 40), dueAt: t.dueAt,
         status: "todo", priority: 65, inboxItemId: null, estimateHours: 1,

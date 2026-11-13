@@ -256,7 +256,7 @@ const server = http.createServer(async (req, res) => {
     let docs = [];
     try {
       const d = JSON.parse(fs.readFileSync(path.join(qqDir, "out", "last_group_info.json"), "utf8"));
-      docs = (d.records || []).map((r) => ({ src: "qq:" + d.group, text: r.text }));
+      docs = (d.records || []).map((r) => ({ src: "qq:" + d.group, time: r.time || "", text: r.text }));
     } catch {}
     const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
     const scored = docs
