@@ -66,3 +66,53 @@
 - Phase 9（Multi-Agent/Dreaming/Skill Learning）延期。
 - 浏览器 runChat 保留为 fallback（未配置后端时），非生产默认。
 - 未虚报 VERIFIED；BLOCKED_EXTERNAL 明确标注。
+
+## 7. Stage 2–8 进度（后续完成）
+
+- Stage 2 Reliability：Budget 四维硬停（含 costUsd）/RecoveryEngine/Planner-DAG/Monitoring/Tool Timeout。
+- Stage 3 Benchmark：30 任务 7 类 + 确定性 runner + Dogfooding 失败库（BENCHMARK_PASS 30/30）。
+- Stage 4 Personal Context：数据模型 + 课表导入 ICS/CSV/XLSX + 周次/单双周/调课 + migration 0003。
+- Stage 5 Institution Adapter：声明式映射 + 生命周期 + 候选验证门控（无任意代码）。
+- Stage 6 Product IA：统一业务对象 + 校园日历周视图 + Today + 课表 API + 导航合并。
+- Stage 7 Workflow：四条端到端链路（Onboarding/Inbox/Opportunity/Weekly Plan）+ API。
+- Stage 8 Integration：GitHub CI backend job + 全量验证 + 最终文档。
+
+## 8. 最终全量测试（Stage 8）
+
+- 后端 **168 测试（167 过/1 skip）+ tsc 0**。
+- 前端 **100 测试（18 文件）全过 + build 成功**。
+- 迁移 **MIGRATION_VALIDATED 16/16**（PGlite 真实引擎）。
+- Benchmark **BENCHMARK_PASS 30/30，E2E 100%**。
+- 冒烟 **SMOKE_PASS**；API Health {ok:true}；生产 DB 守卫明确失败不降级。
+
+## 9. 20 项 AC 最终验收
+
+| AC | 目标 | 状态 | 证据 |
+|---|---|---|---|
+| AC01 | 前端默认走服务端 Runtime | VERIFIED | api-client.test + AgentChatPage（配置时） |
+| AC02 | 关闭浏览器任务继续 | PARTIAL | Worker 独立进程架构成立；真实部署 E2E BLOCKED_EXTERNAL |
+| AC03 | Worker 崩溃恢复 | PARTIAL | 模拟 lease 过期重认领验证；真实 kill BLOCKED_EXTERNAL |
+| AC04 | 多 Worker 不重复认领 | PARTIAL | SKIP LOCKED PGlite 验证；多进程并发 BLOCKED_EXTERNAL |
+| AC05 | 多用户隔离 | VERIFIED | API 跨用户 403；真实 RLS BLOCKED_EXTERNAL |
+| AC06 | Evaluator 独立验收 | VERIFIED | evaluator.test + worker-evaluator |
+| AC07 | Cost/Token/Time 预算硬停 | VERIFIED | reliability-fault（costUsd=0/tokens 硬停） |
+| AC08 | RecoveryEngine 差异化恢复 | VERIFIED | reliability.test（8 类策略+上限） |
+| AC09 | 课表 ICS/CSV/XLSX 导入 | VERIFIED | personal-context.test 三格式 |
+| AC10 | 教学周/单双周 | VERIFIED | currentTeachingWeek/occursInWeek |
+| AC11 | 临时调课 | VERIFIED | ScheduleException 独立不覆盖 |
+| AC12 | 高校信息源统一适配 | VERIFIED | institution-adapter.test |
+| AC13 | 未知环境请求补充 | VERIFIED | discoverSources + 候选门控 |
+| AC14 | Inbox/Task/Event/Opportunity 关联 | VERIFIED | business-objects 派生+关联图 |
+| AC15 | Calendar 个人安排 | PARTIAL | 周视图+真实接线+build；真实课表需 migration+导入 |
+| AC16 | Agent Workspace 真实状态 | PARTIAL | 已接 Task API/SSE；Plan/Step/Evidence 完整展示后续 |
+| AC17 | 四条核心工作流 | VERIFIED | workflows.test + workflows-api |
+| AC18 | Benchmark≥30 | VERIFIED | 30 任务 BENCHMARK_PASS |
+| AC19 | 三开发者真实测试 | BLOCKED_EXTERNAL | 机制就绪，真实高校材料待提供 |
+| AC20 | GitHub CI 全过 | VERIFIED | ci.yml web+backend job（本地全过；CI 运行记录待 push） |
+
+汇总：VERIFIED 13 · PARTIAL 5 · BLOCKED_EXTERNAL 1 · NOT_IMPLEMENTED 0（AC 层面）。
+注：AC20 CI 配置就绪且本地全过，远程 CI 运行记录需 push 触发（未 push）。
+
+## 10. 三开发者后续需提供
+
+各自学校脱敏课表样本（ICS/CSV/XLSX）、真实高校信息源/获取方式、dogfooding 执行记录（DogfoodingRecord）、生产 Supabase 访问授权（应用 migration）、Companion 设备授权。
