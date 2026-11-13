@@ -5,11 +5,12 @@ import { classify } from "./classifier";
 import { cleanGroupMessage, extractDailyTime, nowBeijingText } from "../ingest/clean";
 import { fetchGroupNotices, fetchGroups, syncGroupRecords } from "../ingest/qq";
 import { mergeInbox } from "../ingest/dedupe";
-import { uid, type Repository, type Profile } from "../data/types";
+import { uid, type Repository, type Profile, type Opportunity, type VerificationReport } from "../data/types";
 import { guardUrl } from "../security/urlGuard";
 import { composeContext, trimToBudget, resolveContextCap, messagesTokens, toolsTokens } from "./context";
 import { DEFAULT_REASONING } from "../llm/reasoning";
 import { detectScope, allowedTools, checkToolScope, type TaskScope } from "./scope";
+import { setPlan, memoryPrompt, appendMemory } from "./memory";
 
 export interface ChatOutcome {
   reply: string;
@@ -235,6 +236,73 @@ async function executeTool(
     actions.push(`语义合并 Inbox：归一 ${mg.clusters} 组 / 归档重复 ${mg.merged} 条`);
     return JSON.stringify(mg);
   }
+  if (name === "create_opportunity") {
+    const o = {
+      id: uid(),
+      title: String(args.title ?? "机会"),
+      type: (String(args.type ?? "competition") as Opportunity["type"]),
+      organizer: String(args.organizer ?? ""),
+      description: String(args.description ?? ""),
+      conditions: [],
+      deadline: (args.deadline as string) || null,
+      sourceUrl: String(args.sourceUrl ?? ""),
+      sourceType: "web",
+      collectedAt: new Date().toISOString(),
+      status: "active" as const,
+      demo: repo.mode === "demo",
+    };
+    await repo.createOpportunity(o);
+    actions.push(`写入机会雷达：${o.title}`);
+    return JSON.stringify({ ok: true, id: o.id, title: o.title });
+  }
+  if (name === "verify_opportunity") {
+    const statuses = ["VERIFIED", "PARTIALLY_VERIFIED", "UNVERIFIED", "CONFLICTING", "RISK_FLAGGED"];
+    const st = String(args.status ?? "UNVERIFIED");
+    const report = {
+      id: uid(),
+      opportunityId: String(args.opportunityId ?? ""),
+      status: (statuses.includes(st) ? st : "UNVERIFIED") as VerificationReport["status"],
+      summary: String(args.summary ?? ""),
+      findings: [],
+      evidence: ((args.evidence as Array<Record<string, unknown>>) ?? []).map((e) => ({
+        sourceUrl: String(e.sourceUrl ?? ""),
+        sourceType: "web",
+        excerpt: String(e.excerpt ?? ""),
+        retrievedAt: new Date().toISOString(),
+        supports: String(e.supports ?? ""),
+        confidence: Number(e.confidence ?? 0.5),
+      })),
+      createdAt: new Date().toISOString(),
+    };
+    await repo.createReport(report);
+    actions.push(`写入可信核验：${report.status}`);
+    return JSON.stringify({ ok: true, id: report.id, status: report.status });
+  }
+  if (name === "set_growth_goal") {
+    const goal = String(args.goal ?? "");
+    const profile = await repo.getProfile();
+    if (!profile.goals.includes(goal)) {
+      await repo.updateProfile({ ...profile, goals: [...profile.goals, goal] });
+    }
+    await repo.createTask({
+      id: uid(), userId: profile.id, title: goal, dueAt: (args.dueAt as string) || null,
+      status: "todo", priority: 70, inboxItemId: null, estimateHours: 2, kind: "general",
+      createdAt: new Date().toISOString(), demo: repo.mode === "demo",
+    });
+    actions.push(`设定成长目标：${goal}`);
+    return JSON.stringify({ ok: true, goal });
+  }
+  if (name === "web_search") {
+    const r = await toolPost("/api/web/search", { query: String(args.query ?? ""), limit: Number(args.limit ?? 6) });
+    actions.push(`网页搜索：${args.query}`);
+    return JSON.stringify(r.error ? { error: r.error } : { results: r.results ?? [] });
+  }
+  if (name === "create_plan") {
+    const plan = { goal: String(args.goal ?? ""), steps: (args.steps as string[]) ?? [], done: [] as number[], createdAt: new Date().toISOString() };
+    setPlan(plan);
+    actions.push(`制定长任务计划：${plan.goal}（${plan.steps.length} 步）`);
+    return JSON.stringify({ ok: true, plan });
+  }
   return JSON.stringify({ error: `unknown tool ${name}` });
 }
 
@@ -323,7 +391,7 @@ export async function runChat(opts: {
   const cap = resolveContextCap(opts.model, opts.contextCap);
   const tTools = toolsTokens(tools);
   const composed = composeContext({
-    system: SYSTEM(opts.profile, mode) + "\n" + scope.contract,
+    system: SYSTEM(opts.profile, mode) + "\n" + scope.contract + "\n" + memoryPrompt(),
     history: opts.history,
     user: opts.message,
     tools,
@@ -374,6 +442,7 @@ export async function runChat(opts: {
         contextUsed = messagesTokens(messages) + tTools;
         continue;
       }
+      appendMemory(`${nowBeijingText()} 用户「${opts.message.slice(0, 40)}」→ ${actions.join("；").slice(0, 160) || "直接答复"}`);
       return { reply: res.content, actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed, pruned };
     }
     // 工具预算用尽：强制一次无工具最终总结，保证有可用产出（不再返回"请细化问题"）

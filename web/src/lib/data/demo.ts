@@ -123,6 +123,12 @@ export class DemoRepository implements Repository {
   async getReport(id: string): Promise<VerificationReport | null> {
     return load().reports.find((r) => r.id === id) ?? null;
   }
+  async createReport(r: VerificationReport): Promise<VerificationReport> {
+    const s = load();
+    s.reports.push(r);
+    save(s);
+    return r;
+  }
   async logActivity(e: ActivityEvent): Promise<void> {
     const s = load();
     s.activity.push(e);

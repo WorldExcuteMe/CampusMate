@@ -332,6 +332,30 @@ const server = http.createServer(async (req, res) => {
       .filter((d) => d.score > 0).sort((a, b) => b.score - a.score).slice(0, k || 5);
     return json(res, 200, { results: scored });
   }
+  // 广泛网页搜索：真实搜索引擎（DuckDuckGo html），返回标题+真实链接+摘要；不做代理替换
+  if (req.method === "POST" && url === "/api/web/search") {
+    const { query, limit } = JSON.parse(await readBody(req));
+    try {
+      const r = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(String(query || ""))}`, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+      });
+      const html = await r.text();
+      const strip = (s) => s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+      const results = [];
+      const re = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+      let m;
+      while ((m = re.exec(html)) && results.length < (Number(limit) || 6)) {
+        let href = m[1];
+        const u = href.match(/uddg=([^&]+)/);
+        if (u) href = decodeURIComponent(u[1]);
+        if (!/^https?:/.test(href)) continue;
+        results.push({ title: strip(m[2]), url: href, snippet: strip(m[3]) });
+      }
+      return json(res, 200, { results });
+    } catch (e) {
+      return json(res, 200, { error: String(e.message), results: [] });
+    }
+  }
   json(res, 404, { error: "not found" });
 });
 

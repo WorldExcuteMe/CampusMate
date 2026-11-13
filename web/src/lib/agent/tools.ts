@@ -153,4 +153,82 @@ export const AGENT_TOOLS: ToolDef[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "create_opportunity",
+      description: "把一条竞赛/实习/科研/奖助等机会写入机会雷达（新建条目）。来源须真实（官方链接/群消息），不得编造。",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          type: { type: "string", description: "competition/internship/research/scholarship/activity/opensource" },
+          organizer: { type: "string" },
+          description: { type: "string" },
+          deadline: { type: "string", description: "YYYY-MM-DD 或 null" },
+          sourceUrl: { type: "string", description: "真实来源链接" },
+        },
+        required: ["title", "type", "description"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "verify_opportunity",
+      description: "对机会做可信核验并写入可信核验报告：交叉核对官方来源/截止时间/收费风险，给出 VERIFIED/PARTIALLY_VERIFIED/UNVERIFIED/CONFLICTING/RISK_FLAGGED 与证据。",
+      parameters: {
+        type: "object",
+        properties: {
+          opportunityId: { type: "string" },
+          status: { type: "string", description: "VERIFIED/PARTIALLY_VERIFIED/UNVERIFIED/CONFLICTING/RISK_FLAGGED" },
+          summary: { type: "string" },
+          evidence: { type: "array", items: { type: "object", properties: { sourceUrl: { type: "string" }, excerpt: { type: "string" }, supports: { type: "string" }, confidence: { type: "number" } } } },
+        },
+        required: ["opportunityId", "status", "summary"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_growth_goal",
+      description: "设定/更新成长目标（写入个人画像 goals）并创建一条跟踪任务到成长中心。用于把机会转化为行动目标。",
+      parameters: {
+        type: "object",
+        properties: {
+          goal: { type: "string", description: "成长目标，如「11月底前完成华为ICT创新赛报名」" },
+          dueAt: { type: "string", description: "YYYY-MM-DD 或 null" },
+        },
+        required: ["goal"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "广泛网页搜索（真实搜索引擎），用于用户要求网页搜索/跨源收集求职、比赛、科研等公开信息。返回标题+链接+摘要。",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string" }, limit: { type: "number" } },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_plan",
+      description: "为长任务制定分步计划（收集→核验→整合→总结→落库）。长任务先建计划再逐步执行，每步完成后更新；保证连续任务不丢记忆、不幻觉。",
+      parameters: {
+        type: "object",
+        properties: {
+          goal: { type: "string", description: "长任务总目标" },
+          steps: { type: "array", items: { type: "string" }, description: "有序步骤" },
+        },
+        required: ["goal", "steps"],
+      },
+    },
+  },
 ];
