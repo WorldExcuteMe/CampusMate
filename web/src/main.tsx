@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { Providers } from "./app/providers";
 import { AuthProvider } from "./app/auth";
+import { SessionsProvider } from "./lib/agent/sessions-context";
 import { AppRoutes } from "./app/routes";
 import "./globals.css";
 
@@ -11,7 +12,9 @@ createRoot(document.getElementById("root")!).render(
     <Providers>
       <BrowserRouter>
         <AuthProvider>
-          <AppRoutes />
+          <SessionsProvider>
+            <AppRoutes />
+          </SessionsProvider>
         </AuthProvider>
       </BrowserRouter>
     </Providers>

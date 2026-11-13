@@ -127,7 +127,7 @@ const server = http.createServer(async (req, res) => {
     const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
     const py64 = env.PY64 || "C:\\Users\\Asus\\miniconda3\\python.exe";
     const script = path.join(qqDir, "wechat_cli.py");
-    execFile(py64, [script, "run", "--name", name], { cwd: qqDir, timeout: 180000 }, (err, stdout, stderr) => {
+    execFile(py64, [script, "run", "--name", name, "--auto"], { cwd: qqDir, timeout: 180000 }, (err, stdout, stderr) => {
       try {
         const data = JSON.parse(fs.readFileSync(path.join(qqDir, "out", "last_wechat_group_info.json"), "utf8"));
         return json(res, 200, data);
