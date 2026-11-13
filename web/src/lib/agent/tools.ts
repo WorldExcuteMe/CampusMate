@@ -56,10 +56,70 @@ export const AGENT_TOOLS: ToolDef[] = [
     type: "function",
     function: {
       name: "sync_group_notices",
-      description: "从本地 QQ/微信群（信息本位：日期/关键词/文件，不限发送人）摄取通知并同步到 Inbox/日常任务/机会雷达。",
+      description: "从本地 QQ/微信群（信息本位：日期/关键词/文件，不限发送人）摄取通知并同步到 Inbox/日常任务/机会雷达。group 可为群名或群号；省略时自动定位通知群。",
       parameters: {
         type: "object",
-        properties: { group: { type: "string", description: "群名称，如 网安2401半官方群" } },
+        properties: { group: { type: "string", description: "群名称或群号（可选，省略自动定位）" } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_groups",
+      description: "列出本机 QQ 全部群（群号+消息数+样例），用于普适地定位任意用户的通知群，不硬编码群名。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_terminal",
+      description: "在用户主机执行终端命令（完全访问，用户授权），用于运行脚本/查询环境/执行抓取。",
+      parameters: {
+        type: "object",
+        properties: { command: { type: "string" }, cwd: { type: "string" } },
+        required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_file",
+      description: "读取用户主机本地文件内容。",
+      parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_file",
+      description: "写入用户主机本地文件。",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" }, content: { type: "string" } },
+        required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_fetch",
+      description: "抓取指定真实 URL 的网页正文（不替换代理地址），用于核实来源/获取公开信息。",
+      parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "rag_search",
+      description: "在已摄取的群通知/本地文档中检索相关片段（RAG）。",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string" }, k: { type: "number" } },
+        required: ["query"],
       },
     },
   },

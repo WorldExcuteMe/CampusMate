@@ -3,8 +3,9 @@ import { AGENT_TOOLS } from "./tools";
 import { ruleExtract } from "../llm/mock";
 import { classify } from "./classifier";
 import { cleanGroupMessage, extractDailyTime } from "../ingest/clean";
-import { fetchGroupNotices, syncGroupRecords } from "../ingest/qq";
+import { fetchGroupNotices, fetchGroups, syncGroupRecords } from "../ingest/qq";
 import { uid, type Repository, type Profile } from "../data/types";
+import { guardUrl } from "../security/urlGuard";
 
 export interface ChatOutcome {
   reply: string;
@@ -24,11 +25,14 @@ export function detectIngestIntent(message: string): boolean {
 const SYSTEM = (profile: Profile, mode: "auto" | "daily") =>
   `你是 CampusMate 校园机会管家，面向大学生的信息与机会管理 Agent。` +
   `用户画像：专业=${profile.major}，年级=${profile.grade}，兴趣=${profile.interests.join("、")}，技能=${profile.skills.join("、")}，目标=${profile.goals.join("、")}。` +
-  `当前模式=${mode === "auto" ? "自动（全工具+群摄取）" : "日常（聚焦日常事务）"}。` +
+  `当前模式=${mode === "auto" ? "自动（全工具+群摄取+完全访问）" : "日常（聚焦日常事务）"}。` +
   `规则：1) 需要结构化信息/创建任务/检索机会/同步群通知时调用对应工具；2) 回答简洁中文、重点突出；` +
   `3) 机会与结论必须给来源，不编造；无法核验不等于诈骗；4) 群消息先清洗再提取，信息本位（日期/关键词/文件，不限发送人）；5) 日常事务（调课/班会）用 create_daily_task；6) 有效信息须同步进 Inbox/日常任务/机会雷达；` +
   `7) 严禁编造工具结果或群消息：必须通过真实工具调用获取数据，禁止在回复中虚构 <tool_result>、消息、日期、发送人；工具未返回数据时如实说明"未获取到"，不得虚构。` +
-  (mode === "daily" ? `日常模式优先处理调课/班会/讲座等含时间信息，谨慎创建机会。` : `自动模式可主动调用 sync_group_notices 摄取目标群通知。`);
+  `8) 群定位普适：不同用户的通知群名不同，禁止假设固定群名。先调 list_groups 枚举本机所有群（含 uin/信息密度/内容样例），按样例内容语义识别目标通知群，再用其 uin 调 sync_group_notices；省略 group 时系统按信息密度自动定位。` +
+  `9) 完全访问：可用 run_terminal/read_file/write_file/web_fetch/rag_search 访问用户主机的文件/终端/网络。web_fetch 只请求任务给定的真实目标 URL，严禁替换为代理地址。过期通知（截止日期早于今天）不纳入。` +
+  `10) 工具调用协议：优先使用原生 tool_calls；若你的接口不支持原生工具调用，则单独输出一个 JSON 对象 {"tool":"工具名","args":{...}} 作为工具指令，等待返回后再继续。` +
+  (mode === "daily" ? `日常模式优先处理调课/班会/讲座等含时间信息，谨慎创建机会。` : `自动模式可主动调用 list_groups + sync_group_notices 摄取目标群通知。`);
 
 async function executeTool(
   name: string,
@@ -50,11 +54,75 @@ async function executeTool(
     return JSON.stringify(e);
   }
   if (name === "sync_group_notices") {
-    const group = String(args.group ?? "网安2401官方群");
+    let group = String(args.group ?? "").trim();
+    let autoLocated = false;
+    if (!group) {
+      const groups = await fetchGroups();
+      const best = groups.slice().sort((a, b) => (b.info_hits - a.info_hits) || (b.info_ratio - a.info_ratio))[0];
+      if (!best) return JSON.stringify({ error: "本机未发现任何群，请先登录 QQ 并完成解密" });
+      group = String(best.uin);
+      autoLocated = true;
+    }
     const records = await fetchGroupNotices(group);
     const sum = await syncGroupRecords(records, repo);
-    actions.push(`同步群「${group}」：Inbox ${sum.inbox} / 日常 ${sum.daily} / 机会 ${sum.opportunity}`);
-    return JSON.stringify({ group, ...sum });
+    actions.push(`同步群「${group}」${autoLocated ? "（自动定位）" : ""}：Inbox ${sum.inbox} / 日常 ${sum.daily} / 机会 ${sum.opportunity}`);
+    return JSON.stringify({ group, autoLocated, ...sum });
+  }
+  if (name === "list_groups") {
+    const groups = await fetchGroups();
+    actions.push(`发现本机 ${groups.length} 个群`);
+    return JSON.stringify({ count: groups.length, groups: groups.slice(0, 20) });
+  }
+  if (name === "run_terminal") {
+    const command = String(args.command ?? "");
+    const cwd = args.cwd ? String(args.cwd) : undefined;
+    const r = await (await fetch("/api/terminal", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command, cwd }),
+    })).json();
+    actions.push(`终端执行：${command.slice(0, 40)}`);
+    return JSON.stringify({ stdout: String(r.stdout ?? "").slice(0, 8000), stderr: String(r.stderr ?? "").slice(0, 2000), code: r.code ?? 0 });
+  }
+  if (name === "read_file") {
+    const p = String(args.path ?? "");
+    const r = await (await fetch("/api/fs/read", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: p }),
+    })).json();
+    actions.push(`读取文件：${p}`);
+    return JSON.stringify(r.error ? { error: r.error } : { path: p, content: String(r.content ?? "").slice(0, 12000) });
+  }
+  if (name === "write_file") {
+    const p = String(args.path ?? "");
+    const content = String(args.content ?? "");
+    const r = await (await fetch("/api/fs/write", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: p, content }),
+    })).json();
+    actions.push(`写入文件：${p}`);
+    return JSON.stringify(r.error ? { error: r.error } : { ok: true, path: p });
+  }
+  if (name === "web_fetch") {
+    // 仅请求任务给定的真实目标 URL；URL 守卫拒绝内网/代理替换地址，每次重新核对来源
+    const target = String(args.url ?? "");
+    const g = guardUrl(target);
+    if (!g.ok) return JSON.stringify({ error: `URL 守卫拦截：${g.reason}（须为任务给定的真实公开目标，禁止代理/内网替换）` });
+    const r = await (await fetch("/api/web/fetch", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: g.normalized }),
+    })).json();
+    actions.push(`网页抓取：${target}`);
+    return JSON.stringify(r.error ? { error: r.error } : { url: target, status: r.status, text: String(r.text ?? "").slice(0, 12000) });
+  }
+  if (name === "rag_search") {
+    const query = String(args.query ?? "");
+    const k = Number(args.k ?? 5);
+    const r = await (await fetch("/api/rag/search", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, k }),
+    })).json();
+    actions.push(`RAG 检索：${query}`);
+    return JSON.stringify({ results: r.results ?? [] });
   }
   if (name === "create_daily_task") {
     const t = extractDailyTime(String(args.timeText ?? "") + " " + String(args.title ?? ""));
@@ -106,6 +174,28 @@ async function executeTool(
   return JSON.stringify({ error: `unknown tool ${name}` });
 }
 
+// 模型无关回退：不支持原生 tool_calls 的模型可输出 JSON 工具指令，这里解析执行。
+function parseJsonTool(content: string): { name: string; args: Record<string, unknown> } | null {
+  const candidates: string[] = [];
+  const fence = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) candidates.push(fence[1]);
+  const brace = content.match(/\{[\s\S]*\}/);
+  if (brace) candidates.push(brace[0]);
+  const known = new Set(AGENT_TOOLS.map((t) => t.function.name));
+  for (const c of candidates) {
+    try {
+      const obj = JSON.parse(c.trim());
+      const name = obj.tool ?? obj.name ?? obj.function?.name;
+      if (typeof name === "string" && known.has(name)) {
+        let args = obj.args ?? obj.arguments ?? obj.parameters ?? {};
+        if (typeof args === "string") args = JSON.parse(args);
+        return { name, args };
+      }
+    } catch {}
+  }
+  return null;
+}
+
 export async function runChat(opts: {
   message: string;
   history: ChatMessage[];
@@ -148,26 +238,34 @@ export async function runChat(opts: {
   let usage = { input: 0, output: 0 };
   let model = "unknown";
   try {
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 6; i++) {
       const res = await llmChat({ providerId: opts.providerId, messages, tools });
       usage = { input: usage.input + res.usage.input, output: usage.output + res.usage.output };
       model = res.model;
-      if (res.toolCalls.length === 0 && /<tool_result/i.test(res.content)) {
+      if (res.toolCalls.length > 0) {
+        messages.push({ role: "assistant", content: res.content, tool_calls: res.toolCalls });
+        for (const call of res.toolCalls) {
+          let args: Record<string, unknown> = {};
+          try { args = JSON.parse(call.function.arguments || "{}"); } catch {}
+          const out = await executeTool(call.function.name, args, opts.repository, opts.profile, actions);
+          messages.push({ role: "tool", content: out, tool_call_id: call.id });
+        }
+        continue;
+      }
+      if (/<tool_result/i.test(res.content)) {
         return {
           reply: "已拦截虚构的工具结果：模型未真实调用工具。请确认本地 llm-proxy 已启动、环境已配置后重试，以真实抓取群消息。",
           actions, usage, model, mock: false,
         };
       }
-      if (res.toolCalls.length === 0) {
-        return { reply: res.content, actions, usage, model, mock: false };
+      const jt = parseJsonTool(res.content);
+      if (jt) {
+        messages.push({ role: "assistant", content: res.content });
+        const out = await executeTool(jt.name, jt.args, opts.repository, opts.profile, actions);
+        messages.push({ role: "user", content: `工具 ${jt.name} 返回：${out}` });
+        continue;
       }
-      messages.push({ role: "assistant", content: res.content, tool_calls: res.toolCalls });
-      for (const call of res.toolCalls) {
-        let args: Record<string, unknown> = {};
-        try { args = JSON.parse(call.function.arguments || "{}"); } catch {}
-        const out = await executeTool(call.function.name, args, opts.repository, opts.profile, actions);
-        messages.push({ role: "tool", content: out, tool_call_id: call.id });
-      }
+      return { reply: res.content, actions, usage, model, mock: false };
     }
     return { reply: "（达到工具调用上限，请细化问题）", actions, usage, model, mock: false };
   } catch (err) {

@@ -5,7 +5,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { execFile, execSync, spawn } from "node:child_process";
+import { execFile, execSync, spawn, exec } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -141,13 +141,31 @@ const server = http.createServer(async (req, res) => {
       return json(res, 502, { error: String(err) });
     }
   }
-  // 群通知摄取（本地运行 QQ工具 group_export，信息本位过滤；不涉外部 URL）
-  if (req.method === "GET" && url.startsWith("/api/ingest/qq")) {
-    const name = new URL(url, "http://local").searchParams.get("name") || "网安2401官方群";
+  // 普适群发现：枚举本机所有群（uin/总数/信息密度/样例），供 agent 自动定位通知群
+  if (req.method === "GET" && url.split("?")[0] === "/api/ingest/qq/groups") {
     const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
     const py64 = env.PY64 || "C:\\Users\\Asus\\miniconda3\\python.exe";
     const script = path.join(qqDir, "group_export.py");
-    execFile(py64, [script, "--name", name], { cwd: qqDir, timeout: 120000 }, (err, stdout, stderr) => {
+    execFile(py64, [script, "--list", "--limit", "3"], { cwd: qqDir, timeout: 180000, maxBuffer: 16 * 1024 * 1024, encoding: "utf8" }, (err, stdout, stderr) => {
+      if (err) return json(res, 503, { error: `群发现失败: ${stderr || err.message}`, hint: "先运行 qq_cli.py key + decrypt，且 QQ 已登录" });
+      try { return json(res, 200, JSON.parse(stdout)); }
+      catch (e) { return json(res, 503, { error: `解析群列表失败: ${e.message}`, stdout: stdout.slice(0, 2000) }); }
+    });
+    return;
+  }
+  // 群通知摄取（本地运行 QQ工具 group_export，信息本位过滤；不涉外部 URL）
+  if (req.method === "GET" && url.startsWith("/api/ingest/qq")) {
+    const params = new URL(url, "http://local").searchParams;
+    const name = params.get("name") || "";
+    const uin = params.get("uin") || "";
+    const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
+    const py64 = env.PY64 || "C:\\Users\\Asus\\miniconda3\\python.exe";
+    const script = path.join(qqDir, "group_export.py");
+    const args = [script];
+    if (uin) args.push("--uin", uin);
+    else if (name) args.push("--name", name);
+    else return json(res, 400, { error: "name 或 uin 必填；先调 /api/ingest/qq/groups 定位群" });
+    execFile(py64, args, { cwd: qqDir, timeout: 120000 }, (err, stdout, stderr) => {
       if (err) return json(res, 503, { error: `group_export 失败: ${stderr || err.message}`, hint: "先运行 qq_cli.py key + decrypt，且 QQ 已登录" });
       try {
         const data = JSON.parse(fs.readFileSync(path.join(qqDir, "out", "last_group_info.json"), "utf8"));
@@ -199,6 +217,52 @@ const server = http.createServer(async (req, res) => {
       setTimeout(() => { if (pickResolve) { pickResolve = null; resolve(null); } }, 120000);
     });
     return json(res, 200, { path: result || null });
+  }
+  // 完全访问：终端执行（用户授权，普适使用者主机）
+  if (req.method === "POST" && url === "/api/terminal") {
+    const { command, cwd } = JSON.parse(await readBody(req));
+    const workdir = cwd || env.QQ_TOOL_DIR || root;
+    exec(command, { cwd: workdir, timeout: 60000, maxBuffer: 8 * 1024 * 1024, encoding: "utf8" }, (err, stdout, stderr) => {
+      return json(res, 200, { stdout: stdout || "", stderr: stderr || "", code: err ? (err.code ?? 1) : 0 });
+    });
+    return;
+  }
+  // 完全访问：文件读
+  if (req.method === "POST" && url === "/api/fs/read") {
+    const { path: p } = JSON.parse(await readBody(req));
+    try { return json(res, 200, { content: fs.readFileSync(p, "utf8").slice(0, 200000) }); }
+    catch (e) { return json(res, 200, { error: String(e.message) }); }
+  }
+  // 完全访问：文件写
+  if (req.method === "POST" && url === "/api/fs/write") {
+    const { path: p, content } = JSON.parse(await readBody(req));
+    try { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, content, "utf8"); return json(res, 200, { ok: true }); }
+    catch (e) { return json(res, 200, { error: String(e.message) }); }
+  }
+  // 网页抓取：仅请求任务给定的真实目标 URL，不替换代理
+  if (req.method === "POST" && url === "/api/web/fetch") {
+    const { url: target } = JSON.parse(await readBody(req));
+    try {
+      const r = await fetch(target, { headers: { "User-Agent": "CampusMate" }, redirect: "follow" });
+      const html = await r.text();
+      const text = html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      return json(res, 200, { status: r.status, text: text.slice(0, 20000) });
+    } catch (e) { return json(res, 200, { error: String(e.message) }); }
+  }
+  // RAG 检索：本地摄取数据 + 文档关键词召回
+  if (req.method === "POST" && url === "/api/rag/search") {
+    const { query, k } = JSON.parse(await readBody(req));
+    const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
+    let docs = [];
+    try {
+      const d = JSON.parse(fs.readFileSync(path.join(qqDir, "out", "last_group_info.json"), "utf8"));
+      docs = (d.records || []).map((r) => ({ src: "qq:" + d.group, text: r.text }));
+    } catch {}
+    const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+    const scored = docs
+      .map((d) => ({ ...d, score: words.reduce((s, w) => s + (d.text.toLowerCase().includes(w) ? 1 : 0), 0) }))
+      .filter((d) => d.score > 0).sort((a, b) => b.score - a.score).slice(0, k || 5);
+    return json(res, 200, { results: scored });
   }
   json(res, 404, { error: "not found" });
 });

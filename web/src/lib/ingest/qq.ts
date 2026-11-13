@@ -22,8 +22,28 @@ export interface SyncSummary {
 const OPP_KEYWORDS = ["竞赛", "比赛", "大赛", "实习", "招聘", "科研", "奖学金", "助学金", "开源", "招募"];
 const SEEN_KEY = "campusmate.group.seen";
 
-export async function fetchGroupNotices(name: string): Promise<GroupRecord[]> {
-  const res = await fetch(`/api/ingest/qq?name=${encodeURIComponent(name)}`);
+export interface GroupInfo {
+  uin: number;
+  name: string;
+  total: number;
+  scanned: number;
+  info_hits: number;
+  info_ratio: number;
+  samples: { time: string; text: string }[];
+}
+
+// 普适群发现：枚举本机所有群，供 agent 按内容/信息密度自动定位通知群（不硬编码群名）。
+export async function fetchGroups(): Promise<GroupInfo[]> {
+  const res = await fetch("/api/ingest/qq/groups");
+  if (!res.ok) throw new Error(`群发现失败 HTTP ${res.status}`);
+  const data = await res.json();
+  return data.groups ?? [];
+}
+
+export async function fetchGroupNotices(group: string): Promise<GroupRecord[]> {
+  const isUin = /^\d{6,}$/.test(group.trim());
+  const qs = isUin ? `uin=${encodeURIComponent(group.trim())}` : `name=${encodeURIComponent(group)}`;
+  const res = await fetch(`/api/ingest/qq?${qs}`);
   if (!res.ok) throw new Error(`群摄取失败 HTTP ${res.status}`);
   const data = await res.json();
   return data.records ?? [];
