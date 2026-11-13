@@ -153,6 +153,19 @@ const server = http.createServer(async (req, res) => {
       workspace: qqDir,
     });
   }
+  // 原生「选择文件夹」对话框（本地 PowerShell FolderBrowserDialog），返回绝对路径，不让用户手填
+  if (req.method === "GET" && url === "/api/workspace/pick") {
+    const ps = [
+      "-STA", "-NoProfile", "-Command",
+      "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = '选择 CampusMate 工作区文件夹'; $f.ShowNewFolderButton = $true; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath } else { Write-Output '' }",
+    ].join(" ");
+    execFile("powershell", ps.split(" "), { timeout: 120000, encoding: "utf8" }, (err, stdout) => {
+      if (err) return json(res, 503, { error: `文件夹选择失败: ${err.message}` });
+      const p = (stdout || "").trim();
+      return json(res, 200, { path: p || null });
+    });
+    return;
+  }
   json(res, 404, { error: "not found" });
 });
 

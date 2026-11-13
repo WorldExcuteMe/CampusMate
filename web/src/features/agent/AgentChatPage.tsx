@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  Send, Bot, User, Pencil, Loader2, RefreshCw, FolderOpen, Paperclip, Wrench, X,
+  Send, Bot, User, Pencil, Loader2, FolderOpen, Paperclip, Wrench, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,7 +19,6 @@ import { runChat } from "@/lib/agent/chat";
 import { listProviders, type ProviderPublic, type ChatMessage } from "@/lib/llm/proxy";
 import { useSessions } from "@/lib/agent/sessions-context";
 import { autoName } from "@/lib/agent/sessions";
-import { fetchGroupNotices, fetchWechatNotices, syncGroupRecords } from "@/lib/ingest/qq";
 import { MockBadge } from "@/components/shared";
 import { SetupWizard } from "./SetupWizard";
 import { parseFile, type Attachment } from "@/lib/ingest/files";
@@ -37,7 +36,6 @@ export function AgentChatPage() {
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [ws] = useState("local");
-  const [syncing, setSyncing] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSetup, setShowSetup] = useState(false);
   const [wsPath, setWsPath] = useState(() => localStorage.getItem("campusmate.workspace") || "");
@@ -45,7 +43,6 @@ export function AgentChatPage() {
   const [providerId, setProviderId] = useState(
     () => localStorage.getItem("campusmate.providerId") || "builtin-deepseek",
   );
-  const qc = useQueryClient();
   const { data: providers = [] } = useQuery({ queryKey: ["providers"], queryFn: listProviders });
   const { data: profile } = useQuery({ queryKey: ["profile"], queryFn: () => repository.getProfile() });
   const endRef = useRef<HTMLDivElement>(null);
@@ -89,22 +86,18 @@ export function AgentChatPage() {
     setBusy(false);
   }
 
-  async function syncGroup() {
-    setSyncing(true);
-    const records = [];
-    const errs: string[] = [];
-    try { records.push(...(await fetchGroupNotices("网安2401官方群"))); }
-    catch (e) { errs.push(`QQ: ${e instanceof Error ? e.message : "失败"}`); }
-    try { records.push(...(await fetchWechatNotices("网安2401班"))); }
-    catch (e) { errs.push(`微信: ${e instanceof Error ? e.message : "失败"}`); }
-    if (records.length) {
-      const sum = await syncGroupRecords(records, repository);
-      qc.invalidateQueries();
-      toast.success(`群同步：Inbox ${sum.inbox} / 日常 ${sum.daily} / 机会 ${sum.opportunity}（跳过 ${sum.skipped}）`);
-    } else {
-      toast.error(errs.join("；") || "无可用群通知（需本地 QQ/微信已登录）");
+  async function pickWorkspace() {
+    try {
+      const res = await fetch("/api/workspace/pick");
+      const data = await res.json();
+      if (data.path) {
+        setWsPath(data.path);
+        localStorage.setItem("campusmate.workspace", data.path);
+        toast.success("工作区已设置");
+      }
+    } catch {
+      toast.error("无法打开文件夹选择对话框");
     }
-    setSyncing(false);
   }
 
   function saveName() {
@@ -209,16 +202,16 @@ export function AgentChatPage() {
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
           />
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1 rounded-md bg-muted px-2 py-1" title={workspace.path}>
-              <FolderOpen className="size-3.5 shrink-0 text-primary" />
-              <input
-                className="w-36 bg-transparent text-xs outline-none"
-                placeholder="工作区本地路径"
-                value={wsPath}
-                onChange={(e) => setWsPath(e.target.value)}
-                onBlur={() => localStorage.setItem("campusmate.workspace", wsPath)}
-              />
-            </div>
+            {active?.mode === "auto" && (
+              <button
+                className="flex max-w-56 items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs hover:bg-accent"
+                title={wsPath || workspace.path}
+                onClick={pickWorkspace}
+              >
+                <FolderOpen className="size-3.5 shrink-0 text-primary" />
+                <span className="truncate">{wsPath || workspace.path || "选择工作区文件夹"}</span>
+              </button>
+            )}
             <input
               ref={fileRef}
               type="file"
@@ -230,9 +223,11 @@ export function AgentChatPage() {
             <Button size="icon-sm" variant="outline" aria-label="添加附件" onClick={() => fileRef.current?.click()}>
               <Paperclip className="size-4" />
             </Button>
-            <Button size="sm" variant="outline" onClick={() => setShowSetup(true)}>
-              <Wrench className="size-4" />配置环境
-            </Button>
+            {active?.mode === "auto" && (
+              <Button size="sm" variant="outline" onClick={() => setShowSetup(true)}>
+                <Wrench className="size-4" />配置环境
+              </Button>
+            )}
             <Select value={providerId} onValueChange={chooseProvider}>
               <SelectTrigger className="h-8 w-40 text-xs"><SelectValue placeholder="模型" /></SelectTrigger>
               <SelectContent>
@@ -240,12 +235,6 @@ export function AgentChatPage() {
                 {providers.length === 0 && <SelectItem value="builtin-deepseek">DeepSeek（内置）</SelectItem>}
               </SelectContent>
             </Select>
-            {active?.mode === "auto" && (
-              <Button size="sm" variant="outline" disabled={syncing} onClick={syncGroup}>
-                {syncing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                同步群通知
-              </Button>
-            )}
             <span className="text-xs text-muted-foreground">
               上下文 {(active?.tokens ?? 0).toLocaleString()} / {CONTEXT_CAP.toLocaleString()} tok
             </span>

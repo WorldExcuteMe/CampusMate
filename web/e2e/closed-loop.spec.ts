@@ -60,7 +60,7 @@ test("日常任务专区：群通知清洗+时间提取+导入", async ({ page }
 
 test("会话页与供应商设置页可达", async ({ page }) => {
   await page.goto("/app/agent");
-  await expect(page.getByPlaceholder(/输入消息或粘贴群通知/)).toBeVisible();
+  await expect(page.getByPlaceholder(/输入消息/)).toBeVisible();
   await expect(page.getByText("上下文", { exact: false })).toBeVisible();
   await page.screenshot({ path: `${EVIDENCE}/11-agent-chat.png`, fullPage: true });
   await page.goto("/app/settings");
