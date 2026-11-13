@@ -151,6 +151,23 @@ export class SupabaseRepository implements Repository {
     if (error) throw error;
     return data ? rowToOpportunity(data) : null;
   }
+  async createOpportunity(o: Opportunity): Promise<Opportunity> {
+    const { error } = await this.db.from("opportunities").insert({
+      id: o.id,
+      title: o.title,
+      type: o.type,
+      organizer: o.organizer,
+      description: o.description,
+      conditions: o.conditions,
+      deadline: o.deadline,
+      source_url: o.sourceUrl,
+      source_type: o.sourceType,
+      status: o.status,
+      is_demo: o.demo,
+    });
+    if (error) throw error;
+    return o;
+  }
   async listReports(): Promise<VerificationReport[]> {
     const { data, error } = await this.db
       .from("verification_reports")

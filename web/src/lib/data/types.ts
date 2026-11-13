@@ -102,6 +102,7 @@ export interface Repository {
   updateTask(id: string, patch: Partial<Task>): Promise<Task>;
   listOpportunities(): Promise<Opportunity[]>;
   getOpportunity(id: string): Promise<Opportunity | null>;
+  createOpportunity(o: Opportunity): Promise<Opportunity>;
   listReports(): Promise<VerificationReport[]>;
   getReport(id: string): Promise<VerificationReport | null>;
   logActivity(e: ActivityEvent): Promise<void>;

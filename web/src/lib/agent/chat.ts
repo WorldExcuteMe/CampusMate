@@ -1,7 +1,9 @@
 import { llmChat, type ChatMessage } from "../llm/proxy";
 import { AGENT_TOOLS } from "./tools";
 import { ruleExtract } from "../llm/mock";
+import { classify } from "./classifier";
 import { cleanGroupMessage, extractDailyTime } from "../ingest/clean";
+import { fetchGroupNotices, syncGroupRecords } from "../ingest/qq";
 import { uid, type Repository, type Profile } from "../data/types";
 
 export interface ChatOutcome {
@@ -10,13 +12,22 @@ export interface ChatOutcome {
   usage: { input: number; output: number };
   model: string;
   mock: boolean;
+  needsSetup?: boolean;
 }
 
-const SYSTEM = (profile: Profile) =>
+// 意图自判：仅当用户提示词涉及 QQ/微信/群信息抓取时才走摄取 workflow 与环境配置。
+const INGEST_RE = /(QQ|微信|wechat|群|抓取|同步|摄取)/i;
+export function detectIngestIntent(message: string): boolean {
+  return INGEST_RE.test(message);
+}
+
+const SYSTEM = (profile: Profile, mode: "auto" | "daily") =>
   `你是 CampusMate 校园机会管家，面向大学生的信息与机会管理 Agent。` +
   `用户画像：专业=${profile.major}，年级=${profile.grade}，兴趣=${profile.interests.join("、")}，技能=${profile.skills.join("、")}，目标=${profile.goals.join("、")}。` +
-  `规则：1) 需要结构化信息/创建任务/检索机会时调用对应工具；2) 回答简洁中文、重点突出；` +
-  `3) 机会与结论必须给来源，不编造；无法核验不等于诈骗；4) 群消息先清洗再提取；5) 日常事务（调课/班会）用 create_daily_task。`;
+  `当前模式=${mode === "auto" ? "自动（全工具+群摄取）" : "日常（聚焦日常事务）"}。` +
+  `规则：1) 需要结构化信息/创建任务/检索机会/同步群通知时调用对应工具；2) 回答简洁中文、重点突出；` +
+  `3) 机会与结论必须给来源，不编造；无法核验不等于诈骗；4) 群消息先清洗再提取，信息本位（日期/关键词/文件，不限发送人）；5) 日常事务（调课/班会）用 create_daily_task；6) 有效信息须同步进 Inbox/日常任务/机会雷达。` +
+  (mode === "daily" ? `日常模式优先处理调课/班会/讲座等含时间信息，谨慎创建机会。` : `自动模式可主动调用 sync_group_notices 摄取目标群通知。`);
 
 async function executeTool(
   name: string,
@@ -28,8 +39,21 @@ async function executeTool(
   if (name === "extract_notice") {
     const raw = cleanGroupMessage(String(args.rawText ?? ""));
     const e = ruleExtract(raw, null);
-    actions.push(`提取通知：${e.title}`);
+    const c = classify(e, raw);
+    await repo.createInbox({
+      id: uid(), userId: profile.id, rawText: raw, sourceUrl: null, sourceType: "text",
+      extracted: e, classification: c, status: "pending_review",
+      createdAt: new Date().toISOString(), demo: repo.mode === "demo",
+    });
+    actions.push(`提取并同步 Inbox：${e.title}`);
     return JSON.stringify(e);
+  }
+  if (name === "sync_group_notices") {
+    const group = String(args.group ?? "网安2401官方群");
+    const records = await fetchGroupNotices(group);
+    const sum = await syncGroupRecords(records, repo);
+    actions.push(`同步群「${group}」：Inbox ${sum.inbox} / 日常 ${sum.daily} / 机会 ${sum.opportunity}`);
+    return JSON.stringify({ group, ...sum });
   }
   if (name === "create_daily_task") {
     const t = extractDailyTime(String(args.timeText ?? "") + " " + String(args.title ?? ""));
@@ -87,10 +111,36 @@ export async function runChat(opts: {
   repository: Repository;
   profile: Profile;
   providerId?: string;
+  mode?: "auto" | "daily";
 }): Promise<ChatOutcome> {
   const actions: string[] = [];
+  const mode = opts.mode ?? "auto";
+  const ingestIntent = detectIngestIntent(opts.message);
+  let needsSetup = false;
+  if (ingestIntent && mode === "auto") {
+    try {
+      const env = await (await fetch("/api/env/check")).json();
+      if (!(env.qqKey || env.wechatKey)) needsSetup = true;
+    } catch {}
+  }
+  const tools =
+    mode === "daily"
+      ? AGENT_TOOLS.filter((t) => ["extract_notice", "create_daily_task"].includes(t.function.name))
+      : ingestIntent
+        ? AGENT_TOOLS
+        : AGENT_TOOLS.filter((t) => t.function.name !== "sync_group_notices");
+  if (needsSetup) {
+    return {
+      reply: "检测到你要从 QQ/微信获取信息，已打开环境配置引导。完成配置后重新发送该请求，即可自动摄取并更新 Dashboard。",
+      actions,
+      usage: { input: 0, output: 0 },
+      model: "intent-gate",
+      mock: false,
+      needsSetup: true,
+    };
+  }
   const messages: ChatMessage[] = [
-    { role: "system", content: SYSTEM(opts.profile) },
+    { role: "system", content: SYSTEM(opts.profile, mode) },
     ...opts.history,
     { role: "user", content: opts.message },
   ];
@@ -98,7 +148,7 @@ export async function runChat(opts: {
   let model = "unknown";
   try {
     for (let i = 0; i < 4; i++) {
-      const res = await llmChat({ providerId: opts.providerId, messages, tools: AGENT_TOOLS });
+      const res = await llmChat({ providerId: opts.providerId, messages, tools });
       usage = { input: usage.input + res.usage.input, output: usage.output + res.usage.output };
       model = res.model;
       if (res.toolCalls.length === 0) {

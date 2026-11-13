@@ -111,6 +111,12 @@ export class DemoRepository implements Repository {
   async getOpportunity(id: string): Promise<Opportunity | null> {
     return load().opportunities.find((o) => o.id === id) ?? null;
   }
+  async createOpportunity(o: Opportunity): Promise<Opportunity> {
+    const s = load();
+    s.opportunities.push(o);
+    save(s);
+    return o;
+  }
   async listReports(): Promise<VerificationReport[]> {
     return load().reports;
   }
