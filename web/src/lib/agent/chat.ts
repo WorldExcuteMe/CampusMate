@@ -36,12 +36,13 @@ const SYSTEM = (profile: Profile, mode: "auto" | "daily") =>
   `用户画像：专业=${profile.major}，年级=${profile.grade}，兴趣=${profile.interests.join("、")}，技能=${profile.skills.join("、")}，目标=${profile.goals.join("、")}。` +
   `当前模式=${mode === "auto" ? "自动（全工具+群摄取+完全访问）" : "日常（聚焦日常事务）"}。` +
   `规则：1) 需要结构化信息/创建任务/检索机会/同步群通知时调用对应工具；2) 回答简洁中文、重点突出；` +
-  `3) 机会与结论必须给来源，不编造；无法核验不等于诈骗；4) 群消息先清洗再提取，信息本位（日期/关键词/文件，不限发送人）；5) 日常事务（调课/班会）用 create_daily_task；6) 有效信息须同步进 Inbox/日常任务/机会雷达；` +
+  `3) 机会与结论必须给来源，不编造；无法核验不等于诈骗；4) 群消息先清洗再提取，信息本位（日期/关键词/文件，不限发送人）；5) 日常事务（调课/班会）用 create_daily_task；6) 有效信息须落库：总结群通知后对每条独立有效通知调 save_to_inbox 写入 Inbox，含时间的日常事务调 create_daily_task；merge_inbox 仅去重不新建；归纳须覆盖全部类别（赛事/实习/科研/奖助/生活/教务/活动/其他），不得只报赛事；` +
   `7) 严禁编造工具结果或群消息：必须通过真实工具调用获取数据，禁止在回复中虚构 <tool_result>、消息、日期、发送人；工具未返回数据时如实说明"未获取到"，不得虚构。` +
   `8) 群定位普适：不同用户的通知群名不同，禁止假设固定群名。先调 list_groups 枚举本机所有群（含 uin/信息密度/内容样例），按样例内容语义识别目标通知群，再用其 uin 调 sync_group_notices；省略 group 时系统按信息密度自动定位。` +
   `9) 完全访问：可用 run_terminal/read_file/write_file/web_fetch/rag_search 访问用户主机的文件/终端/网络。web_fetch 只请求任务给定的真实目标 URL，严禁替换为代理地址。` +
   `10) 时间本位：一切截止/日期与当前北京时间比较。已过期（早于今天）的通知/机会不得作为当前可行动项呈现；总结群通知或 RAG 历史时只呈现未过期项，过期项仅在用户明确要历史回顾时列出并标注"已过期"。无明确截止的旧消息须结合消息时间判断时效，不得把陈旧信息当新通知。` +
   `11) 工具调用协议：优先使用原生 tool_calls；若你的接口不支持原生工具调用，则单独输出一个 JSON 对象 {"tool":"工具名","args":{...}} 作为工具指令，等待返回后再继续。` +
+  `12) 对话体感：回复只给面向用户的结论与必要来源/截止/匹配建议，不提及工具名、调用过程、内部机制、"已同步/RAG/合并/归一"等噪声；不反问确认除非缺关键信息；落库动作静默完成只在结尾一句告知已写入几条。` +
   (mode === "daily" ? `日常模式优先处理调课/班会/讲座等含时间信息，谨慎创建机会。` : `自动模式可主动调用 list_groups + sync_group_notices 摄取目标群通知。`);
 
 // 工具端点安全调用：非 OK/空体/非 JSON 一律返回可读 error，绝不抛异常冒泡成「未连接模型」降级。
@@ -203,6 +204,31 @@ async function executeTool(
       .slice(0, Number(args.limit ?? 5));
     actions.push("个性化匹配");
     return JSON.stringify(scored);
+  }
+  if (name === "save_to_inbox") {
+    const title = String(args.title ?? "通知");
+    const summary = String(args.summary ?? "");
+    const deadline = (args.deadline as string) || null;
+    const source = String(args.source ?? "");
+    const base = ruleExtract(`${title}\n${summary}`, null);
+    const cats = ["competition", "internship", "research", "scholarship", "activity", "opensource", "notice", "daily"];
+    const c = String(args.category ?? "");
+    const extracted = {
+      ...base,
+      title,
+      summary,
+      deadline: deadline ?? base.deadline,
+      category: (cats.includes(c) ? c : base.category) as typeof base.category,
+      sourceUrl: source.startsWith("http") ? source : base.sourceUrl,
+    };
+    const classification = classify(extracted, summary);
+    await repo.createInbox({
+      id: uid(), userId: profile.id, rawText: `${title}\n${summary}`, sourceUrl: extracted.sourceUrl,
+      sourceType: "text", extracted, classification, status: "pending_review",
+      createdAt: new Date().toISOString(), demo: repo.mode === "demo",
+    });
+    actions.push(`写入 Inbox：${title}`);
+    return JSON.stringify({ ok: true, title });
   }
   if (name === "merge_inbox") {
     const mg = await mergeInbox(repo);

@@ -22,9 +22,9 @@ const WEB_RE = /网页|官网|网站|链接|https?:|url|URL/;
 const UIN_RE = /\b(\d{6,12})\b/;
 const GROUP_NAME_RE = /(?:QQ|微信|wechat)?\s*(?:中|在|去|到|群)\s*([一-龥A-Za-z0-9_（）()]{2,24}群)/;
 
-const QQ_TOOLS = ["list_groups", "sync_group_notices", "rag_search", "extract_notice", "create_daily_task", "merge_inbox"];
-const WX_TOOLS = ["sync_group_notices", "rag_search", "extract_notice", "create_daily_task", "merge_inbox"];
-const WEB_TOOLS = ["web_fetch", "rag_search", "extract_notice", "create_daily_task", "merge_inbox"];
+const QQ_TOOLS = ["list_groups", "sync_group_notices", "rag_search", "extract_notice", "create_daily_task", "merge_inbox", "save_to_inbox"];
+const WX_TOOLS = ["sync_group_notices", "rag_search", "extract_notice", "create_daily_task", "merge_inbox", "save_to_inbox"];
+const WEB_TOOLS = ["web_fetch", "rag_search", "extract_notice", "create_daily_task", "merge_inbox", "save_to_inbox"];
 
 export function detectScope(message: string): TaskScope {
   const m = message ?? "";

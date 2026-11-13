@@ -105,7 +105,10 @@ export async function llmChat(opts: {
       if (!res.ok) {
         if ([502, 503, 504].includes(res.status) && attempt < 2) { await sleep(800 * 2 ** attempt); continue; }
         let detail = "";
-        try { detail = JSON.parse(text).error ?? ""; } catch {}
+        try {
+          const e = JSON.parse(text).error;
+          detail = typeof e === "string" ? e : (e?.message ?? JSON.stringify(e));
+        } catch {}
         throw new Error(detail || `LLM HTTP ${res.status}（${text.slice(0, 120) || "空响应"}）`);
       }
       return parseChat(text, res.status);

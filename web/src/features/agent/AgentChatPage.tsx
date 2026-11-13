@@ -203,9 +203,6 @@ export function AgentChatPage() {
               <div className={cn("max-w-[85%] whitespace-pre-wrap text-sm leading-relaxed", m.role === "user" ? "rounded-2xl rounded-br-sm bg-secondary px-4 py-2.5 text-secondary-foreground" : "")}>
                 {m.content}
                 {m.mock && <div className="mt-2"><MockBadge /></div>}
-                {m.actions && m.actions.length > 0 && (
-                  <div className="mt-2 text-xs text-muted-foreground">已同步：{m.actions.join("；")}</div>
-                )}
               </div>
               {m.role === "user" && <User className="mt-1 size-5 shrink-0 text-muted-foreground" />}
             </div>

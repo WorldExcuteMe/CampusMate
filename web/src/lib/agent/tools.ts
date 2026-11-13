@@ -131,8 +131,26 @@ export const AGENT_TOOLS: ToolDef[] = [
     type: "function",
     function: {
       name: "merge_inbox",
-      description: "对 Inbox（含历史通知）做语义去重合并：本质指向同一信息源/同一事件的通知归一展示，重复条归档，减少冗余。不同轮次不合并。",
+      description: "对 Inbox（含历史通知）做语义去重合并：本质指向同一信息源/同一事件的通知归一展示，重复条归档，减少冗余。不同轮次不合并。注意：本工具只去重不新建；新建条目用 save_to_inbox / create_daily_task。",
       parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "save_to_inbox",
+      description: "把一条归纳后的有效通知写入 Inbox（新建条目）。总结群通知后须用本工具落库，每条独立通知一次调用。",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "通知标题" },
+          summary: { type: "string", description: "归纳摘要（时间/地点/对象/要求）" },
+          category: { type: "string", description: "competition/internship/research/scholarship/activity/opensource/notice/daily" },
+          deadline: { type: "string", description: "YYYY-MM-DD 或 null" },
+          source: { type: "string", description: "来源（群号/消息时间/链接）" },
+        },
+        required: ["title", "summary"],
+      },
     },
   },
 ];

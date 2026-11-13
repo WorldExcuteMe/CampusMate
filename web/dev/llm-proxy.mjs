@@ -180,6 +180,11 @@ const server = http.createServer(async (req, res) => {
           continue;
         }
         const data = await upstream.json();
+        if (!upstream.ok) {
+          const e = data?.error;
+          const msg = typeof e === "string" ? e : (e?.message ?? JSON.stringify(data).slice(0, 300));
+          return json(res, upstream.status, { error: `上游模型错误 HTTP ${upstream.status}: ${msg}` });
+        }
         return json(res, upstream.status, data);
       } catch (err) {
         lastErr = err;
