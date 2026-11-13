@@ -145,8 +145,9 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && url.startsWith("/api/ingest/qq")) {
     const name = new URL(url, "http://local").searchParams.get("name") || "网安2401官方群";
     const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
+    const py64 = env.PY64 || "C:\\Users\\Asus\\miniconda3\\python.exe";
     const script = path.join(qqDir, "group_export.py");
-    execFile("py", ["-3", script, "--name", name], { cwd: qqDir, timeout: 120000 }, (err, stdout, stderr) => {
+    execFile(py64, [script, "--name", name], { cwd: qqDir, timeout: 120000 }, (err, stdout, stderr) => {
       if (err) return json(res, 503, { error: `group_export 失败: ${stderr || err.message}`, hint: "先运行 qq_cli.py key + decrypt，且 QQ 已登录" });
       try {
         const data = JSON.parse(fs.readFileSync(path.join(qqDir, "out", "last_group_info.json"), "utf8"));
