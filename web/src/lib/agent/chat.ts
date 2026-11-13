@@ -6,6 +6,7 @@ import { cleanGroupMessage, extractDailyTime, nowBeijingText } from "../ingest/c
 import { fetchGroupNotices, fetchGroups, syncGroupRecords } from "../ingest/qq";
 import { uid, type Repository, type Profile } from "../data/types";
 import { guardUrl } from "../security/urlGuard";
+import { composeContext, trimToBudget, resolveContextCap, messagesTokens, toolsTokens } from "./context";
 
 export interface ChatOutcome {
   reply: string;
@@ -14,6 +15,9 @@ export interface ChatOutcome {
   model: string;
   mock: boolean;
   needsSetup?: boolean;
+  contextUsed?: number;
+  contextCap?: number;
+  compressed?: boolean;
 }
 
 // 意图自判：仅当用户提示词涉及 QQ/微信/群信息抓取时才走摄取 workflow 与环境配置。
@@ -216,6 +220,8 @@ export async function runChat(opts: {
   profile: Profile;
   providerId?: string;
   mode?: "auto" | "daily";
+  model?: string;
+  contextCap?: number;
 }): Promise<ChatOutcome> {
   const actions: string[] = [];
   const mode = opts.mode ?? "auto";
@@ -243,11 +249,18 @@ export async function runChat(opts: {
       needsSetup: true,
     };
   }
-  const messages: ChatMessage[] = [
-    { role: "system", content: SYSTEM(opts.profile, mode) },
-    ...opts.history,
-    { role: "user", content: opts.message },
-  ];
+  const cap = resolveContextCap(opts.model, opts.contextCap);
+  const tTools = toolsTokens(tools);
+  const composed = composeContext({
+    system: SYSTEM(opts.profile, mode),
+    history: opts.history,
+    user: opts.message,
+    tools,
+    cap,
+  });
+  let messages: ChatMessage[] = composed.messages;
+  let compressed = composed.compressed;
+  let contextUsed = composed.usedTokens;
   let usage = { input: 0, output: 0 };
   let model = "unknown";
   try {
@@ -263,12 +276,16 @@ export async function runChat(opts: {
           const out = await executeTool(call.function.name, args, opts.repository, opts.profile, actions);
           messages.push({ role: "tool", content: out, tool_call_id: call.id });
         }
+        const trimmed = trimToBudget(messages, cap, tTools);
+        messages = trimmed.messages;
+        compressed = compressed || trimmed.compressed;
+        contextUsed = messagesTokens(messages) + tTools;
         continue;
       }
       if (/<tool_result/i.test(res.content)) {
         return {
           reply: "已拦截虚构的工具结果：模型未真实调用工具。请确认本地 llm-proxy 已启动、环境已配置后重试，以真实抓取群消息。",
-          actions, usage, model, mock: false,
+          actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed,
         };
       }
       const jt = parseJsonTool(res.content);
@@ -276,11 +293,15 @@ export async function runChat(opts: {
         messages.push({ role: "assistant", content: res.content });
         const out = await executeTool(jt.name, jt.args, opts.repository, opts.profile, actions);
         messages.push({ role: "user", content: `工具 ${jt.name} 返回：${out}` });
+        const trimmed = trimToBudget(messages, cap, tTools);
+        messages = trimmed.messages;
+        compressed = compressed || trimmed.compressed;
+        contextUsed = messagesTokens(messages) + tTools;
         continue;
       }
-      return { reply: res.content, actions, usage, model, mock: false };
+      return { reply: res.content, actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed };
     }
-    return { reply: "（达到工具调用上限，请细化问题）", actions, usage, model, mock: false };
+    return { reply: "（达到工具调用上限，请细化问题）", actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed };
   } catch (err) {
     // 真实调用中断时的降级：规则提取 + 明确标识（区分中断原因，不误报为「未连接模型」）
     const e = ruleExtract(cleanGroupMessage(opts.message), null);
@@ -291,6 +312,9 @@ export async function runChat(opts: {
       usage,
       model: "rule-based-mock",
       mock: true,
+      contextUsed,
+      contextCap: cap,
+      compressed,
     };
   }
 }

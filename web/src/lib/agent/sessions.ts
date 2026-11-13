@@ -12,6 +12,9 @@ export interface ChatSession {
   createdAt: string;
   messages: SessionMsg[];
   tokens: number;
+  contextUsed?: number;
+  contextCap?: number;
+  compressed?: boolean;
 }
 
 const KEY = "campusmate.sessions.v1";

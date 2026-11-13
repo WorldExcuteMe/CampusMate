@@ -19,11 +19,10 @@ import { runChat } from "@/lib/agent/chat";
 import { listProviders, type ProviderPublic, type ChatMessage } from "@/lib/llm/proxy";
 import { useSessions } from "@/lib/agent/sessions-context";
 import { autoName } from "@/lib/agent/sessions";
+import { resolveContextCap } from "@/lib/agent/context";
 import { MockBadge } from "@/components/shared";
 import { SetupWizard } from "./SetupWizard";
 import { parseFile, type Attachment } from "@/lib/ingest/files";
-
-const CONTEXT_CAP = 16000;
 
 // 统一控件鼠标反馈：悬停边框+阴影+图标放大、聚焦环、按压缩放
 const CONTROL_FEEDBACK =
@@ -53,6 +52,9 @@ export function AgentChatPage() {
   const { data: profile } = useQuery({ queryKey: ["profile"], queryFn: () => repository.getProfile() });
   const endRef = useRef<HTMLDivElement>(null);
   const workspace = WORKSPACES.find((w) => w.id === ws) ?? WORKSPACES[0];
+  const provider = providers.find((p: ProviderPublic) => p.id === providerId);
+  const modelName = provider?.model || "deepseek-chat";
+  const contextCap = resolveContextCap(modelName);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -83,11 +85,14 @@ export function AgentChatPage() {
       name: s.name === "新会话" ? autoName(content) : s.name,
       messages: [...s.messages, { role: "user", content }],
     }));
-    const out = await runChat({ message: content, history, repository, profile, providerId, mode: active.mode });
+    const out = await runChat({ message: content, history, repository, profile, providerId, mode: active.mode, model: modelName });
     if (out.needsSetup) setShowSetup(true);
     update(active.id, (s) => ({
       ...s,
       tokens: s.tokens + out.usage.input + out.usage.output,
+      contextUsed: out.contextUsed ?? s.contextUsed ?? 0,
+      contextCap: out.contextCap ?? contextCap,
+      compressed: out.compressed ?? false,
       messages: [...s.messages, { role: "assistant", content: out.reply, actions: out.actions, mock: out.mock }],
     }));
     setBusy(false);
@@ -278,8 +283,14 @@ export function AgentChatPage() {
                 {providers.length === 0 && <SelectItem value="builtin-deepseek">DeepSeek（内置）</SelectItem>}
               </SelectContent>
             </Select>
-            <span className="text-xs text-muted-foreground">
-              上下文 {(active?.tokens ?? 0).toLocaleString()} / {CONTEXT_CAP.toLocaleString()} tok
+            <span
+              className="text-xs text-muted-foreground"
+              title={`上下文组成：system+工具定义+历史摘要+近期历史+当前输入+输出预留；模型 ${modelName} 上限 ${contextCap.toLocaleString()} tok；累计用量 ${(active?.tokens ?? 0).toLocaleString()} tok`}
+            >
+              上下文 {(active?.contextUsed ?? 0).toLocaleString()} / {contextCap.toLocaleString()} tok
+              {active?.compressed && (
+                <span className="ml-1 rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">已压缩</span>
+              )}
             </span>
             <Button size="sm" className="ml-auto" disabled={busy || (!input.trim() && attachments.length === 0)} onClick={send}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
