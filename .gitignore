@@ -22,3 +22,8 @@ campusmate-evidence/
 *.log
 .DS_Storeweb/test-results/
 web/playwright-report/
+
+# QQ ingest runtime artifacts (machine-sensitive: key + decrypted db + exports)
+tools/qq-ingest/data/
+tools/qq-ingest/out/
+__pycache__/

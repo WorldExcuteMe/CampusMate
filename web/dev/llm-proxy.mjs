@@ -4,6 +4,7 @@
 // 生产环境同一接口契约由 Supabase Edge Function / Sites Function 实现。
 import http from "node:http";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFile, execSync, spawn, exec } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -50,6 +51,29 @@ function json(res, code, obj) {
 }
 
 const env = loadEnv();
+
+// 普适：QQ 摄取工具默认用入仓 tools/qq-ingest（任何用户都有），env 可覆盖；python 自动探测 64 位。
+const QQ_DIR = env.QQ_TOOL_DIR || path.join(root, "..", "tools", "qq-ingest");
+function detectPython64() {
+  const home = os.homedir();
+  const cands = [
+    env.PY64,
+    path.join(home, "miniconda3", "python.exe"),
+    path.join(home, "anaconda3", "python.exe"),
+    path.join(home, "AppData", "Local", "Programs", "Python", "Python312", "python.exe"),
+    path.join(home, "AppData", "Local", "Programs", "Python", "Python311", "python.exe"),
+    "python", "python3", "py",
+  ];
+  for (const c of cands) {
+    if (!c) continue;
+    try {
+      const out = execSync(`"${c}" -c "import struct;print(struct.calcsize('P')*8)"`, { timeout: 8000, encoding: "utf8" }).trim();
+      if (out === "64") return c;
+    } catch {}
+  }
+  return "python";
+}
+const PY64 = detectPython64();
 
 // 预热常驻 PowerShell 对话框进程：启动时加载 WinForms，点击时立即弹出，消除每次冷启动延迟。
 let dialogChild = null;
@@ -170,8 +194,8 @@ const server = http.createServer(async (req, res) => {
   }
   // 普适群发现：枚举本机所有群（uin/总数/信息密度/样例），供 agent 自动定位通知群
   if (req.method === "GET" && url.split("?")[0] === "/api/ingest/qq/groups") {
-    const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
-    const py64 = env.PY64 || "C:\\Users\\Asus\\miniconda3\\python.exe";
+    const qqDir = QQ_DIR;
+    const py64 = PY64;
     const script = path.join(qqDir, "group_export.py");
     execFile(py64, [script, "--list", "--limit", "3"], { cwd: qqDir, timeout: 180000, maxBuffer: 16 * 1024 * 1024, encoding: "utf8" }, (err, stdout, stderr) => {
       if (err) return json(res, 503, { error: `群发现失败: ${stderr || err.message}`, hint: "先运行 qq_cli.py key + decrypt，且 QQ 已登录" });
@@ -185,15 +209,25 @@ const server = http.createServer(async (req, res) => {
     const params = new URL(url, "http://local").searchParams;
     const name = params.get("name") || "";
     const uin = params.get("uin") || "";
-    const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
-    const py64 = env.PY64 || "C:\\Users\\Asus\\miniconda3\\python.exe";
+    const qqDir = QQ_DIR;
+    const py64 = PY64;
     const script = path.join(qqDir, "group_export.py");
     const args = [script];
     if (uin) args.push("--uin", uin);
     else if (name) args.push("--name", name);
     else return json(res, 400, { error: "name 或 uin 必填；先调 /api/ingest/qq/groups 定位群" });
     execFile(py64, args, { cwd: qqDir, timeout: 180000 }, (err, stdout, stderr) => {
-      if (err) return json(res, 503, { error: `group_export 失败: ${stderr || err.message}`, hint: "先运行 qq_cli.py key + decrypt，且 QQ 已登录" });
+      if (err) {
+        const se = String(stderr || err.message || "");
+        let code = "INGEST_FAILED";
+        let hint = "确认 QQ(NT版) 已登录；工具已入仓 tools/qq-ingest，python 自动探测64位";
+        if (/没找到 nt_msg.db|nt_msg\.db/.test(se)) { code = "QQ_DB_NOT_FOUND"; hint = "未找到QQ数据库：请确认QQ(NT版)已登录并产生过聊天记录"; }
+        else if (/取钥|密钥|key/.test(se)) { code = "QQ_KEY_FAILED"; hint = "取钥失败：请确认QQ已登录（密钥从运行中QQ内存提取）"; }
+        else if (/明文库不存在|自动解密失败/.test(se)) { code = "DECRYPT_FAILED"; hint = "自动解密失败：请确认QQ已登录，或手动 qq_cli.py key && qq_cli.py decrypt --no-wal"; }
+        else if (/未找到群/.test(se)) { code = "GROUP_NOT_FOUND"; hint = "未找到该群：先用 list_groups 查看本机群"; }
+        else if (/python|不是内部|command not found|ENOENT/.test(se)) { code = "PYTHON_MISSING"; hint = "未找到64位Python：安装Python3或设 env.PY64"; }
+        return json(res, 503, { error: `群摄取失败[${code}]: ${se.slice(0, 300)}`, hint, code });
+      }
       try {
         const data = JSON.parse(fs.readFileSync(path.join(qqDir, "out", "last_group_info.json"), "utf8"));
         return json(res, 200, data);
@@ -206,8 +240,8 @@ const server = http.createServer(async (req, res) => {
   // 微信群通知摄取（本地运行 wechat_cli，信息本位；不涉外部 URL）
   if (req.method === "GET" && url.startsWith("/api/ingest/wechat")) {
     const name = new URL(url, "http://local").searchParams.get("name") || "网安2401班";
-    const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
-    const py64 = env.PY64 || "C:\\Users\\Asus\\miniconda3\\python.exe";
+    const qqDir = QQ_DIR;
+    const py64 = PY64;
     const script = path.join(qqDir, "wechat_cli.py");
     execFile(py64, [script, "run", "--name", name, "--auto"], { cwd: qqDir, timeout: 180000 }, (err, stdout, stderr) => {
       try {
@@ -221,8 +255,8 @@ const server = http.createServer(async (req, res) => {
   }
   // 环境检测（零配置引导 / grill me）：本地进程/文件检查，不涉外部 URL
   if (req.method === "GET" && url === "/api/env/check") {
-    const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
-    const py64 = env.PY64 || "C:\\Users\\Asus\\miniconda3\\python.exe";
+    const qqDir = QQ_DIR;
+    const py64 = PY64;
     let tasks = "";
     try { tasks = execSync("tasklist", { encoding: "utf8", timeout: 10000 }); } catch {}
     const lower = tasks.toLowerCase();
@@ -279,7 +313,7 @@ const server = http.createServer(async (req, res) => {
   // RAG 检索：本地摄取数据 + 文档关键词召回
   if (req.method === "POST" && url === "/api/rag/search") {
     const { query, k, group } = JSON.parse(await readBody(req));
-    const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
+    const qqDir = QQ_DIR;
     // 源内检索：group 为纯数字群号时读该群导出文件，否则读最近一次摄取；防路径注入仅允许数字
     const file = group && /^\d+$/.test(String(group)) ? `group_${group}_info.json` : "last_group_info.json";
     let docs = [];

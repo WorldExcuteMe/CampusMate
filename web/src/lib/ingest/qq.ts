@@ -52,7 +52,11 @@ export async function fetchGroupNotices(group: string): Promise<GroupRecord[]> {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await fetch(`/api/ingest/qq?${qs}`);
-      if (!res.ok) throw new Error(`群摄取失败 HTTP ${res.status}`);
+      if (!res.ok) {
+        let detail = "";
+        try { const j = await res.json(); detail = [j.error, j.hint].filter(Boolean).join("；"); } catch {}
+        throw new Error(detail || `群摄取失败 HTTP ${res.status}`);
+      }
       const data = await res.json();
       return data.records ?? [];
     } catch (e) {
