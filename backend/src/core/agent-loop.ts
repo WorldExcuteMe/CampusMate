@@ -5,6 +5,7 @@ import { EMPTY_USAGE } from "./types.ts";
 import type { LlmTransport } from "./llm.ts";
 import { errorMessage, isTransportError } from "./errors.ts";
 import { trimToBudget, toolsTokens, resolveContextCap } from "./context.ts";
+import { checkBudget } from "./budget.ts";
 
 export interface AgentLoopHooks {
   onEvent?: (type: EventType, payload: Record<string, unknown>) => void;
@@ -106,8 +107,7 @@ export async function runAgentLoop(opts: {
   const snapshot = (): CheckpointState => ({
     messages, stepProgress: {}, repeat: Object.fromEntries(repeat), usage: { ...usage }, pendingApprovals: [],
   });
-  const overBudget = () =>
-    usage.tokens >= deps.budget.tokens || usage.toolCalls >= deps.budget.toolCalls || (now() - start) >= deps.budget.wallMs;
+  const overBudget = () => checkBudget({ ...usage, wallMs: now() - start }, deps.budget).exceeded;
   const addUsage = (u: { input: number; output: number }) => {
     usage.tokens += u.input + u.output;
     usage.costUsd = usage.tokens * price;

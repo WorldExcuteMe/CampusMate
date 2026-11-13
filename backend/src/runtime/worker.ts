@@ -12,6 +12,7 @@ import { Evaluator, buildEvaluationInput } from "../core/evaluator.ts";
 import type { CapabilityRegistry } from "../core/capability.ts";
 import { buildManifest } from "../core/manifest.ts";
 import { manifestTools } from "../core/tool-registry.ts";
+import { TOOL_SPECS } from "../core/tool-registry.ts";
 import type { MemoryStore } from "../core/memory.ts";
 import { buildContext, retrieveRelevantMemory, taskContextSummary } from "../core/context-builder.ts";
 import type { CompanionServer } from "../core/companion-server.ts";
@@ -156,13 +157,21 @@ export class Worker {
         }
 
         // 本机工具经 CompanionServer RPC 分派（授权+审批通过后）；云工具走 executeTool。
+        // Per-tool Timeout 由 Runtime 强制（TOOL_SPECS.timeoutMs）。
         const isHostTool = ["run_terminal", "read_file", "write_file", "sync_group_notices", "list_groups"].includes(name);
+        const timeoutMs = TOOL_SPECS[name]?.timeoutMs ?? 60000;
+        const runTool = async (): Promise<string> => {
+          if (isHostTool && this.companionServer) {
+            try { const r = await this.companionServer.invoke(task.userId, name, args); return JSON.stringify(r ?? { ok: true }); }
+            catch (e) { return JSON.stringify({ error: errorMessage(e) }); }
+          }
+          return await this.executeTool(task, name, args);
+        };
         let out: string;
-        if (isHostTool && this.companionServer) {
-          try { const r = await this.companionServer.invoke(task.userId, name, args); out = JSON.stringify(r ?? { ok: true }); }
-          catch (e) { out = JSON.stringify({ error: errorMessage(e) }); }
-        } else {
-          out = await this.executeTool(task, name, args);
+        try {
+          out = await withTimeout(runTool(), timeoutMs, name);
+        } catch (e) {
+          out = JSON.stringify({ error: errorMessage(e), class: "tool_transient" });
         }
         let parsed: unknown = out; let ok = true;
         try { parsed = JSON.parse(out); ok = !(parsed && typeof parsed === "object" && (parsed as Record<string, unknown>).error); } catch { /* non-json */ }
@@ -270,4 +279,12 @@ export class Worker {
     if (name === "sync_group_notices") return checkGroup(reg.grantedScopes, args.group ? String(args.group) : undefined);
     return { ok: true };
   }
+}
+
+// Per-tool Timeout：Runtime 强制，超时抛错（转 tool_transient 观测）。
+function withTimeout<T>(p: Promise<T>, ms: number, tool: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`工具 ${tool} 超时（${ms}ms）`)), ms);
+    p.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
+  });
 }
