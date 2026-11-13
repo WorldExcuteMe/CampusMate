@@ -36,7 +36,9 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     setActiveId,
     active,
     create: () => {
-      const s = newSession(active?.mode ?? "auto");
+      const preset = localStorage.getItem("campusmate.defaultMode");
+      const mode = preset === "daily" || preset === "auto" ? preset : (active?.mode ?? "auto");
+      const s = newSession(mode);
       setSessions((l) => [s, ...l]);
       setActiveId(s.id);
       return s;
