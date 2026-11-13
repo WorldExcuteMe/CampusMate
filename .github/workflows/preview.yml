@@ -1,0 +1,35 @@
+name: PR Preview
+
+on:
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-dist
+          path: web/dist
+      - name: Comment preview info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ 构建通过，preview 产物已上传（artifact: preview-dist）。在 Qoder 中打开 Sites 工作台加载该产物即可预览；公开部署需人工确认。'
+            })

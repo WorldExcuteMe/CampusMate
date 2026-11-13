@@ -1,0 +1,37 @@
+name: Release (main CD)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: web/dist
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: CampusMate v${{ github.run_number }}
+          files: web/dist/**
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Qoder Sites 公开发布需人工确认：在 Qoder Sites 工作台对 release-dist 执行 publish。
+      # 若配置了 SITES_DEPLOY_TOKEN，可在此追加自动部署 job（默认不启用，保持人工审批）。

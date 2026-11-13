@@ -1,0 +1,24 @@
+# dependencies / build
+web/node_modules/
+web/dist/
+
+# env / secrets
+.env
+.env.*
+web/.env
+web/.env.*
+!web/.env.example
+web/.providers.local.json
+
+# internal docs & local Qoder config (team policy: not uploaded)
+docs/research/
+.qoder/
+*.qoder.site
+
+# local evidence (kept outside repo)
+campusmate-evidence/
+
+# misc
+*.log
+.DS_Storeweb/test-results/
+web/playwright-report/
