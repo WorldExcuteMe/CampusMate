@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  Send, Bot, User, Pencil, Loader2, RefreshCw, FolderOpen, ChevronDown,
+  Send, Bot, User, Pencil, Loader2, RefreshCw, FolderOpen, Paperclip, Wrench, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,6 +21,8 @@ import { useSessions } from "@/lib/agent/sessions-context";
 import { autoName } from "@/lib/agent/sessions";
 import { fetchGroupNotices, fetchWechatNotices, syncGroupRecords } from "@/lib/ingest/qq";
 import { MockBadge } from "@/components/shared";
+import { SetupWizard } from "./SetupWizard";
+import { parseFile, type Attachment } from "@/lib/ingest/files";
 
 const CONTEXT_CAP = 16000;
 
@@ -34,8 +36,12 @@ export function AgentChatPage() {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
-  const [ws, setWs] = useState("local");
+  const [ws] = useState("local");
   const [syncing, setSyncing] = useState(false);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [showSetup, setShowSetup] = useState(false);
+  const [wsPath, setWsPath] = useState(() => localStorage.getItem("campusmate.workspace") || "");
+  const fileRef = useRef<HTMLInputElement>(null);
   const [providerId, setProviderId] = useState(
     () => localStorage.getItem("campusmate.providerId") || "builtin-deepseek",
   );
@@ -54,18 +60,27 @@ export function AgentChatPage() {
     localStorage.setItem("campusmate.providerId", id);
   }
 
+  async function handleFiles(files: FileList | File[]) {
+    const parsed = await Promise.all(Array.from(files).map(parseFile));
+    setAttachments((a) => [...a, ...parsed]);
+  }
+
   async function send() {
     const text = input.trim();
-    if (!text || busy || !profile || !active) return;
+    if ((!text && attachments.length === 0) || busy || !profile || !active) return;
+    const docText = attachments.filter((a) => a.kind === "doc" && a.text).map((a) => `\n[附件 ${a.name}]\n${a.text}`).join("");
+    const imgMarkers = attachments.filter((a) => a.kind === "image").map((a) => `[图片附件 ${a.name}]`).join(" ");
+    const content = (text + docText + (imgMarkers ? "\n" + imgMarkers : "")).trim();
     setInput("");
+    setAttachments([]);
     setBusy(true);
     const history: ChatMessage[] = active.messages.map((m) => ({ role: m.role, content: m.content }));
     update(active.id, (s) => ({
       ...s,
-      name: s.name === "新会话" ? autoName(text) : s.name,
-      messages: [...s.messages, { role: "user", content: text }],
+      name: s.name === "新会话" ? autoName(content) : s.name,
+      messages: [...s.messages, { role: "user", content }],
     }));
-    const out = await runChat({ message: text, history, repository, profile, providerId, mode: active.mode });
+    const out = await runChat({ message: content, history, repository, profile, providerId, mode: active.mode });
     update(active.id, (s) => ({
       ...s,
       tokens: s.tokens + out.usage.input + out.usage.output,
@@ -98,21 +113,11 @@ export function AgentChatPage() {
   }
 
   return (
-    <div className="flex h-[calc(100dvh-7rem)] flex-col">
-      {/* 工作区栏（参考 Qoder / DeepSeek harness） */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2 text-xs text-muted-foreground">
-        <FolderOpen className="size-3.5 text-primary" />
-        <Select value={ws} onValueChange={setWs}>
-          <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            {WORKSPACES.map((w) => <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>)}
-          </SelectContent>
-        </Select>
-        <span className="truncate font-mono">{workspace.path}</span>
-        <span className="rounded bg-muted px-1.5 py-0.5">{workspace.python}</span>
-        <span className="ml-auto hidden sm:inline">自动模式可在此工作区执行 py 摄取/工具</span>
-      </div>
-
+    <div
+      className="flex h-[calc(100dvh-7rem)] flex-col"
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); }}
+    >
       {/* 会话标题 + 模式 */}
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
         {editing ? (
@@ -174,20 +179,62 @@ export function AgentChatPage() {
         </div>
       </div>
 
-      {/* 输入区：模型选择在输入框下、Enter 左；上下文状态 */}
+      {/* 输入区：工作区在输入栏左；模型选择在输入框下、Enter 左；上下文状态 */}
       <div className="border-t border-border bg-background px-4 py-3">
         <div className="mx-auto max-w-3xl">
+          {attachments.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {attachments.map((a, i) => (
+                <span key={i} className="flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs">
+                  {a.kind === "image" && a.dataUrl ? (
+                    <img src={a.dataUrl} alt={a.name} className="size-6 rounded object-cover" />
+                  ) : (
+                    <Paperclip className="size-3" />
+                  )}
+                  <span className="max-w-32 truncate">{a.name}</span>
+                  <button aria-label="移除附件" onClick={() => setAttachments((l) => l.filter((_, j) => j !== i))}>
+                    <X className="size-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           <Textarea
             rows={2}
             className="resize-none border-0 bg-muted focus-visible:ring-1"
-            placeholder="输入消息或粘贴群通知…（Enter 发送，Shift+Enter 换行）"
+            placeholder="输入消息 / 粘贴群通知 / 拖拽或粘贴图片文档…（Enter 发送）"
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={(e) => { if (e.clipboardData.files.length) { e.preventDefault(); handleFiles(e.clipboardData.files); } }}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
           />
-          <div className="mt-2 flex items-center gap-3">
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1 rounded-md bg-muted px-2 py-1" title={workspace.path}>
+              <FolderOpen className="size-3.5 shrink-0 text-primary" />
+              <input
+                className="w-36 bg-transparent text-xs outline-none"
+                placeholder="工作区本地路径"
+                value={wsPath}
+                onChange={(e) => setWsPath(e.target.value)}
+                onBlur={() => localStorage.setItem("campusmate.workspace", wsPath)}
+              />
+            </div>
+            <input
+              ref={fileRef}
+              type="file"
+              multiple
+              accept="image/*,.pdf,.docx,.txt,.md"
+              className="hidden"
+              onChange={(e) => { if (e.target.files) handleFiles(e.target.files); e.target.value = ""; }}
+            />
+            <Button size="icon-sm" variant="outline" aria-label="添加附件" onClick={() => fileRef.current?.click()}>
+              <Paperclip className="size-4" />
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setShowSetup(true)}>
+              <Wrench className="size-4" />配置环境
+            </Button>
             <Select value={providerId} onValueChange={chooseProvider}>
-              <SelectTrigger className="h-8 w-44 text-xs"><SelectValue placeholder="模型" /></SelectTrigger>
+              <SelectTrigger className="h-8 w-40 text-xs"><SelectValue placeholder="模型" /></SelectTrigger>
               <SelectContent>
                 {providers.map((p: ProviderPublic) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
                 {providers.length === 0 && <SelectItem value="builtin-deepseek">DeepSeek（内置）</SelectItem>}
@@ -202,13 +249,14 @@ export function AgentChatPage() {
             <span className="text-xs text-muted-foreground">
               上下文 {(active?.tokens ?? 0).toLocaleString()} / {CONTEXT_CAP.toLocaleString()} tok
             </span>
-            <Button size="sm" className="ml-auto" disabled={busy || !input.trim()} onClick={send}>
+            <Button size="sm" className="ml-auto" disabled={busy || (!input.trim() && attachments.length === 0)} onClick={send}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
               发送
             </Button>
           </div>
         </div>
       </div>
+      <SetupWizard open={showSetup} onClose={() => setShowSetup(false)} />
     </div>
   );
 }

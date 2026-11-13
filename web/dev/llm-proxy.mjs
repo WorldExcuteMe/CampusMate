@@ -5,7 +5,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -136,6 +136,22 @@ const server = http.createServer(async (req, res) => {
       }
     });
     return;
+  }
+  // 环境检测（零配置引导 / grill me）：本地进程/文件检查，不涉外部 URL
+  if (req.method === "GET" && url === "/api/env/check") {
+    const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
+    const py64 = env.PY64 || "C:\\Users\\Asus\\miniconda3\\python.exe";
+    let tasks = "";
+    try { tasks = execSync("tasklist", { encoding: "utf8", timeout: 10000 }); } catch {}
+    const lower = tasks.toLowerCase();
+    return json(res, 200, {
+      python64: fs.existsSync(py64),
+      qqRunning: lower.includes("qq.exe"),
+      wechatRunning: lower.includes("weixin.exe"),
+      qqKey: fs.existsSync(path.join(qqDir, "data", "key.txt")),
+      wechatKey: fs.existsSync(path.join(qqDir, "data", "wechat_key.txt")),
+      workspace: qqDir,
+    });
   }
   json(res, 404, { error: "not found" });
 });
