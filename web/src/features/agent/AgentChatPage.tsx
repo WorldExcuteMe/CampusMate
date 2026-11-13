@@ -16,6 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import { repository } from "@/app/config";
 import { runChat } from "@/lib/agent/chat";
+import { backendEnabled, runTaskViaBackend } from "@/lib/agent/api-client";
 import { errorMessage } from "@/lib/llm/errors";
 import { listProviders, type ProviderPublic, type ChatMessage } from "@/lib/llm/proxy";
 import { useSessions } from "@/lib/agent/sessions-context";
@@ -87,17 +88,35 @@ export function AgentChatPage() {
       messages: [...s.messages, { role: "user", content }],
     }));
     try {
-      const out = await runChat({ message: content, history, repository, profile, providerId, mode: active.mode, model: modelName });
-      if (out.needsSetup) setShowSetup(true);
-      update(active.id, (s) => ({
-        ...s,
-        tokens: s.tokens + out.usage.input + out.usage.output,
-        contextUsed: out.contextUsed ?? s.contextUsed ?? 0,
-        contextCap: out.contextCap ?? contextCap,
-        compressed: out.compressed ?? false,
-        pruned: out.pruned ?? false,
-        messages: [...s.messages, { role: "assistant", content: out.reply, actions: out.actions, mock: out.mock }],
-      }));
+      // AC01：配置 VITE_BACKEND_URL 时默认走服务端 Task Runtime（浏览器关闭不影响后台任务）；
+      // 未配置时保留浏览器 runChat 作为开发/兼容 fallback。
+      if (backendEnabled()) {
+        const task = await runTaskViaBackend(
+          { title: content.slice(0, 80), intent: content, sessionId: active.id },
+          (t) => {
+            update(active.id, (s) => ({ ...s, contextUsed: t.usage?.tokens ?? s.contextUsed ?? 0 }));
+          },
+        );
+        const reply = task.result?.summary ?? task.error ?? `任务${task.status}`;
+        update(active.id, (s) => ({
+          ...s,
+          tokens: s.tokens + (task.usage?.tokens ?? 0),
+          messages: [...s.messages, { role: "assistant", content: reply, actions: [], mock: task.status === "failed" }],
+        }));
+        if (task.status === "needs_input") toast.message("任务等待审批/补充信息，可在后端恢复。");
+      } else {
+        const out = await runChat({ message: content, history, repository, profile, providerId, mode: active.mode, model: modelName });
+        if (out.needsSetup) setShowSetup(true);
+        update(active.id, (s) => ({
+          ...s,
+          tokens: s.tokens + out.usage.input + out.usage.output,
+          contextUsed: out.contextUsed ?? s.contextUsed ?? 0,
+          contextCap: out.contextCap ?? contextCap,
+          compressed: out.compressed ?? false,
+          pruned: out.pruned ?? false,
+          messages: [...s.messages, { role: "assistant", content: out.reply, actions: out.actions, mock: out.mock }],
+        }));
+      }
     } catch (e) {
       // 兜底：runChat 理论上自兜底，此处再防一层，保证 busy 复位且错误可读（绝不 [object Object]）。
       const reason = errorMessage(e);

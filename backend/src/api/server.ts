@@ -51,8 +51,9 @@ export function createApiServer(deps: ApiDeps): http.Server {
         return json(res, 200, { ok: true, store: deps.storeKind ?? "memory" });
       }
 
-      // 以下端点需 JWT
-      const claims = verifySupabaseJwt(bearerToken(req.headers.authorization) ?? "", jwtSecret);
+      // 以下端点需 JWT（SSE EventSource 无法设 header，支持 ?token= query）。
+      const token = bearerToken(req.headers.authorization) ?? url.searchParams.get("token") ?? "";
+      const claims = verifySupabaseJwt(token, jwtSecret);
       if (!claims) return json(res, 401, { error: "unauthorized" });
       const uid = claims.sub;
 
@@ -66,7 +67,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         return json(res, 201, { taskId: task.id, status: task.status });
       }
 
-      const taskMatch = path.match(/^\/v1\/tasks\/([^/]+)(\/events|\/cancel|\/resume)?$/);
+      const taskMatch = path.match(/^\/v1\/tasks\/([^/]+)(\/events|\/cancel|\/resume|\/stream)?$/);
       if (taskMatch) {
         const id = taskMatch[1];
         const sub = taskMatch[2];
@@ -78,6 +79,25 @@ export function createApiServer(deps: ApiDeps): http.Server {
         if (req.method === "GET" && sub === "/events") {
           const after = Number(url.searchParams.get("after") ?? 0);
           return json(res, 200, { events: await store.listEvents(id, after) });
+        }
+        if (req.method === "GET" && sub === "/stream") {
+          // SSE：实时推送任务事件 + 状态，终态关闭。JWT 经 query ?token= 或 Authorization。
+          res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "Access-Control-Allow-Origin": cors });
+          let seq = Number(url.searchParams.get("after") ?? 0);
+          let closed = false;
+          const send = (event: string, data: unknown) => { if (!closed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+          const tick = async () => {
+            if (closed) return;
+            const evs = await store.listEvents(id, seq);
+            for (const e of evs) { send("task_event", e); seq = e.seq; }
+            const t = await store.getTask(id);
+            if (t) send("task_status", { status: t.status, usage: t.usage, result: t.result });
+            if (t && ["succeeded", "failed", "cancelled"].includes(t.status)) { send("close", { status: t.status }); closed = true; res.end(); return; }
+          };
+          await tick();
+          const timer = setInterval(() => { void tick(); }, 1000);
+          req.on("close", () => { closed = true; clearInterval(timer); });
+          return;
         }
         if (req.method === "POST" && sub === "/cancel") {
           const ok = await store.requestCancel(id, uid);
