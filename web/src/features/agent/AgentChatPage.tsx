@@ -91,15 +91,26 @@ export function AgentChatPage() {
   async function pickWorkspace() {
     setPicking(true);
     try {
-      const res = await fetch("/api/workspace/pick");
-      const data = await res.json();
-      if (data.path) {
-        setWsPath(data.path);
-        localStorage.setItem("campusmate.workspace", data.path);
-        toast.success("工作区已设置");
+      const w = window as unknown as { showDirectoryPicker?: (o?: { mode?: string }) => Promise<{ name: string }> };
+      if (typeof w.showDirectoryPicker === "function") {
+        // 浏览器原生文件夹对话框：在用户桌面即时弹出，不受服务端会话隔离影响
+        const handle = await w.showDirectoryPicker({ mode: "read" });
+        setWsPath(handle.name);
+        localStorage.setItem("campusmate.workspace", handle.name);
+        toast.success(`工作区已设置：${handle.name}`);
+      } else {
+        const res = await fetch("/api/workspace/pick");
+        const data = await res.json();
+        if (data.path) {
+          setWsPath(data.path);
+          localStorage.setItem("campusmate.workspace", data.path);
+          toast.success("工作区已设置");
+        } else {
+          toast.error("未选择文件夹");
+        }
       }
-    } catch {
-      toast.error("无法打开文件夹选择对话框");
+    } catch (e) {
+      if ((e as { name?: string })?.name !== "AbortError") toast.error("无法打开文件夹选择对话框");
     } finally {
       setPicking(false);
     }
