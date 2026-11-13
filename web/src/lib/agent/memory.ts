@@ -18,7 +18,12 @@ export function getPlan(): Plan | null {
   }
 }
 export function setPlan(p: Plan): void {
-  localStorage.setItem(PLAN_KEY, JSON.stringify(p));
+  // best-effort：localStorage 配额满/不可用时静默跳过，绝不因记忆写入失败中断模型回合。
+  try {
+    localStorage.setItem(PLAN_KEY, JSON.stringify(p));
+  } catch {
+    /* quota / unavailable */
+  }
 }
 export function advancePlan(stepIndex: number): void {
   const p = getPlan();
@@ -40,9 +45,14 @@ export function getMemory(): string[] {
   }
 }
 export function appendMemory(entry: string): void {
-  const mem = getMemory();
-  mem.push(entry);
-  localStorage.setItem(MEM_KEY, JSON.stringify(mem.slice(-12)));
+  // best-effort：记忆是缓存而非关键路径，写入失败不得把已成功的模型答复误降级为中断。
+  try {
+    const mem = getMemory();
+    mem.push(entry);
+    localStorage.setItem(MEM_KEY, JSON.stringify(mem.slice(-12)));
+  } catch {
+    /* quota / unavailable */
+  }
 }
 export function clearMemory(): void {
   localStorage.removeItem(MEM_KEY);

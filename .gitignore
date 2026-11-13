@@ -1,6 +1,9 @@
 # dependencies / build
 web/node_modules/
 web/dist/
+backend/node_modules/
+web/coverage/
+backend/coverage/
 
 # env / secrets
 .env
@@ -9,6 +12,8 @@ web/.env
 web/.env.*
 !web/.env.example
 web/.providers.local.json
+backend/.env
+backend/.env.*
 
 # internal docs & local Qoder config (team policy: not uploaded)
 docs/research/
@@ -20,7 +25,8 @@ campusmate-evidence/
 
 # misc
 *.log
-.DS_Storeweb/test-results/
+.DS_Store
+web/test-results/
 web/playwright-report/
 
 # QQ ingest runtime artifacts (machine-sensitive: key + decrypted db + exports)

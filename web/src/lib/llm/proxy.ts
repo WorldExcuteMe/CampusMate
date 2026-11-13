@@ -1,4 +1,5 @@
 import { extractedNoticeSchema } from "../schemas";
+import { errorMessage, LlmTransportError } from "./errors";
 import type { LlmProvider, LlmRequest, LlmResult } from "./types";
 
 export interface ProviderPublic {
@@ -67,7 +68,7 @@ function parseChat(text: string, status: number): ChatResult {
   try {
     data = JSON.parse(text);
   } catch {
-    throw new Error(`LLM 返回非 JSON（HTTP ${status}，${text.slice(0, 120) || "空体"}）；确认 llm-proxy 已启动且 vite 代理含 /api`);
+    throw new LlmTransportError(`LLM 返回非 JSON（HTTP ${status}，${text.slice(0, 120) || "空体"}）；确认 llm-proxy 已启动且 vite 代理含 /api`);
   }
   const msg = data.choices?.[0]?.message ?? {};
   return {
@@ -106,10 +107,9 @@ export async function llmChat(opts: {
         if ([502, 503, 504].includes(res.status) && attempt < 2) { await sleep(800 * 2 ** attempt); continue; }
         let detail = "";
         try {
-          const e = JSON.parse(text).error;
-          detail = typeof e === "string" ? e : (e?.message ?? JSON.stringify(e));
-        } catch {}
-        throw new Error(detail || `LLM HTTP ${res.status}（${text.slice(0, 120) || "空响应"}）`);
+          detail = errorMessage(JSON.parse(text).error);
+        } catch { /* 非 JSON 错误体，走下方 HTTP 兜底 */ }
+        throw new LlmTransportError(detail || `LLM HTTP ${res.status}（${text.slice(0, 120) || "空响应"}）`);
       }
       return parseChat(text, res.status);
     } catch (e) {
@@ -127,7 +127,7 @@ export async function llmChat(opts: {
       if (res.ok) return parseChat(text, res.status);
     } catch { /* fall through to throw */ }
   }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  throw lastErr instanceof LlmTransportError ? lastErr : new LlmTransportError(errorMessage(lastErr), { cause: lastErr });
 }
 
 const EXTRACT_SYSTEM =

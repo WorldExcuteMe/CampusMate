@@ -1,4 +1,5 @@
 import { llmChat, type ChatMessage } from "../llm/proxy";
+import { errorMessage, isTransportError } from "../llm/errors";
 import { AGENT_TOOLS } from "./tools";
 import { ruleExtract } from "../llm/mock";
 import { classify } from "./classifier";
@@ -64,12 +65,30 @@ async function toolPost(url: string, body: unknown): Promise<Record<string, unkn
     catch { return { error: `工具端点 ${url} 返回非 JSON（${text.slice(0, 120) || "空体"}）` }; }
   } catch (e) {
     clearTimeout(timer);
-    const msg = e instanceof Error && e.name === "AbortError" ? "TOOL_TIMEOUT（60s 超时）" : e instanceof Error ? e.message : String(e);
+    const msg = e instanceof Error && e.name === "AbortError" ? "TOOL_TIMEOUT（60s 超时）" : errorMessage(e);
     return { error: `工具端点 ${url} 请求失败：${msg}` };
   }
 }
 
+// 工具执行安全边界：任何工具/DB/网络异常都转成可读 error 观测回传给模型，绝不冒泡中断模型循环。
+// 根因修复：Supabase `throw error` 抛的是普通对象，曾冒泡到 runChat 被 String() 成 [object Object]
+// 并误判为「真实模型调用中断」整体降级 Mock。现在工具失败只是一条观测，模型据此重试/如实说明。
 async function executeTool(
+  name: string,
+  args: Record<string, unknown>,
+  repo: Repository,
+  profile: Profile,
+  actions: string[],
+  scope: TaskScope,
+): Promise<string> {
+  try {
+    return await dispatchTool(name, args, repo, profile, actions, scope);
+  } catch (e) {
+    return JSON.stringify({ error: `工具 ${name} 执行失败：${errorMessage(e)}` });
+  }
+}
+
+async function dispatchTool(
   name: string,
   args: Record<string, unknown>,
   repo: Repository,
@@ -109,7 +128,7 @@ async function executeTool(
       actions.push(`同步群「${group}」${autoLocated ? "（自动定位）" : ""}：Inbox ${sum.inbox} / 日常 ${sum.daily} / 机会 ${sum.opportunity} / 过期过滤 ${sum.expired} / 语义合并 ${sum.merged}`);
       return JSON.stringify({ group, autoLocated, ...sum });
     } catch (e) {
-      return JSON.stringify({ error: `群摄取失败：${e instanceof Error ? e.message : String(e)}（确认 llm-proxy 已启动、QQ 已登录并解密）` });
+      return JSON.stringify({ error: `群摄取失败：${errorMessage(e)}（确认 llm-proxy 已启动、QQ 已登录并解密）` });
     }
   }
   if (name === "list_groups") {
@@ -118,7 +137,7 @@ async function executeTool(
       actions.push(`发现本机 ${groups.length} 个群`);
       return JSON.stringify({ count: groups.length, groups: groups.slice(0, 20) });
     } catch (e) {
-      return JSON.stringify({ error: `群发现失败：${e instanceof Error ? e.message : String(e)}（确认 llm-proxy 已启动、QQ 已登录并解密）` });
+      return JSON.stringify({ error: `群发现失败：${errorMessage(e)}（确认 llm-proxy 已启动、QQ 已登录并解密）` });
     }
   }
   if (name === "run_terminal") {
@@ -461,18 +480,20 @@ export async function runChat(opts: {
     const finalText = fin.content && !parseJsonTool(fin.content) ? fin.content : actionsSummary;
     return { reply: finalText, actions, usage, model: fin.model || model, mock: false, contextUsed, contextCap: cap, compressed, pruned };
   } catch (err) {
-    // 真实调用中断时的降级：规则提取 + 明确标识（区分中断原因，不误报为「未连接模型」）
-    const e = ruleExtract(cleanGroupMessage(opts.message), null);
-    const reason = err instanceof Error ? err.message : String(err);
+    // 精确分类：只有真实模型传输失败才报「模型连接失败」；工具/DB/上下文异常已在各自边界兜底，
+    // 不会冒泡到这里。errorMessage 保证任何被抛值（含 Supabase 普通对象）都可读，绝不出现 [object Object]。
+    const reason = errorMessage(err);
+    const done = actions.length ? `本轮已完成 ${actions.length} 步操作：${actions.join("；")}。` : "";
+    if (isTransportError(err)) {
+      return {
+        reply: `${done}模型连接失败（${reason}）。已按退避重试并尝试备用端点仍未连通。请确认本地 llm-proxy(8787) 已启动、vite 代理含 /api、模型供应商密钥已在服务端配置；恢复后重发本条即可继续。`,
+        actions, usage, model: "unreachable", mock: true, contextUsed, contextCap: cap, compressed, pruned,
+      };
+    }
+    // 非传输异常（理论上已被工具/记忆边界兜底）：如实报告，不误判为模型中断、不伪造数据。
     return {
-      reply: `真实模型调用中断（${reason}）。以下为规则提取（Mock，非真实模型）：\n标题：${e.title}\n类别：${e.category}\n截止：${e.deadline ?? "未识别"}\n排查：确认本地 llm-proxy(8787) 已启动、vite 代理含 /api、模型供应商已配置密钥。`,
-      actions,
-      usage,
-      model: "rule-based-mock",
-      mock: true,
-      contextUsed,
-      contextCap: cap,
-      compressed,
+      reply: `${done}处理过程中出现异常（${reason}），这不是模型连接问题。请重发本条重试；若反复出现请反馈该错误信息。`,
+      actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed, pruned,
     };
   }
 }

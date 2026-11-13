@@ -16,6 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import { repository } from "@/app/config";
 import { runChat } from "@/lib/agent/chat";
+import { errorMessage } from "@/lib/llm/errors";
 import { listProviders, type ProviderPublic, type ChatMessage } from "@/lib/llm/proxy";
 import { useSessions } from "@/lib/agent/sessions-context";
 import { autoName } from "@/lib/agent/sessions";
@@ -85,18 +86,29 @@ export function AgentChatPage() {
       name: s.name === "新会话" ? autoName(content) : s.name,
       messages: [...s.messages, { role: "user", content }],
     }));
-    const out = await runChat({ message: content, history, repository, profile, providerId, mode: active.mode, model: modelName });
-    if (out.needsSetup) setShowSetup(true);
-    update(active.id, (s) => ({
-      ...s,
-      tokens: s.tokens + out.usage.input + out.usage.output,
-      contextUsed: out.contextUsed ?? s.contextUsed ?? 0,
-      contextCap: out.contextCap ?? contextCap,
-      compressed: out.compressed ?? false,
-      pruned: out.pruned ?? false,
-      messages: [...s.messages, { role: "assistant", content: out.reply, actions: out.actions, mock: out.mock }],
-    }));
-    setBusy(false);
+    try {
+      const out = await runChat({ message: content, history, repository, profile, providerId, mode: active.mode, model: modelName });
+      if (out.needsSetup) setShowSetup(true);
+      update(active.id, (s) => ({
+        ...s,
+        tokens: s.tokens + out.usage.input + out.usage.output,
+        contextUsed: out.contextUsed ?? s.contextUsed ?? 0,
+        contextCap: out.contextCap ?? contextCap,
+        compressed: out.compressed ?? false,
+        pruned: out.pruned ?? false,
+        messages: [...s.messages, { role: "assistant", content: out.reply, actions: out.actions, mock: out.mock }],
+      }));
+    } catch (e) {
+      // 兜底：runChat 理论上自兜底，此处再防一层，保证 busy 复位且错误可读（绝不 [object Object]）。
+      const reason = errorMessage(e);
+      update(active.id, (s) => ({
+        ...s,
+        messages: [...s.messages, { role: "assistant", content: `处理失败（${reason}）。请重发本条重试。`, mock: true }],
+      }));
+      toast.error(`处理失败：${reason}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function pickWorkspace() {
