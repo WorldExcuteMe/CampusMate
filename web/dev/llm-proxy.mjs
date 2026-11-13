@@ -5,6 +5,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -103,6 +104,22 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       return json(res, 502, { error: String(err) });
     }
+  }
+  // 群通知摄取（本地运行 QQ工具 group_export，信息本位过滤；不涉外部 URL）
+  if (req.method === "GET" && url.startsWith("/api/ingest/qq")) {
+    const name = new URL(url, "http://local").searchParams.get("name") || "网安2401官方群";
+    const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
+    const script = path.join(qqDir, "group_export.py");
+    execFile("py", ["-3", script, "--name", name], { cwd: qqDir, timeout: 120000 }, (err, stdout, stderr) => {
+      if (err) return json(res, 503, { error: `group_export 失败: ${stderr || err.message}`, hint: "先运行 qq_cli.py key + decrypt，且 QQ 已登录" });
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(qqDir, "out", "last_group_info.json"), "utf8"));
+        return json(res, 200, data);
+      } catch (e) {
+        return json(res, 503, { error: `读取导出失败: ${e.message}`, stdout });
+      }
+    });
+    return;
   }
   json(res, 404, { error: "not found" });
 });

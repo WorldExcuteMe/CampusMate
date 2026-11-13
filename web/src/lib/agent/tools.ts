@@ -52,4 +52,15 @@ export const AGENT_TOOLS: ToolDef[] = [
       parameters: { type: "object", properties: { limit: { type: "number" } } },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "sync_group_notices",
+      description: "从本地 QQ/微信群（信息本位：日期/关键词/文件，不限发送人）摄取通知并同步到 Inbox/日常任务/机会雷达。",
+      parameters: {
+        type: "object",
+        properties: { group: { type: "string", description: "群名称，如 网安2401半官方群" } },
+      },
+    },
+  },
 ];

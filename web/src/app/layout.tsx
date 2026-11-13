@@ -17,7 +17,7 @@ import { signOut, useAuth } from "./auth";
 
 const NAV = [
   { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true },
-  { to: "/app/agent", label: "Agent 对话", icon: Bot },
+  { to: "/app/agent", label: "会话", icon: Bot },
   { to: "/app/inbox", label: "Inbox", icon: Inbox },
   { to: "/app/daily", label: "日常任务", icon: CalendarClock },
   { to: "/app/radar", label: "机会雷达", icon: Radar },
