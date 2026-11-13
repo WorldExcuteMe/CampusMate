@@ -86,6 +86,16 @@ function ensureDialog() {
   return dialogChild;
 }
 
+// 思考强度映射（服务端解析模型后下发该厂商 OpenAI-compatible 端点接受的参数）。
+// 默认 low：本环境复杂度在检索广度而非推理深度，low 覆盖提取/分类/去重/路由/总结/检索；仅核验/冲突用 medium。
+function reasoningParams(model, tier) {
+  const m = String(model || "").toLowerCase();
+  const t = tier || "low";
+  if (/^(o1|o3|o4|gpt-5)/.test(m)) return { reasoning_effort: t };
+  if (/qwen|qwq/.test(m)) return { enable_thinking: t !== "low" };
+  return {}; // DeepSeek 思考由模型选择决定(chat/reasoner)；其余非思考模型零开销
+}
+
 const server = http.createServer(async (req, res) => {
   const url = req.url || "";
   // 供应商列表（不含密钥）
@@ -131,6 +141,7 @@ const server = http.createServer(async (req, res) => {
           model: payload.model || model,
           messages: payload.messages,
           temperature: payload.temperature ?? 0.2,
+          ...reasoningParams(payload.model || model, payload.reasoning),
           ...(payload.tools ? { tools: payload.tools, tool_choice: payload.tool_choice ?? "auto" } : {}),
           ...(payload.responseFormat ? { response_format: payload.responseFormat } : {}),
         }),

@@ -123,4 +123,12 @@ export const AGENT_TOOLS: ToolDef[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "merge_inbox",
+      description: "对 Inbox（含历史通知）做语义去重合并：本质指向同一信息源/同一事件的通知归一展示，重复条归档，减少冗余。不同轮次不合并。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
 ];

@@ -4,9 +4,11 @@ import { ruleExtract } from "../llm/mock";
 import { classify } from "./classifier";
 import { cleanGroupMessage, extractDailyTime, nowBeijingText } from "../ingest/clean";
 import { fetchGroupNotices, fetchGroups, syncGroupRecords } from "../ingest/qq";
+import { mergeInbox } from "../ingest/dedupe";
 import { uid, type Repository, type Profile } from "../data/types";
 import { guardUrl } from "../security/urlGuard";
 import { composeContext, trimToBudget, resolveContextCap, messagesTokens, toolsTokens } from "./context";
+import { DEFAULT_REASONING } from "../llm/reasoning";
 
 export interface ChatOutcome {
   reply: string;
@@ -89,7 +91,7 @@ async function executeTool(
       }
       const records = await fetchGroupNotices(group);
       const sum = await syncGroupRecords(records, repo);
-      actions.push(`同步群「${group}」${autoLocated ? "（自动定位）" : ""}：Inbox ${sum.inbox} / 日常 ${sum.daily} / 机会 ${sum.opportunity} / 过期过滤 ${sum.expired}`);
+      actions.push(`同步群「${group}」${autoLocated ? "（自动定位）" : ""}：Inbox ${sum.inbox} / 日常 ${sum.daily} / 机会 ${sum.opportunity} / 过期过滤 ${sum.expired} / 语义合并 ${sum.merged}`);
       return JSON.stringify({ group, autoLocated, ...sum });
     } catch (e) {
       return JSON.stringify({ error: `群摄取失败：${e instanceof Error ? e.message : String(e)}（确认 llm-proxy 已启动、QQ 已登录并解密）` });
@@ -188,6 +190,11 @@ async function executeTool(
     actions.push("个性化匹配");
     return JSON.stringify(scored);
   }
+  if (name === "merge_inbox") {
+    const mg = await mergeInbox(repo);
+    actions.push(`语义合并 Inbox：归一 ${mg.clusters} 组 / 归档重复 ${mg.merged} 条`);
+    return JSON.stringify(mg);
+  }
   return JSON.stringify({ error: `unknown tool ${name}` });
 }
 
@@ -265,7 +272,7 @@ export async function runChat(opts: {
   let model = "unknown";
   try {
     for (let i = 0; i < 6; i++) {
-      const res = await llmChat({ providerId: opts.providerId, messages, tools });
+      const res = await llmChat({ providerId: opts.providerId, messages, tools, reasoning: DEFAULT_REASONING });
       usage = { input: usage.input + res.usage.input, output: usage.output + res.usage.output };
       model = res.model;
       if (res.toolCalls.length > 0) {

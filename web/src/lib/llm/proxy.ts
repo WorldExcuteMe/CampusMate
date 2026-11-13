@@ -67,6 +67,7 @@ export async function llmChat(opts: {
   tools?: ToolDef[];
   responseFormat?: { type: string };
   temperature?: number;
+  reasoning?: string;
 }): Promise<ChatResult> {
   const res = await fetch("/api/llm", {
     method: "POST",
@@ -77,6 +78,7 @@ export async function llmChat(opts: {
       tools: opts.tools,
       responseFormat: opts.responseFormat,
       temperature: opts.temperature,
+      reasoning: opts.reasoning,
     }),
   });
   const text = await res.text();

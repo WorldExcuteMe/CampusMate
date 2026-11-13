@@ -32,6 +32,7 @@ export interface InboxItem {
   status: InboxStatus;
   createdAt: string;
   demo: boolean;
+  mergedFrom?: string[];
 }
 
 export interface Task {
