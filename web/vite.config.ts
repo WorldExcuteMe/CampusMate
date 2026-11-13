@@ -6,6 +6,9 @@ const proxy = {
   "/functions/v1/app": "http://127.0.0.1:8000",
   "/api/llm": "http://127.0.0.1:8787",
   "/api/providers": "http://127.0.0.1:8787",
+  "/api/workspace": "http://127.0.0.1:8787",
+  "/api/env": "http://127.0.0.1:8787",
+  "/api/ingest": "http://127.0.0.1:8787",
 };
 
 export default defineConfig({
