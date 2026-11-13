@@ -209,6 +209,18 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+  // 自主环境配置：短提示词全新环境下自动取钥+解密（QQ 需已登录），无需人工干预
+  if (req.method === "POST" && url === "/api/ingest/bootstrap") {
+    const cli = path.join(QQ_DIR, "qq_cli.py");
+    const run = (args) => new Promise((resolve) => {
+      execFile(PY64, [cli, ...args], { cwd: QQ_DIR, timeout: 120000 }, (err, stdout, stderr) => resolve({ err: err ? String(stderr || err.message) : null, stdout }));
+    });
+    const key = await run(["key"]);
+    const dec = await run(["decrypt", "--no-wal"]);
+    const qqKey = fs.existsSync(path.join(QQ_DIR, "data", "key.txt"));
+    const plain = fs.existsSync(path.join(QQ_DIR, "data", "nt_msg.plain.db"));
+    return json(res, 200, { ok: qqKey && plain, qqKey, plain, keyErr: key.err, decErr: dec.err });
+  }
   // 群通知摄取（本地运行 QQ工具 group_export，信息本位过滤；不涉外部 URL）
   if (req.method === "GET" && url.startsWith("/api/ingest/qq")) {
     const params = new URL(url, "http://local").searchParams;

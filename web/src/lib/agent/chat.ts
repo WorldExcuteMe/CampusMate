@@ -365,8 +365,13 @@ export async function runChat(opts: {
   let needsSetup = false;
   if (ingestIntent && mode === "auto") {
     try {
-      const env = await (await fetch("/api/env/check")).json();
-      if (!(env.qqKey || env.wechatKey)) needsSetup = true;
+      let env = await (await fetch("/api/env/check")).json();
+      if (!(env.qqKey || env.wechatKey)) {
+        // 短提示词全新环境：自主取钥+解密，无需人工；失败才引导配置
+        try { await fetch("/api/ingest/bootstrap", { method: "POST" }); } catch {}
+        env = await (await fetch("/api/env/check")).json();
+        if (!(env.qqKey || env.wechatKey)) needsSetup = true;
+      }
     } catch {}
   }
   const scope = detectScope(opts.message);

@@ -16,6 +16,7 @@ export interface ChatSession {
   contextCap?: number;
   compressed?: boolean;
   pruned?: boolean;
+  archived?: boolean;
 }
 
 const KEY = "campusmate.sessions.v1";
