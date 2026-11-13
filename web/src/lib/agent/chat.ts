@@ -12,6 +12,13 @@ export interface ChatOutcome {
   usage: { input: number; output: number };
   model: string;
   mock: boolean;
+  needsSetup?: boolean;
+}
+
+// 意图自判：仅当用户提示词涉及 QQ/微信/群信息抓取时才走摄取 workflow 与环境配置。
+const INGEST_RE = /(QQ|微信|wechat|群|抓取|同步|摄取)/i;
+export function detectIngestIntent(message: string): boolean {
+  return INGEST_RE.test(message);
 }
 
 const SYSTEM = (profile: Profile, mode: "auto" | "daily") =>
@@ -108,10 +115,30 @@ export async function runChat(opts: {
 }): Promise<ChatOutcome> {
   const actions: string[] = [];
   const mode = opts.mode ?? "auto";
+  const ingestIntent = detectIngestIntent(opts.message);
+  let needsSetup = false;
+  if (ingestIntent && mode === "auto") {
+    try {
+      const env = await (await fetch("/api/env/check")).json();
+      if (!(env.qqKey || env.wechatKey)) needsSetup = true;
+    } catch {}
+  }
   const tools =
     mode === "daily"
-      ? AGENT_TOOLS.filter((t) => ["extract_notice", "create_daily_task", "sync_group_notices"].includes(t.function.name))
-      : AGENT_TOOLS;
+      ? AGENT_TOOLS.filter((t) => ["extract_notice", "create_daily_task"].includes(t.function.name))
+      : ingestIntent
+        ? AGENT_TOOLS
+        : AGENT_TOOLS.filter((t) => t.function.name !== "sync_group_notices");
+  if (needsSetup) {
+    return {
+      reply: "检测到你要从 QQ/微信获取信息，已打开环境配置引导。完成配置后重新发送该请求，即可自动摄取并更新 Dashboard。",
+      actions,
+      usage: { input: 0, output: 0 },
+      model: "intent-gate",
+      mock: false,
+      needsSetup: true,
+    };
+  }
   const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM(opts.profile, mode) },
     ...opts.history,

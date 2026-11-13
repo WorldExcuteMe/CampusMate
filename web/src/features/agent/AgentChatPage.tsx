@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  Send, Bot, User, Pencil, Loader2, FolderOpen, Paperclip, Wrench, X,
+  Send, Bot, User, Pencil, Loader2, FolderOpen, Paperclip, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -38,6 +38,7 @@ export function AgentChatPage() {
   const [ws] = useState("local");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSetup, setShowSetup] = useState(false);
+  const [picking, setPicking] = useState(false);
   const [wsPath, setWsPath] = useState(() => localStorage.getItem("campusmate.workspace") || "");
   const fileRef = useRef<HTMLInputElement>(null);
   const [providerId, setProviderId] = useState(
@@ -78,6 +79,7 @@ export function AgentChatPage() {
       messages: [...s.messages, { role: "user", content }],
     }));
     const out = await runChat({ message: content, history, repository, profile, providerId, mode: active.mode });
+    if (out.needsSetup) setShowSetup(true);
     update(active.id, (s) => ({
       ...s,
       tokens: s.tokens + out.usage.input + out.usage.output,
@@ -87,6 +89,7 @@ export function AgentChatPage() {
   }
 
   async function pickWorkspace() {
+    setPicking(true);
     try {
       const res = await fetch("/api/workspace/pick");
       const data = await res.json();
@@ -97,6 +100,8 @@ export function AgentChatPage() {
       }
     } catch {
       toast.error("无法打开文件夹选择对话框");
+    } finally {
+      setPicking(false);
     }
   }
 
@@ -204,11 +209,16 @@ export function AgentChatPage() {
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {active?.mode === "auto" && (
               <button
-                className="flex max-w-56 items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs hover:bg-accent"
-                title={wsPath || workspace.path}
+                className="group flex max-w-56 cursor-pointer items-center gap-1 rounded-md border border-transparent bg-muted px-2 py-1 text-xs transition-all duration-150 hover:border-ring/40 hover:bg-accent hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.97]"
+                title="点击选择工作区文件夹"
                 onClick={pickWorkspace}
+                disabled={picking}
               >
-                <FolderOpen className="size-3.5 shrink-0 text-primary" />
+                {picking ? (
+                  <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
+                ) : (
+                  <FolderOpen className="size-3.5 shrink-0 text-primary transition-transform group-hover:scale-110" />
+                )}
                 <span className="truncate">{wsPath || workspace.path || "选择工作区文件夹"}</span>
               </button>
             )}
@@ -223,11 +233,6 @@ export function AgentChatPage() {
             <Button size="icon-sm" variant="outline" aria-label="添加附件" onClick={() => fileRef.current?.click()}>
               <Paperclip className="size-4" />
             </Button>
-            {active?.mode === "auto" && (
-              <Button size="sm" variant="outline" onClick={() => setShowSetup(true)}>
-                <Wrench className="size-4" />配置环境
-              </Button>
-            )}
             <Select value={providerId} onValueChange={chooseProvider}>
               <SelectTrigger className="h-8 w-40 text-xs"><SelectValue placeholder="模型" /></SelectTrigger>
               <SelectContent>

@@ -5,7 +5,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { execFile, execSync } from "node:child_process";
+import { execFile, execSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -50,6 +50,41 @@ function json(res, code, obj) {
 }
 
 const env = loadEnv();
+
+// 预热常驻 PowerShell 对话框进程：启动时加载 WinForms，点击时立即弹出，消除每次冷启动延迟。
+let dialogChild = null;
+let pickResolve = null;
+let outBuf = "";
+function ensureDialog() {
+  if (dialogChild && dialogChild.exitCode === null) return dialogChild;
+  const script = [
+    "Add-Type -AssemblyName System.Windows.Forms;",
+    "while (($line = [Console]::In.ReadLine()) -ne $null) {",
+    "  if ($line -eq 'pick') {",
+    "    $f = New-Object System.Windows.Forms.FolderBrowserDialog;",
+    "    $f.Description = '选择 CampusMate 工作区文件夹';",
+    "    $f.ShowNewFolderButton = $true;",
+    "    if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.WriteLine($f.SelectedPath) } else { [Console]::Out.WriteLine('') };",
+    "    [Console]::Out.Flush();",
+    "  }",
+    "}",
+  ].join("\n");
+  dialogChild = spawn("powershell", ["-STA", "-NoProfile", "-Command", script], { stdio: ["pipe", "pipe", "pipe"] });
+  dialogChild.stdout.on("data", (d) => {
+    outBuf += d.toString("utf8");
+    let i;
+    while ((i = outBuf.indexOf("\n")) >= 0) {
+      const line = outBuf.slice(0, i).replace(/\r$/, "");
+      outBuf = outBuf.slice(i + 1);
+      if (pickResolve) { const r = pickResolve; pickResolve = null; r(line); }
+    }
+  });
+  dialogChild.on("exit", () => {
+    dialogChild = null;
+    if (pickResolve) { const r = pickResolve; pickResolve = null; r(null); }
+  });
+  return dialogChild;
+}
 
 const server = http.createServer(async (req, res) => {
   const url = req.url || "";
@@ -153,22 +188,20 @@ const server = http.createServer(async (req, res) => {
       workspace: qqDir,
     });
   }
-  // 原生「选择文件夹」对话框（本地 PowerShell FolderBrowserDialog），返回绝对路径，不让用户手填
+  // 原生「选择文件夹」对话框：预热进程即时弹出，返回绝对路径，不让用户手填
   if (req.method === "GET" && url === "/api/workspace/pick") {
-    const ps = [
-      "-STA", "-NoProfile", "-Command",
-      "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = '选择 CampusMate 工作区文件夹'; $f.ShowNewFolderButton = $true; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath } else { Write-Output '' }",
-    ].join(" ");
-    execFile("powershell", ps.split(" "), { timeout: 120000, encoding: "utf8" }, (err, stdout) => {
-      if (err) return json(res, 503, { error: `文件夹选择失败: ${err.message}` });
-      const p = (stdout || "").trim();
-      return json(res, 200, { path: p || null });
+    const child = ensureDialog();
+    const result = await new Promise((resolve) => {
+      pickResolve = resolve;
+      child.stdin.write("pick\n");
+      setTimeout(() => { if (pickResolve) { pickResolve = null; resolve(null); } }, 120000);
     });
-    return;
+    return json(res, 200, { path: result || null });
   }
   json(res, 404, { error: "not found" });
 });
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`[llm-proxy] http://127.0.0.1:${PORT} (keys server-side only)`);
+  ensureDialog(); // 预热对话框进程，首次点击即弹出
 });
