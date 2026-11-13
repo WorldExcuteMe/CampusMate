@@ -34,6 +34,23 @@ const SYSTEM = (profile: Profile, mode: "auto" | "daily") =>
   `10) 工具调用协议：优先使用原生 tool_calls；若你的接口不支持原生工具调用，则单独输出一个 JSON 对象 {"tool":"工具名","args":{...}} 作为工具指令，等待返回后再继续。` +
   (mode === "daily" ? `日常模式优先处理调课/班会/讲座等含时间信息，谨慎创建机会。` : `自动模式可主动调用 list_groups + sync_group_notices 摄取目标群通知。`);
 
+// 工具端点安全调用：非 OK/空体/非 JSON 一律返回可读 error，绝不抛异常冒泡成「未连接模型」降级。
+async function toolPost(url: string, body: unknown): Promise<Record<string, unknown>> {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    if (!res.ok) return { error: `工具端点 ${url} HTTP ${res.status}：${text.slice(0, 200) || "空响应"}（确认 llm-proxy 已启动且 vite 代理含 /api）` };
+    try { return JSON.parse(text) as Record<string, unknown>; }
+    catch { return { error: `工具端点 ${url} 返回非 JSON（${text.slice(0, 120) || "空体"}）` }; }
+  } catch (e) {
+    return { error: `工具端点 ${url} 请求失败：${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
 async function executeTool(
   name: string,
   args: Record<string, unknown>,
@@ -54,51 +71,51 @@ async function executeTool(
     return JSON.stringify(e);
   }
   if (name === "sync_group_notices") {
-    let group = String(args.group ?? "").trim();
-    let autoLocated = false;
-    if (!group) {
-      const groups = await fetchGroups();
-      const best = groups.slice().sort((a, b) => (b.info_hits - a.info_hits) || (b.info_ratio - a.info_ratio))[0];
-      if (!best) return JSON.stringify({ error: "本机未发现任何群，请先登录 QQ 并完成解密" });
-      group = String(best.uin);
-      autoLocated = true;
+    try {
+      let group = String(args.group ?? "").trim();
+      let autoLocated = false;
+      if (!group) {
+        const groups = await fetchGroups();
+        const best = groups.slice().sort((a, b) => (b.info_hits - a.info_hits) || (b.info_ratio - a.info_ratio))[0];
+        if (!best) return JSON.stringify({ error: "本机未发现任何群，请先登录 QQ 并完成解密" });
+        group = String(best.uin);
+        autoLocated = true;
+      }
+      const records = await fetchGroupNotices(group);
+      const sum = await syncGroupRecords(records, repo);
+      actions.push(`同步群「${group}」${autoLocated ? "（自动定位）" : ""}：Inbox ${sum.inbox} / 日常 ${sum.daily} / 机会 ${sum.opportunity}`);
+      return JSON.stringify({ group, autoLocated, ...sum });
+    } catch (e) {
+      return JSON.stringify({ error: `群摄取失败：${e instanceof Error ? e.message : String(e)}（确认 llm-proxy 已启动、QQ 已登录并解密）` });
     }
-    const records = await fetchGroupNotices(group);
-    const sum = await syncGroupRecords(records, repo);
-    actions.push(`同步群「${group}」${autoLocated ? "（自动定位）" : ""}：Inbox ${sum.inbox} / 日常 ${sum.daily} / 机会 ${sum.opportunity}`);
-    return JSON.stringify({ group, autoLocated, ...sum });
   }
   if (name === "list_groups") {
-    const groups = await fetchGroups();
-    actions.push(`发现本机 ${groups.length} 个群`);
-    return JSON.stringify({ count: groups.length, groups: groups.slice(0, 20) });
+    try {
+      const groups = await fetchGroups();
+      actions.push(`发现本机 ${groups.length} 个群`);
+      return JSON.stringify({ count: groups.length, groups: groups.slice(0, 20) });
+    } catch (e) {
+      return JSON.stringify({ error: `群发现失败：${e instanceof Error ? e.message : String(e)}（确认 llm-proxy 已启动、QQ 已登录并解密）` });
+    }
   }
   if (name === "run_terminal") {
     const command = String(args.command ?? "");
     const cwd = args.cwd ? String(args.cwd) : undefined;
-    const r = await (await fetch("/api/terminal", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command, cwd }),
-    })).json();
+    const r = await toolPost("/api/terminal", { command, cwd });
     actions.push(`终端执行：${command.slice(0, 40)}`);
+    if (r.error) return JSON.stringify({ error: r.error });
     return JSON.stringify({ stdout: String(r.stdout ?? "").slice(0, 8000), stderr: String(r.stderr ?? "").slice(0, 2000), code: r.code ?? 0 });
   }
   if (name === "read_file") {
     const p = String(args.path ?? "");
-    const r = await (await fetch("/api/fs/read", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: p }),
-    })).json();
+    const r = await toolPost("/api/fs/read", { path: p });
     actions.push(`读取文件：${p}`);
     return JSON.stringify(r.error ? { error: r.error } : { path: p, content: String(r.content ?? "").slice(0, 12000) });
   }
   if (name === "write_file") {
     const p = String(args.path ?? "");
     const content = String(args.content ?? "");
-    const r = await (await fetch("/api/fs/write", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: p, content }),
-    })).json();
+    const r = await toolPost("/api/fs/write", { path: p, content });
     actions.push(`写入文件：${p}`);
     return JSON.stringify(r.error ? { error: r.error } : { ok: true, path: p });
   }
@@ -107,22 +124,16 @@ async function executeTool(
     const target = String(args.url ?? "");
     const g = guardUrl(target);
     if (!g.ok) return JSON.stringify({ error: `URL 守卫拦截：${g.reason}（须为任务给定的真实公开目标，禁止代理/内网替换）` });
-    const r = await (await fetch("/api/web/fetch", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: g.normalized }),
-    })).json();
+    const r = await toolPost("/api/web/fetch", { url: g.normalized });
     actions.push(`网页抓取：${target}`);
     return JSON.stringify(r.error ? { error: r.error } : { url: target, status: r.status, text: String(r.text ?? "").slice(0, 12000) });
   }
   if (name === "rag_search") {
     const query = String(args.query ?? "");
     const k = Number(args.k ?? 5);
-    const r = await (await fetch("/api/rag/search", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, k }),
-    })).json();
+    const r = await toolPost("/api/rag/search", { query, k });
     actions.push(`RAG 检索：${query}`);
-    return JSON.stringify({ results: r.results ?? [] });
+    return JSON.stringify(r.error ? { error: r.error } : { results: r.results ?? [] });
   }
   if (name === "create_daily_task") {
     const t = extractDailyTime(String(args.timeText ?? "") + " " + String(args.title ?? ""));
@@ -269,10 +280,11 @@ export async function runChat(opts: {
     }
     return { reply: "（达到工具调用上限，请细化问题）", actions, usage, model, mock: false };
   } catch (err) {
-    // 代理/模型不可用时的降级：规则提取 + 明确标识
+    // 真实调用中断时的降级：规则提取 + 明确标识（区分中断原因，不误报为「未连接模型」）
     const e = ruleExtract(cleanGroupMessage(opts.message), null);
+    const reason = err instanceof Error ? err.message : "proxy unavailable";
     return {
-      reply: `当前未连接真实模型（${err instanceof Error ? err.message : "proxy unavailable"}）。以下为规则提取（Mock）：\n标题：${e.title}\n类别：${e.category}\n截止：${e.deadline ?? "未识别"}\n可在「Agent 设置」配置模型供应商后启用真实对话。`,
+      reply: `真实模型调用中断（${reason}）。以下为规则提取（Mock，非真实模型）：\n标题：${e.title}\n类别：${e.category}\n截止：${e.deadline ?? "未识别"}\n排查：确认本地 llm-proxy(8787) 已启动、vite 代理含 /api、模型供应商已配置密钥。`,
       actions,
       usage,
       model: "rule-based-mock",

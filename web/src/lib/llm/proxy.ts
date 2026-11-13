@@ -79,11 +79,18 @@ export async function llmChat(opts: {
       temperature: opts.temperature,
     }),
   });
+  const text = await res.text();
   if (!res.ok) {
-    const e = await res.json().catch(() => ({}));
-    throw new Error(e.error || `LLM HTTP ${res.status}`);
+    let detail = "";
+    try { detail = JSON.parse(text).error ?? ""; } catch {}
+    throw new Error(detail || `LLM HTTP ${res.status}（${text.slice(0, 120) || "空响应"}）`);
   }
-  const data = await res.json();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`LLM 返回非 JSON（HTTP ${res.status}，${text.slice(0, 120) || "空体"}）；确认 llm-proxy 已启动且 vite 代理含 /api`);
+  }
   const msg = data.choices?.[0]?.message ?? {};
   return {
     content: msg.content ?? "",
