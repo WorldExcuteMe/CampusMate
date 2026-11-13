@@ -131,6 +131,7 @@ const server = http.createServer(async (req, res) => {
           model: payload.model || model,
           messages: payload.messages,
           temperature: payload.temperature ?? 0.2,
+          ...(payload.tools ? { tools: payload.tools, tool_choice: payload.tool_choice ?? "auto" } : {}),
           ...(payload.responseFormat ? { response_format: payload.responseFormat } : {}),
         }),
       });

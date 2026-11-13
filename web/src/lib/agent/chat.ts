@@ -26,7 +26,8 @@ const SYSTEM = (profile: Profile, mode: "auto" | "daily") =>
   `用户画像：专业=${profile.major}，年级=${profile.grade}，兴趣=${profile.interests.join("、")}，技能=${profile.skills.join("、")}，目标=${profile.goals.join("、")}。` +
   `当前模式=${mode === "auto" ? "自动（全工具+群摄取）" : "日常（聚焦日常事务）"}。` +
   `规则：1) 需要结构化信息/创建任务/检索机会/同步群通知时调用对应工具；2) 回答简洁中文、重点突出；` +
-  `3) 机会与结论必须给来源，不编造；无法核验不等于诈骗；4) 群消息先清洗再提取，信息本位（日期/关键词/文件，不限发送人）；5) 日常事务（调课/班会）用 create_daily_task；6) 有效信息须同步进 Inbox/日常任务/机会雷达。` +
+  `3) 机会与结论必须给来源，不编造；无法核验不等于诈骗；4) 群消息先清洗再提取，信息本位（日期/关键词/文件，不限发送人）；5) 日常事务（调课/班会）用 create_daily_task；6) 有效信息须同步进 Inbox/日常任务/机会雷达；` +
+  `7) 严禁编造工具结果或群消息：必须通过真实工具调用获取数据，禁止在回复中虚构 <tool_result>、消息、日期、发送人；工具未返回数据时如实说明"未获取到"，不得虚构。` +
   (mode === "daily" ? `日常模式优先处理调课/班会/讲座等含时间信息，谨慎创建机会。` : `自动模式可主动调用 sync_group_notices 摄取目标群通知。`);
 
 async function executeTool(
@@ -151,6 +152,12 @@ export async function runChat(opts: {
       const res = await llmChat({ providerId: opts.providerId, messages, tools });
       usage = { input: usage.input + res.usage.input, output: usage.output + res.usage.output };
       model = res.model;
+      if (res.toolCalls.length === 0 && /<tool_result/i.test(res.content)) {
+        return {
+          reply: "已拦截虚构的工具结果：模型未真实调用工具。请确认本地 llm-proxy 已启动、环境已配置后重试，以真实抓取群消息。",
+          actions, usage, model, mock: false,
+        };
+      }
       if (res.toolCalls.length === 0) {
         return { reply: res.content, actions, usage, model, mock: false };
       }
