@@ -5,6 +5,8 @@ import type { TaskStore } from "../runtime/store.ts";
 import type { ApprovalStore } from "../runtime/approval.ts";
 import type { CapabilityRegistry } from "../core/capability.ts";
 import type { CompanionRegistry } from "../core/companion.ts";
+import type { PersonalContextStore } from "../core/personal-context.ts";
+import { previewImport } from "../core/schedule-import.ts";
 import { buildManifest } from "../core/manifest.ts";
 import { DEFAULT_BUDGET } from "../core/types.ts";
 import { verifySupabaseJwt, bearerToken } from "./jwt.ts";
@@ -19,6 +21,7 @@ export interface ApiDeps {
   approvals?: ApprovalStore;
   capabilityRegistry?: CapabilityRegistry;
   companion?: CompanionRegistry;
+  personalContext?: PersonalContextStore;
 }
 
 function json(res: http.ServerResponse, code: number, obj: unknown): void {
@@ -107,6 +110,30 @@ export function createApiServer(deps: ApiDeps): http.Server {
           if (!["needs_input", "paused", "failed"].includes(task.status)) return json(res, 409, { error: `cannot resume from ${task.status}` });
           const t = await store.updateTask(id, { status: "queued" });
           return json(res, 200, { task: t });
+        }
+      }
+
+      // 个人上下文：学期 / 课表 / 导入（owner 隔离）
+      if (deps.personalContext) {
+        const pc = deps.personalContext;
+        if (req.method === "GET" && path === "/v1/terms") return json(res, 200, { terms: await pc.listTerms(uid) });
+        if (req.method === "POST" && path === "/v1/terms") {
+          const b = JSON.parse((await readBody(req)) || "{}");
+          const term = await pc.createTerm({ userId: uid, institutionId: b.institutionId ?? "", name: b.name ?? "学期", startDate: b.startDate, endDate: b.endDate, totalWeeks: b.totalWeeks ?? 20, timezone: b.timezone ?? "Asia/Shanghai" });
+          return json(res, 201, { term });
+        }
+        if (req.method === "GET" && path === "/v1/schedules") {
+          const termId = url.searchParams.get("termId") ?? "";
+          return json(res, 200, { schedules: await pc.listSchedules(uid, termId), exceptions: await pc.listExceptions(uid, termId) });
+        }
+        if (req.method === "POST" && path === "/v1/schedules/import") {
+          const b = JSON.parse((await readBody(req)) || "{}");
+          const preview = previewImport(b.format ?? "csv", b.data ?? "", b.termStart ?? "2026-09-01", b.totalWeeks ?? 20);
+          if (b.confirm && b.termId) {
+            const saved = await pc.saveSchedules(uid, b.termId, preview.schedules.map((s) => ({ ...s, courseId: "" })));
+            return json(res, 200, { confirmed: true, saved: saved.length, preview });
+          }
+          return json(res, 200, { confirmed: false, preview });
         }
       }
 

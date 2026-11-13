@@ -9,7 +9,7 @@ try { ctx = buildContext(env); }
 catch (e) { console.error(`[api] 启动失败：${e instanceof Error ? e.message : String(e)}`); process.exit(1); }
 
 const port = Number(env.PORT ?? 8788);
-const server = createApiServer({ store: ctx.store, jwtSecret: env.SUPABASE_JWT_SECRET ?? "", storeKind: ctx.storeKind, approvals: ctx.approvals, capabilityRegistry: ctx.capabilityRegistry, companion: ctx.companion });
+const server = createApiServer({ store: ctx.store, jwtSecret: env.SUPABASE_JWT_SECRET ?? "", storeKind: ctx.storeKind, approvals: ctx.approvals, capabilityRegistry: ctx.capabilityRegistry, companion: ctx.companion, personalContext: ctx.personalContext });
 
 const companionTokens: Record<string, { userId: string; capabilities: string[]; grantedScopes: Record<string, unknown> }> = (() => { try { return JSON.parse(env.COMPANION_TOKENS ?? "{}"); } catch { return {}; } })();
 new CompanionServer(server, {

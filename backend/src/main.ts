@@ -10,6 +10,7 @@ import { CompanionRegistry } from "./core/companion.ts";
 import { InMemoryEvidenceStore } from "./core/evidence.ts";
 import { CapabilityRegistry, registerCloudDefaults } from "./core/capability.ts";
 import { InMemoryMemoryStore } from "./core/memory.ts";
+import { InMemoryPersonalContextStore } from "./core/personal-context.ts";
 import { CompanionServer } from "./core/companion-server.ts";
 import { Worker } from "./runtime/worker.ts";
 import { transportFromEnv } from "./core/llm.ts";
@@ -24,10 +25,11 @@ const evidenceStore = new InMemoryEvidenceStore();
 const capabilityRegistry = new CapabilityRegistry();
 registerCloudDefaults(capabilityRegistry);
 const memoryStore = new InMemoryMemoryStore();
+const ctxPersonal = new InMemoryPersonalContextStore();
 const storeKind = conn ? "postgres" : "memory";
 const port = Number(env.PORT ?? 8788);
 
-const server = createApiServer({ store, jwtSecret: env.SUPABASE_JWT_SECRET ?? "", storeKind, approvals, capabilityRegistry, companion });
+const server = createApiServer({ store, jwtSecret: env.SUPABASE_JWT_SECRET ?? "", storeKind, approvals, capabilityRegistry, companion, personalContext: ctxPersonal });
 // Companion 出站 WSS：设备令牌经 COMPANION_TOKENS（JSON: {token:{userId,capabilities,grantedScopes}}）授权。
 const companionTokens: Record<string, { userId: string; capabilities: string[]; grantedScopes: Record<string, unknown> }> = (() => { try { return JSON.parse(env.COMPANION_TOKENS ?? "{}"); } catch { return {}; } })();
 const companionServer = new CompanionServer(server, {

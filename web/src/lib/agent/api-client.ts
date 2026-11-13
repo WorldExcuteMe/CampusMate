@@ -54,6 +54,20 @@ export async function resumeTask(id: string): Promise<AgentTask> {
   return (await req<{ task: AgentTask }>(`/v1/tasks/${id}/resume`, { method: "POST" })).task;
 }
 
+// ── 个人上下文：学期 / 课表 ──
+export interface Term { id: string; name: string; startDate: string; endDate: string; totalWeeks: number; timezone: string; }
+export interface ScheduleRow { id: string; courseName: string; weekday: number; startTime: string; endTime: string; startWeek: number; endWeek: number; weekPattern: "every" | "odd" | "even"; classroom?: string; }
+
+export async function listTerms(): Promise<Term[]> {
+  return (await req<{ terms: Term[] }>("/v1/terms")).terms;
+}
+export async function listSchedules(termId: string): Promise<{ schedules: ScheduleRow[]; exceptions: unknown[] }> {
+  return req(`/v1/schedules?termId=${encodeURIComponent(termId)}`);
+}
+export async function importSchedule(input: { format: string; data: string; termStart: string; totalWeeks: number; termId?: string; confirm?: boolean }): Promise<{ confirmed: boolean; preview: { schedules: ScheduleRow[]; errors: string[]; duplicates: number }; saved?: number }> {
+  return req("/v1/schedules/import", { method: "POST", body: JSON.stringify(input) });
+}
+
 export interface TaskSubscription { stop: () => void; }
 
 // 订阅任务进度：优先 SSE，失败回退轮询。终态自动停止。

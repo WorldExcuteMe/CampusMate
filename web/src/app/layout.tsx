@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import {
-  LayoutDashboard, Inbox, Radar, ShieldCheck, Sprout, Bot, CalendarClock,
+  LayoutDashboard, Inbox, Radar, ShieldCheck, Sprout, Bot, CalendarClock, CalendarDays,
   ChevronDown, ChevronRight, MessageSquare, Plus, Trash2, Archive, ArchiveRestore, Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -10,11 +10,12 @@ import { useSessions } from "@/lib/agent/sessions-context";
 import { UserChip, BrandMark } from "@/components/UserChip";
 
 const NAV = [
-  { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true },
-  { to: "/app/agent", label: "会话", icon: Bot },
-  { to: "/app/inbox", label: "Inbox", icon: Inbox },
-  { to: "/app/daily", label: "日常任务", icon: CalendarClock },
-  { to: "/app/radar", label: "机会雷达", icon: Radar },
+  { to: "/app", label: "Today", icon: LayoutDashboard, end: true },
+  { to: "/app/agent", label: "智能体工作台", icon: Bot },
+  { to: "/app/inbox", label: "信息中心", icon: Inbox },
+  { to: "/app/calendar", label: "校园日历", icon: CalendarDays },
+  { to: "/app/daily", label: "任务与目标", icon: CalendarClock },
+  { to: "/app/radar", label: "机会中心", icon: Radar },
   { to: "/app/trust", label: "可信核验", icon: ShieldCheck },
   { to: "/app/growth", label: "成长中心", icon: Sprout },
 ];
