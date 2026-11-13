@@ -220,6 +220,9 @@ function parseJsonTool(content: string): { name: string; args: Record<string, un
   return null;
 }
 
+// 工具循环轮次上限：多工具（发现/同步/合并/RAG）需更多轮；上下文有 trimToBudget 保底不会爆窗。
+const MAX_TOOL_ROUNDS = 12;
+
 export async function runChat(opts: {
   message: string;
   history: ChatMessage[];
@@ -271,7 +274,7 @@ export async function runChat(opts: {
   let usage = { input: 0, output: 0 };
   let model = "unknown";
   try {
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
       const res = await llmChat({ providerId: opts.providerId, messages, tools, reasoning: DEFAULT_REASONING });
       usage = { input: usage.input + res.usage.input, output: usage.output + res.usage.output };
       model = res.model;
@@ -308,7 +311,16 @@ export async function runChat(opts: {
       }
       return { reply: res.content, actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed };
     }
-    return { reply: "（达到工具调用上限，请细化问题）", actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed };
+    // 工具预算用尽：强制一次无工具最终总结，保证有可用产出（不再返回"请细化问题"）
+    messages.push({ role: "user", content: "工具调用预算已用尽。请基于以上已获取的工具结果，直接给出最终中文总结（含来源/截止/已合并/过期说明），不要再调用任何工具。" });
+    const trimmedFin = trimToBudget(messages, cap, tTools);
+    messages = trimmedFin.messages;
+    compressed = compressed || trimmedFin.compressed;
+    const fin = await llmChat({ providerId: opts.providerId, messages, reasoning: DEFAULT_REASONING });
+    usage = { input: usage.input + fin.usage.input, output: usage.output + fin.usage.output };
+    const actionsSummary = actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}` : "（未获取到有效结果）";
+    const finalText = fin.content && !parseJsonTool(fin.content) ? fin.content : actionsSummary;
+    return { reply: finalText, actions, usage, model: fin.model || model, mock: false, contextUsed, contextCap: cap, compressed };
   } catch (err) {
     // 真实调用中断时的降级：规则提取 + 明确标识（区分中断原因，不误报为「未连接模型」）
     const e = ruleExtract(cleanGroupMessage(opts.message), null);
