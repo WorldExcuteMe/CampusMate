@@ -47,10 +47,20 @@ export async function fetchGroups(): Promise<GroupInfo[]> {
 export async function fetchGroupNotices(group: string): Promise<GroupRecord[]> {
   const isUin = /^\d{6,}$/.test(group.trim());
   const qs = isUin ? `uin=${encodeURIComponent(group.trim())}` : `name=${encodeURIComponent(group)}`;
-  const res = await fetch(`/api/ingest/qq?${qs}`);
-  if (!res.ok) throw new Error(`群摄取失败 HTTP ${res.status}`);
-  const data = await res.json();
-  return data.records ?? [];
+  // 工具执行重试（DSH tool-executor 理念）：代理瞬断/重启时退避重试一次
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(`/api/ingest/qq?${qs}`);
+      if (!res.ok) throw new Error(`群摄取失败 HTTP ${res.status}`);
+      const data = await res.json();
+      return data.records ?? [];
+    } catch (e) {
+      lastErr = e;
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("群摄取失败");
 }
 
 export async function fetchWechatNotices(name: string): Promise<GroupRecord[]> {

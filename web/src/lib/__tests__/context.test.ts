@@ -58,7 +58,7 @@ describe("context: 组装与压缩", () => {
     expect(c.messages.length).toBe(history.length + 2);
   });
 
-  it("工具结果截断 + 超预算丢弃最旧轮次", () => {
+  it("工具结果裁剪≠历史压缩：大 cap 保留最新工具结果完整且不标压缩", () => {
     const msgs: ChatMessage[] = [
       { role: "system", content: "sys" },
       { role: "user", content: "old" },
@@ -66,11 +66,36 @@ describe("context: 组装与压缩", () => {
       { role: "tool", content: "x".repeat(20000), tool_call_id: "t1" },
       { role: "user", content: "new" },
     ];
-    const r = trimToBudget(msgs, 3000, 0);
-    expect(r.compressed).toBe(true);
-    expect(messagesTokens(r.messages)).toBeLessThanOrEqual(3000);
+    const r = trimToBudget(msgs, 200000, 0);
+    expect(r.compressed).toBe(false);
     const tool = r.messages.find((m) => m.role === "tool");
-    if (tool) expect((tool.content ?? "").length).toBeLessThan(20000);
+    expect((tool?.content ?? "").length).toBe(20000);
+  });
+
+  it("超预算丢弃最旧轮次才标压缩，且占用不超 cap", () => {
+    const msgs: ChatMessage[] = [
+      { role: "system", content: "sys" },
+      ...Array.from({ length: 30 }, (_, i) => ({
+        role: i % 2 ? "assistant" : "user",
+        content: `轮${i} ` + "内容".repeat(200),
+      } as ChatMessage)),
+      { role: "tool", content: "x".repeat(20000), tool_call_id: "t1" },
+      { role: "user", content: "new" },
+    ];
+    const r = trimToBudget(msgs, 20000, 0);
+    expect(r.compressed).toBe(true);
+    expect(messagesTokens(r.messages)).toBeLessThanOrEqual(20000);
     expect(r.messages[r.messages.length - 1].content).toBe("new");
+  });
+
+  it("单条超大最新工具结果超预算时兜底裁剪（仍不标历史压缩）", () => {
+    const msgs: ChatMessage[] = [
+      { role: "system", content: "sys" },
+      { role: "tool", content: "x".repeat(60000), tool_call_id: "t1" },
+      { role: "user", content: "new" },
+    ];
+    const r = trimToBudget(msgs, 20000, 0);
+    expect(messagesTokens(r.messages)).toBeLessThanOrEqual(20000);
+    expect(r.compressed).toBe(false);
   });
 });

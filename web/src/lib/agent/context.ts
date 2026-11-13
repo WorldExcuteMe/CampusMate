@@ -17,7 +17,7 @@ export const DEFAULT_MAX_CONTEXT = 128_000;
 // 默认工作上限（200K 量级）；实际取 min(工作上限, 模型上限)，可被 override 覆盖。
 export const WORKING_CAP = 200_000;
 export const RESERVE_OUTPUT = 8_000;
-export const TOOL_RESULT_CAP = 6_000;
+export const TOOL_RESULT_CAP = 12_000;
 
 export function modelMaxContext(model?: string): number {
   if (!model) return DEFAULT_MAX_CONTEXT;
@@ -129,7 +129,8 @@ export function composeContext(opts: {
   };
 }
 
-// 工具循环内再裁剪：截断工具结果 + 丢弃最旧非 system 轮次，保证不超预算。
+// 工具循环内再裁剪。DSH 理念：工具结果裁剪(tool-result-pruner)与历史压缩(compaction)分离——
+// 仅裁剪较旧工具结果、保留最新工具结果完整；裁剪不算"历史压缩"，只有丢弃历史轮次才置 compressed。
 export function trimToBudget(
   messages: ChatMessage[],
   cap: number,
@@ -137,13 +138,21 @@ export function trimToBudget(
   reserveOutput = RESERVE_OUTPUT,
   trCap = TOOL_RESULT_CAP,
 ): { messages: ChatMessage[]; compressed: boolean } {
-  let msgs = messages.map((m) => truncateTool(m, trCap));
-  let compressed = messages.some((m, i) => m !== msgs[i]);
+  let lastToolIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "tool") { lastToolIdx = i; break; }
+  }
+  let msgs = messages.map((m, i) => (m.role === "tool" && i !== lastToolIdx ? truncateTool(m, trCap) : m));
+  let compressed = false;
   const budget = cap - reserveOutput - tTools;
   const head = msgs.findIndex((m) => m.role !== "system");
   while (messagesTokens(msgs) > budget && msgs.length > head + 2) {
     msgs = [...msgs.slice(0, head), ...msgs.slice(head + 1)];
     compressed = true;
+  }
+  // 兜底：单条超大最新工具结果仍超预算时裁剪（工具裁剪，非历史压缩）
+  if (messagesTokens(msgs) > budget) {
+    msgs = msgs.map((m) => truncateTool(m, trCap));
   }
   return { messages: msgs, compressed };
 }
