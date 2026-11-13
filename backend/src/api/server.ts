@@ -7,6 +7,7 @@ import type { CapabilityRegistry } from "../core/capability.ts";
 import type { CompanionRegistry } from "../core/companion.ts";
 import type { PersonalContextStore } from "../core/personal-context.ts";
 import { previewImport } from "../core/schedule-import.ts";
+import { onboarding, intelligentInbox, opportunityDiscovery, weeklyPlanning } from "../core/workflows.ts";
 import { buildManifest } from "../core/manifest.ts";
 import { DEFAULT_BUDGET } from "../core/types.ts";
 import { verifySupabaseJwt, bearerToken } from "./jwt.ts";
@@ -135,6 +136,17 @@ export function createApiServer(deps: ApiDeps): http.Server {
           }
           return json(res, 200, { confirmed: false, preview });
         }
+      }
+
+      // 个性化工作流（owner 隔离）
+      if (deps.personalContext && req.method === "POST" && path.startsWith("/v1/workflows/")) {
+        const b = JSON.parse((await readBody(req)) || "{}");
+        const wf = path.slice("/v1/workflows/".length);
+        if (wf === "onboarding") return json(res, 200, await onboarding(deps.personalContext, { ...b, userId: uid }));
+        if (wf === "inbox") return json(res, 200, intelligentInbox({ ...b, userId: uid }));
+        if (wf === "opportunities") return json(res, 200, opportunityDiscovery(b));
+        if (wf === "weekly-plan") return json(res, 200, weeklyPlanning({ ...b, userId: uid }));
+        return json(res, 404, { error: `unknown workflow ${wf}` });
       }
 
       // 能力 Manifest（owner）：当前用户可用能力 + 健康。
