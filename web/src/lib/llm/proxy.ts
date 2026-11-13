@@ -61,6 +61,23 @@ export interface ChatResult {
   model: string;
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+function parseChat(text: string, status: number): ChatResult {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`LLM 返回非 JSON（HTTP ${status}，${text.slice(0, 120) || "空体"}）；确认 llm-proxy 已启动且 vite 代理含 /api`);
+  }
+  const msg = data.choices?.[0]?.message ?? {};
+  return {
+    content: msg.content ?? "",
+    toolCalls: msg.tool_calls ?? [],
+    usage: { input: data.usage?.prompt_tokens ?? 0, output: data.usage?.completion_tokens ?? 0 },
+    model: data.model ?? "unknown",
+  };
+}
+
 export async function llmChat(opts: {
   providerId?: string;
   messages: ChatMessage[];
@@ -69,40 +86,45 @@ export async function llmChat(opts: {
   temperature?: number;
   reasoning?: string;
 }): Promise<ChatResult> {
-  const res = await fetch("/api/llm", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      providerId: opts.providerId,
-      messages: opts.messages,
-      tools: opts.tools,
-      responseFormat: opts.responseFormat,
-      temperature: opts.temperature,
-      reasoning: opts.reasoning,
-    }),
+  const body = JSON.stringify({
+    providerId: opts.providerId,
+    messages: opts.messages,
+    tools: opts.tools,
+    responseFormat: opts.responseFormat,
+    temperature: opts.temperature,
+    reasoning: opts.reasoning,
   });
-  const text = await res.text();
-  if (!res.ok) {
-    let detail = "";
-    try { detail = JSON.parse(text).error ?? ""; } catch {}
-    throw new Error(detail || `LLM HTTP ${res.status}（${text.slice(0, 120) || "空响应"}）`);
+  const headers = { "Content-Type": "application/json" };
+  const edge = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_LLM_EDGE_URL;
+  let lastErr: unknown = null;
+  // 本地代理瞬断/被回收时退避重试（根因修复：避免一次瞬断整轮降级 Mock）
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch("/api/llm", { method: "POST", headers, body });
+      const text = await res.text();
+      if (!res.ok) {
+        if ([502, 503, 504].includes(res.status) && attempt < 2) { await sleep(800 * 2 ** attempt); continue; }
+        let detail = "";
+        try { detail = JSON.parse(text).error ?? ""; } catch {}
+        throw new Error(detail || `LLM HTTP ${res.status}（${text.slice(0, 120) || "空响应"}）`);
+      }
+      return parseChat(text, res.status);
+    } catch (e) {
+      lastErr = e;
+      const network = e instanceof TypeError || (e instanceof Error && e.name === "AbortError");
+      if (network && attempt < 2) { await sleep(800 * 2 ** attempt); continue; }
+      break;
+    }
   }
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(`LLM 返回非 JSON（HTTP ${res.status}，${text.slice(0, 120) || "空体"}）；确认 llm-proxy 已启动且 vite 代理含 /api`);
+  // 部署态（无本地代理）回退到配置的 Supabase Edge LLM 端点（真实配置 URL，非替换）
+  if (edge) {
+    try {
+      const res = await fetch(edge, { method: "POST", headers, body });
+      const text = await res.text();
+      if (res.ok) return parseChat(text, res.status);
+    } catch { /* fall through to throw */ }
   }
-  const msg = data.choices?.[0]?.message ?? {};
-  return {
-    content: msg.content ?? "",
-    toolCalls: msg.tool_calls ?? [],
-    usage: {
-      input: data.usage?.prompt_tokens ?? 0,
-      output: data.usage?.completion_tokens ?? 0,
-    },
-    model: data.model ?? "unknown",
-  };
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 const EXTRACT_SYSTEM =

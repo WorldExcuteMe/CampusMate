@@ -363,7 +363,7 @@ export async function runChat(opts: {
   } catch (err) {
     // 真实调用中断时的降级：规则提取 + 明确标识（区分中断原因，不误报为「未连接模型」）
     const e = ruleExtract(cleanGroupMessage(opts.message), null);
-    const reason = err instanceof Error ? err.message : "proxy unavailable";
+    const reason = err instanceof Error ? err.message : String(err);
     return {
       reply: `真实模型调用中断（${reason}）。以下为规则提取（Mock，非真实模型）：\n标题：${e.title}\n类别：${e.category}\n截止：${e.deadline ?? "未识别"}\n排查：确认本地 llm-proxy(8787) 已启动、vite 代理含 /api、模型供应商已配置密钥。`,
       actions,
