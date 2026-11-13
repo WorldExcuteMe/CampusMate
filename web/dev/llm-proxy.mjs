@@ -133,8 +133,11 @@ const server = http.createServer(async (req, res) => {
       key = p.apiKey; baseUrl = p.baseUrl; model = p.model || model;
     }
     if (!key) return json(res, 503, { error: "LLM_API_KEY not configured (server-side)" });
-    try {
-      const upstream = await fetch(`${baseUrl}/chat/completions`, {
+    const retryable = new Set([429, 500, 502, 503, 504]);
+    let lastErr = null;
+    for (let attempt = 0; attempt <= 3; attempt++) {
+      try {
+        const upstream = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
         body: JSON.stringify({
@@ -146,11 +149,24 @@ const server = http.createServer(async (req, res) => {
           ...(payload.responseFormat ? { response_format: payload.responseFormat } : {}),
         }),
       });
-      const data = await upstream.json();
-      return json(res, upstream.status, data);
-    } catch (err) {
-      return json(res, 502, { error: String(err) });
+        if (retryable.has(upstream.status) && attempt < 3) {
+          const ra = Number(upstream.headers.get("retry-after")) || 0;
+          const delay = Math.min(10000, Math.max(ra * 1000, 500 * 2 ** attempt)) * (1 + Math.random() * 0.1);
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+        const data = await upstream.json();
+        return json(res, upstream.status, data);
+      } catch (err) {
+        lastErr = err;
+        if (attempt < 3) {
+          const delay = Math.min(10000, 500 * 2 ** attempt) * (1 + Math.random() * 0.1);
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+      }
     }
+    return json(res, 502, { error: String(lastErr) });
   }
   // 普适群发现：枚举本机所有群（uin/总数/信息密度/样例），供 agent 自动定位通知群
   if (req.method === "GET" && url.split("?")[0] === "/api/ingest/qq/groups") {

@@ -18,6 +18,16 @@ export const DEFAULT_MAX_CONTEXT = 128_000;
 export const WORKING_CAP = 200_000;
 export const RESERVE_OUTPUT = 8_000;
 export const TOOL_RESULT_CAP = 12_000;
+// DSH compaction-basic 阈值公式：threshold=min(窗口*0.8, 窗口-输出预留-headroom)；保留尾部16%。
+export const HEADROOM_TOKENS = 65_536;
+export const SPILL_HEAD_CHARS = 4096;
+export const SPILL_TAIL_CHARS = 1024;
+export function compactionThreshold(cap: number, reserveOutput = RESERVE_OUTPUT): number {
+  return Math.floor(Math.min(cap * 0.8, cap - reserveOutput - HEADROOM_TOKENS));
+}
+export function retainTokens(cap: number, reserveOutput = RESERVE_OUTPUT): number {
+  return Math.floor((cap - reserveOutput) * 0.16);
+}
 
 export function modelMaxContext(model?: string): number {
   if (!model) return DEFAULT_MAX_CONTEXT;
@@ -50,9 +60,13 @@ export function toolsTokens(tools?: ToolDef[]): number {
   return tools ? estimateTokens(JSON.stringify(tools)) : 0;
 }
 
+// 执行期截断（DSH spill-policy）：保留 head+tail，中间留省略量+取回提示；不视为历史压缩。
 function truncateTool(m: ChatMessage, cap: number): ChatMessage {
-  if (m.role === "tool" && (m.content?.length ?? 0) > cap) {
-    return { ...m, content: (m.content ?? "").slice(0, cap) + "…[工具结果截断]" };
+  const content = m.content ?? "";
+  if (m.role === "tool" && content.length > cap) {
+    const omitted = content.length - SPILL_HEAD_CHARS - SPILL_TAIL_CHARS;
+    const notice = `\n[... 省略 ${omitted} 字符；完整输出可用 rag_search / read_file 取回 ...]\n`;
+    return { ...m, content: content.slice(0, SPILL_HEAD_CHARS) + notice + content.slice(-SPILL_TAIL_CHARS) };
   }
   return m;
 }
@@ -137,22 +151,30 @@ export function trimToBudget(
   tTools: number,
   reserveOutput = RESERVE_OUTPUT,
   trCap = TOOL_RESULT_CAP,
-): { messages: ChatMessage[]; compressed: boolean } {
+): { messages: ChatMessage[]; compressed: boolean; pruned: boolean } {
   let lastToolIdx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === "tool") { lastToolIdx = i; break; }
   }
   let msgs = messages.map((m, i) => (m.role === "tool" && i !== lastToolIdx ? truncateTool(m, trCap) : m));
+  let pruned = msgs.some((m, i) => m !== messages[i]);
   let compressed = false;
   const budget = cap - reserveOutput - tTools;
+  const threshold = compactionThreshold(cap, reserveOutput);
+  const retain = retainTokens(cap, reserveOutput);
   const head = msgs.findIndex((m) => m.role !== "system");
-  while (messagesTokens(msgs) > budget && msgs.length > head + 2) {
-    msgs = [...msgs.slice(0, head), ...msgs.slice(head + 1)];
-    compressed = true;
+  // 历史压缩仅在超阈值时触发；丢弃最旧轮次但保留尾部 retain（不切断调用-结果对由 head 起整轮丢弃保证）
+  if (messagesTokens(msgs) > threshold) {
+    while (messagesTokens(msgs) > Math.max(retain, budget - tTools) && msgs.length > head + 2) {
+      msgs = [...msgs.slice(0, head), ...msgs.slice(head + 1)];
+      compressed = true;
+    }
   }
   // 兜底：单条超大最新工具结果仍超预算时裁剪（工具裁剪，非历史压缩）
   if (messagesTokens(msgs) > budget) {
+    const before = msgs;
     msgs = msgs.map((m) => truncateTool(m, trCap));
+    pruned = pruned || msgs.some((m, i) => m !== before[i]);
   }
-  return { messages: msgs, compressed };
+  return { messages: msgs, compressed, pruned };
 }

@@ -93,6 +93,7 @@ export function AgentChatPage() {
       contextUsed: out.contextUsed ?? s.contextUsed ?? 0,
       contextCap: out.contextCap ?? contextCap,
       compressed: out.compressed ?? false,
+      pruned: out.pruned ?? false,
       messages: [...s.messages, { role: "assistant", content: out.reply, actions: out.actions, mock: out.mock }],
     }));
     setBusy(false);
@@ -290,6 +291,9 @@ export function AgentChatPage() {
               上下文 {(active?.contextUsed ?? 0).toLocaleString()} / {contextCap.toLocaleString()} tok
               {active?.compressed && (
                 <span className="ml-1 rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">已压缩</span>
+              )}
+              {active?.pruned && !active?.compressed && (
+                <span className="ml-1 rounded bg-info/15 px-1 py-0.5 text-info">工具截断</span>
               )}
             </span>
             <Button size="sm" className="ml-auto" disabled={busy || (!input.trim() && attachments.length === 0)} onClick={send}>

@@ -21,6 +21,7 @@ export interface ChatOutcome {
   contextUsed?: number;
   contextCap?: number;
   compressed?: boolean;
+  pruned?: boolean;
 }
 
 // 意图自判：仅当用户提示词涉及 QQ/微信/群信息抓取时才走摄取 workflow 与环境配置。
@@ -45,18 +46,24 @@ const SYSTEM = (profile: Profile, mode: "auto" | "daily") =>
 
 // 工具端点安全调用：非 OK/空体/非 JSON 一律返回可读 error，绝不抛异常冒泡成「未连接模型」降级。
 async function toolPost(url: string, body: unknown): Promise<Record<string, unknown>> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60_000);
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: ctrl.signal,
     });
+    clearTimeout(timer);
     const text = await res.text();
     if (!res.ok) return { error: `工具端点 ${url} HTTP ${res.status}：${text.slice(0, 200) || "空响应"}（确认 llm-proxy 已启动且 vite 代理含 /api）` };
     try { return JSON.parse(text) as Record<string, unknown>; }
     catch { return { error: `工具端点 ${url} 返回非 JSON（${text.slice(0, 120) || "空体"}）` }; }
   } catch (e) {
-    return { error: `工具端点 ${url} 请求失败：${e instanceof Error ? e.message : String(e)}` };
+    clearTimeout(timer);
+    const msg = e instanceof Error && e.name === "AbortError" ? "TOOL_TIMEOUT（60s 超时）" : e instanceof Error ? e.message : String(e);
+    return { error: `工具端点 ${url} 请求失败：${msg}` };
   }
 }
 
@@ -227,6 +234,24 @@ function parseJsonTool(content: string): { name: string; args: Record<string, un
   return null;
 }
 
+// DSH repeat-tool-reminder：canonical 参数链计数，阈值3/5/8注入提醒（只 enrich 不 veto），防死循环重试。
+function canonicalKey(name: string, args: Record<string, unknown>): string {
+  const sort = (v: unknown): unknown =>
+    Array.isArray(v) ? v.map(sort)
+    : v && typeof v === "object"
+      ? Object.keys(v as object).sort().reduce((o, k) => { o[k] = sort((v as Record<string, unknown>)[k]); return o; }, {} as Record<string, unknown>)
+      : v;
+  return name + ":" + JSON.stringify(sort(args));
+}
+function noteRepeat(repeat: Map<string, number>, name: string, args: Record<string, unknown>, messages: ChatMessage[]): void {
+  const key = canonicalKey(name, args);
+  const n = (repeat.get(key) ?? 0) + 1;
+  repeat.set(key, n);
+  if (n === 3 || n === 5 || n === 8) {
+    messages.push({ role: "user", content: `[系统提醒] 工具 ${name} 已用相同参数调用 ${n} 次。若结果未变请停止重复重试：改用不同参数/来源，或基于已有结果直接总结；查不到不等于不存在，如实说明。` });
+  }
+}
+
 // 工具循环轮次上限：多工具（发现/同步/合并/RAG）需更多轮；上下文有 trimToBudget 保底不会爆窗。
 const MAX_TOOL_ROUNDS = 20;
 
@@ -280,6 +305,8 @@ export async function runChat(opts: {
   });
   let messages: ChatMessage[] = composed.messages;
   let compressed = composed.compressed;
+  let pruned = false;
+  const repeat = new Map<string, number>();
   let contextUsed = composed.usedTokens;
   let usage = { input: 0, output: 0 };
   let model = "unknown";
@@ -295,17 +322,18 @@ export async function runChat(opts: {
           try { args = JSON.parse(call.function.arguments || "{}"); } catch {}
           const out = await executeTool(call.function.name, args, opts.repository, opts.profile, actions, scope);
           messages.push({ role: "tool", content: out, tool_call_id: call.id });
+          noteRepeat(repeat, call.function.name, args, messages);
         }
         const trimmed = trimToBudget(messages, cap, tTools);
         messages = trimmed.messages;
-        compressed = compressed || trimmed.compressed;
+        compressed = compressed || trimmed.compressed; pruned = pruned || trimmed.pruned;
         contextUsed = messagesTokens(messages) + tTools;
         continue;
       }
       if (/<tool_result/i.test(res.content)) {
         return {
           reply: "已拦截虚构的工具结果：模型未真实调用工具。请确认本地 llm-proxy 已启动、环境已配置后重试，以真实抓取群消息。",
-          actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed,
+          actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed, pruned,
         };
       }
       const jt = parseJsonTool(res.content);
@@ -313,24 +341,25 @@ export async function runChat(opts: {
         messages.push({ role: "assistant", content: res.content });
         const out = await executeTool(jt.name, jt.args, opts.repository, opts.profile, actions, scope);
         messages.push({ role: "user", content: `工具 ${jt.name} 返回：${out}` });
+        noteRepeat(repeat, jt.name, jt.args, messages);
         const trimmed = trimToBudget(messages, cap, tTools);
         messages = trimmed.messages;
-        compressed = compressed || trimmed.compressed;
+        compressed = compressed || trimmed.compressed; pruned = pruned || trimmed.pruned;
         contextUsed = messagesTokens(messages) + tTools;
         continue;
       }
-      return { reply: res.content, actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed };
+      return { reply: res.content, actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed, pruned };
     }
     // 工具预算用尽：强制一次无工具最终总结，保证有可用产出（不再返回"请细化问题"）
     messages.push({ role: "user", content: "工具调用预算已用尽。请基于以上已获取的工具结果，直接给出最终中文总结（含来源/截止/已合并/过期说明），不要再调用任何工具。" });
     const trimmedFin = trimToBudget(messages, cap, tTools);
     messages = trimmedFin.messages;
-    compressed = compressed || trimmedFin.compressed;
+    compressed = compressed || trimmedFin.compressed; pruned = pruned || trimmedFin.pruned;
     const fin = await llmChat({ providerId: opts.providerId, messages, reasoning: DEFAULT_REASONING });
     usage = { input: usage.input + fin.usage.input, output: usage.output + fin.usage.output };
     const actionsSummary = actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}` : "（未获取到有效结果）";
     const finalText = fin.content && !parseJsonTool(fin.content) ? fin.content : actionsSummary;
-    return { reply: finalText, actions, usage, model: fin.model || model, mock: false, contextUsed, contextCap: cap, compressed };
+    return { reply: finalText, actions, usage, model: fin.model || model, mock: false, contextUsed, contextCap: cap, compressed, pruned };
   } catch (err) {
     // 真实调用中断时的降级：规则提取 + 明确标识（区分中断原因，不误报为「未连接模型」）
     const e = ruleExtract(cleanGroupMessage(opts.message), null);
