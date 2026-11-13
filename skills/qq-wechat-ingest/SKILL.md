@@ -26,9 +26,11 @@ description: 从本地已登录 QQ/微信通知群摄取信息（信息本位：
    - 其余通知 → `createInbox(pending_review)`；
    - `dedupKey` 去重；同步后 Dashboard/Inbox/日常/雷达自动更新。
 
-## 微信（待实现，适配器已留）
-- 微信 4.x 为 WCDB/SQLCipher，需从 Weixin.exe 内存取 32 字节 key（同类内存扫描）；PyWxDump 已删库，需自研。
-- 当前微信通道=用户转发导入（粘贴/截图/文件）+ `cleanGroupMessage` 管线；`sync_group_notices` 的 group 参数预留微信名。
+## 微信（适配器已实现）
+- `wechatkit/`：decrypt.py（SQLCipher page4096/reserve80/HMAC-SHA512/KDF256000）、scanner.py（Weixin.exe 内存指针解引用+页1HMAC 取钥，best-effort）、exporter.py（群信息本位导出，zstd 解压用 Py3.14 compression.zstd）。
+- `wechat_cli.py key [--key <64hex>] / decrypt / group --name 网安2401班 / run / clean`。
+- 服务端 `/api/ingest/wechat?name=`（dev/llm-proxy.mjs，64 位 Python）；会话页「同步群通知」覆盖 QQ+微信。
+- 若内存扫描未命中（版本差异），用 `--key` 手动提供（经 chatlog 等工具获取）；或用户转发导入（粘贴/截图/文件）+ cleanGroupMessage 管线。
 
 ## 禁止
 - 不绕登录/验证码/反爬；不读非自有群；不把明文聊天记录/密钥上传 GitHub 或外传。

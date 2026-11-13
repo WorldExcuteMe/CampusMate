@@ -10,7 +10,7 @@
 |---|---|---|
 | QQ 官方本地解密（QQ工具） | ✅ 已实现 | key→decrypt→group_export→sync；仅本机自有账号 |
 | 微信转发导入 | ✅ 已实现 | 粘贴/截图/文件 → cleanGroupMessage 管线 |
-| 微信本地解密 | ⏳ 待实现 | WCDB/SQLCipher 需自研内存取 key；适配器已留 |
+| 微信本地解密 | ✅ 适配器已实现 | wechatkit（SQLCipher SHA512）+ wechat_cli；key 内存扫描(best-effort)/--key；群导出信息本位 |
 
 ## 信息本位过滤（group_export.py / clean.ts）
 保留满足任一：日期/时间正则；关键词（奖学金/竞赛/比赛/实习/科研/通知/报名/截止/调课/班会/讲座/活动/招募）；文件（.pdf/.docx/[文件]/类型码）。不区分发送人。

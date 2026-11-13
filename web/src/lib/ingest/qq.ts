@@ -29,6 +29,13 @@ export async function fetchGroupNotices(name: string): Promise<GroupRecord[]> {
   return data.records ?? [];
 }
 
+export async function fetchWechatNotices(name: string): Promise<GroupRecord[]> {
+  const res = await fetch(`/api/ingest/wechat?name=${encodeURIComponent(name)}`);
+  if (!res.ok) throw new Error(`微信摄取失败 HTTP ${res.status}`);
+  const data = await res.json();
+  return (data.records ?? []).map((r: GroupRecord) => ({ ...r, sender: r.sender ?? "wechat" }));
+}
+
 // 信息本位：不关注发送人，只按 日期/关键词/文件 过滤后的记录同步进容器。
 export async function syncGroupRecords(records: GroupRecord[], repo: Repository): Promise<SyncSummary> {
   const seen: string[] = JSON.parse(localStorage.getItem(SEEN_KEY) || "[]");

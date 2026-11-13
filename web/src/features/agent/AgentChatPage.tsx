@@ -23,7 +23,7 @@ import {
   type ChatSession,
 } from "@/lib/agent/sessions";
 import { MockBadge } from "@/components/shared";
-import { fetchGroupNotices, syncGroupRecords } from "@/lib/ingest/qq";
+import { fetchGroupNotices, fetchWechatNotices, syncGroupRecords } from "@/lib/ingest/qq";
 
 const CONTEXT_CAP = 16000;
 
@@ -106,13 +106,24 @@ export function AgentChatPage() {
 
   async function syncGroup() {
     setSyncing(true);
+    const records = [];
+    const errs: string[] = [];
     try {
-      const records = await fetchGroupNotices("网安2401官方群");
+      records.push(...(await fetchGroupNotices("网安2401官方群")));
+    } catch (e) {
+      errs.push(`QQ: ${e instanceof Error ? e.message : "失败"}`);
+    }
+    try {
+      records.push(...(await fetchWechatNotices("网安2401班")));
+    } catch (e) {
+      errs.push(`微信: ${e instanceof Error ? e.message : "失败"}`);
+    }
+    if (records.length) {
       const sum = await syncGroupRecords(records, repository);
       qc.invalidateQueries();
       toast.success(`群同步：Inbox ${sum.inbox} / 日常 ${sum.daily} / 机会 ${sum.opportunity}（去重跳过 ${sum.skipped}）`);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "群同步失败（需本地 QQ 已登录并先 key+decrypt）");
+    } else {
+      toast.error(errs.join("；") || "无可用群通知（需本地 QQ/微信已登录并先 key+decrypt）");
     }
     setSyncing(false);
   }

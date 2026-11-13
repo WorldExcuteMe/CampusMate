@@ -121,6 +121,22 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+  // 微信群通知摄取（本地运行 wechat_cli，信息本位；不涉外部 URL）
+  if (req.method === "GET" && url.startsWith("/api/ingest/wechat")) {
+    const name = new URL(url, "http://local").searchParams.get("name") || "网安2401班";
+    const qqDir = env.QQ_TOOL_DIR || "C:\\Users\\Asus\\Documents\\QQ工具";
+    const py64 = env.PY64 || "C:\\Users\\Asus\\miniconda3\\python.exe";
+    const script = path.join(qqDir, "wechat_cli.py");
+    execFile(py64, [script, "run", "--name", name], { cwd: qqDir, timeout: 180000 }, (err, stdout, stderr) => {
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(qqDir, "out", "last_wechat_group_info.json"), "utf8"));
+        return json(res, 200, data);
+      } catch (e) {
+        return json(res, 503, { error: `微信摄取失败: ${stderr || err.message}`, hint: "先 wechat_cli.py key（或 --key）+ decrypt，且微信已登录" });
+      }
+    });
+    return;
+  }
   json(res, 404, { error: "not found" });
 });
 
