@@ -10,6 +10,11 @@ export interface SqlPool extends SqlClient {
   end(): Promise<void>;
 }
 
+// An already-open transaction must keep every repository on its one client.
+export function transactionPool(client: SqlClient): SqlPool {
+  return { query: (text, params) => client.query(text, params), transaction: (fn) => fn(client), end: async () => {} };
+}
+
 export class PgPool implements SqlPool {
   private pool: pg.Pool;
   constructor(connectionString: string, opts?: { max?: number; ssl?: boolean; connectionTimeoutMillis?: number }) {

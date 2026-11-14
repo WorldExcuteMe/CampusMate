@@ -1,10 +1,18 @@
 # T2 会话和个人上下文
 ## Status
 
-Phase 4 — in progress; T1 accepted at e9d83d4; single-agent implementation.
-Standard；总 Spec v2 的 R1、AC01–03；主代理单独实施，旧 failed 恢复规则已获用户明确选择。
-实施须 T1 committed + accepted、主代理冻结下述 TaskStore/DDL 契约并交接共享文件和测试令牌。
-现场 HEAD：`72d9a0cfa65aba510a16150b1ae3896a4d40e032`；T1 工作树由其代理继续拥有，T2 不干扰。
+Phase 4 — implemented and locally verified; T1 accepted at e9d83d4; single-agent implementation.
+Standard；总 Spec v2 的 R1、AC01–03；基于 e2e31df 实施，用户已明确旧 failed 恢复规则。
+全部子代理已召回；本文件下方的交接/测试令牌文字仅保留原规划背景，不再构成等待条件。
+
+## Verification record — 2026-11-14
+
+- 原子turn接受/冲突、同会话屏障、两轮真实API→Worker、过时租约、native及JSON审批恢复、保存失败暂停，分别在内存/PGlite验证；未调用真实模型。
+- Worker读取个人画像与同会话历史，保存完整transcript和连续seq摘要；压缩保留身份与最新纠正，不跨未来/近期消息空洞。
+- 新增认证session接口、UUID映射及turn重试；旧正文留本地。会话、计划、记忆按owner/session隔离，组件切换与迟到回调有回归。
+- 后端完整回归218项，前端104项通过；两侧类型检查、五版本迁移16项检查、前端生产构建通过。Vite保留既有大chunk/静态动态双重import提示。
+- 真实PostgreSQL跨进程、真实Supabase RLS、真实模型与浏览器端到端未验收；T4继续刷新重附着和时间线，T3/T9继续已知窗口/供应商计量。未知窗口现在如实显示未知。
+- 摘要是带seq的原文片段而非推断性长期画像；不自动覆盖profiles。原始历史未删除，未上传旧聊天，未部署/推送/执行远程迁移。
 
 ## Problem and goal
 
@@ -136,4 +144,4 @@ TaskStore/DDL 原子性和顺序技术方案已冻结；旧 failed 恢复分支�
 ## Approval record
 
 用户“确认”覆盖总 Spec v2 与阶段委托；原 Phase2 已审，主代理本轮明确允许 Phase3 更新，before 已成功。
-仅修改本子 Spec；主代理接收路径后执行 after。Phase4 仍等待主代理放行及 T1 committed+accepted，不自行跑测试/写 Git。
+原规划的文档交接已完成；用户后续要求主代理全权执行，覆盖原委托安排。以上验证由主代理串行完成。

@@ -5,7 +5,7 @@ vi.mock("@/app/config", () => ({
   supabaseClient: { auth: { getSession: async () => ({ data: { session: { access_token: "tok" } } }) } },
 }));
 
-import { createTask, getTask, cancelTask, resumeTask, listEvents, backendEnabled } from "../agent/api-client";
+import { createTask, ensureSession, getTask, cancelTask, resumeTask, listEvents, backendEnabled } from "../agent/api-client";
 
 beforeEach(() => {
   vi.stubEnv("VITE_BACKEND_URL", "http://backend.test");
@@ -34,6 +34,16 @@ describe("Agent API Client（AC01 前端走后端 Task API）", () => {
     const r = await createTask({ title: "收集竞赛" });
     expect(r.taskId).toBe("t1");
     expect(auth).toBe("Bearer tok");
+  });
+  it("会话映射仅上传元数据，新turn请求带稳定ID和当前输入，无旧聊天", async () => {
+    const bodies: unknown[] = [];
+    mockFetch((url, init) => {
+      bodies.push(JSON.parse(init!.body as string));
+      return url.endsWith("/sessions") ? { status: 201, body: { session: { id: "uuid-session" } } } : { status: 201, body: { taskId: "t1" } };
+    });
+    const id = await ensureSession({ id: "uuid-session", title: "旧会话", mode: "auto" });
+    await createTask({ title: "新问题", intent: "推荐竞赛", sessionId: id, turnId: "stable-turn" });
+    expect(bodies).toEqual([{ id: "uuid-session", title: "旧会话", mode: "auto" }, { title: "新问题", intent: "推荐竞赛", sessionId: id, turnId: "stable-turn" }]);
   });
 
   it("getTask 解包 task", async () => {

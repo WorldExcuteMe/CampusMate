@@ -16,6 +16,19 @@ export class MemorySessionStore implements SessionStore {
   private messages = new Map<string, StoredSessionMessage[]>();
   private tasks: TaskStore;
   constructor(tasks: TaskStore) { this.tasks = tasks; }
+  forkForTask(tasks: TaskStore, sessionId: string): MemorySessionStore {
+    const staged = new MemorySessionStore(tasks);
+    const parent = this.sessions.get(sessionId);
+    if (parent) staged.sessions.set(sessionId, structuredClone(parent));
+    staged.messages.set(sessionId, structuredClone(this.messages.get(sessionId) ?? []));
+    return staged;
+  }
+  commitSession(sessionId: string, staged: MemorySessionStore): void {
+    const parent = staged.sessions.get(sessionId);
+    if (!parent) throw new Error("Session owner forbidden");
+    this.sessions.set(sessionId, structuredClone(parent));
+    this.messages.set(sessionId, structuredClone(staged.messages.get(sessionId) ?? []));
+  }
   async create(input: { userId: string; id?: string; title?: string; mode?: "auto" | "daily" }): Promise<StoredSession> {
     const id = input.id ?? randomUUID(); requireUuid(id);
     const existing = this.sessions.get(id);

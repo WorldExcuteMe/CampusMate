@@ -9,6 +9,8 @@ export interface AgentTask {
   usage: { tokens: number; toolCalls: number; wallMs: number; costUsd: number };
   result?: { summary: string; artifactIds: string[]; partial?: boolean };
   error?: string;
+  sessionId?: string; turnId?: string;
+  promptUsage?: { inputTokens: number | null; contextLimit: number | null; outputReserve: number; source: "reported" | "estimated" | "unknown" };
 }
 export interface AgentEvent { id: number; taskId: string; seq: number; type: string; payload: Record<string, unknown>; createdAt: number; }
 
@@ -25,7 +27,7 @@ async function authHeader(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-async function req<T>(path: string, init?: RequestInit): Promise<T> {
+export async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const base = backendUrl();
   if (!base) throw new Error("VITE_BACKEND_URL 未配置");
   const headers = { "Content-Type": "application/json", ...(await authHeader()), ...(init?.headers ?? {}) };
@@ -39,8 +41,12 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return JSON.parse(text) as T;
 }
 
-export async function createTask(input: { title: string; intent?: string; sessionId?: string; images?: string[] }): Promise<{ taskId: string; status: string }> {
+export interface TaskInput { title: string; intent?: string; sessionId?: string; turnId?: string; images?: string[]; }
+export async function createTask(input: TaskInput): Promise<{ taskId: string; status: string }> {
   return req("/v1/tasks", { method: "POST", body: JSON.stringify(input) });
+}
+export async function ensureSession(input: { id: string; title: string; mode: "auto" | "daily" }): Promise<string> {
+  return (await req<{ session: { id: string } }>("/v1/sessions", { method: "POST", body: JSON.stringify(input) })).session.id;
 }
 export async function getTask(id: string): Promise<AgentTask> {
   return (await req<{ task: AgentTask }>(`/v1/tasks/${id}`)).task;
@@ -120,14 +126,20 @@ export function subscribeTask(id: string, handlers: { onEvent?: (e: AgentEvent) 
 }
 
 // 提交任务并等待终态（聊天式一次性调用）。返回最终任务。
-export async function runTaskViaBackend(input: { title: string; intent?: string; sessionId?: string; images?: string[] }, onProgress?: (t: AgentTask) => void): Promise<AgentTask> {
+export async function runTaskViaBackend(input: TaskInput, onProgress?: (t: AgentTask) => void, options: { signal?: AbortSignal; onAccepted?: (id: string) => void; onEvent?: (event: AgentEvent) => void } = {}): Promise<AgentTask> {
+  if (options.signal?.aborted) throw new DOMException("已离开会话", "AbortError");
   const { taskId } = await createTask(input);
+  options.onAccepted?.(taskId);
   return await new Promise<AgentTask>((resolve, reject) => {
+    const done = () => { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); sub.stop(); };
+    const abort = () => { done(); reject(new DOMException("已离开会话", "AbortError")); };
     const sub = subscribeTask(taskId, {
+      onEvent: options.onEvent,
       onStatus: (t) => onProgress?.(t),
-      onClose: async () => { sub.stop(); try { resolve(await getTask(taskId)); } catch (e) { reject(e); } },
+      onClose: async () => { done(); try { resolve(await getTask(taskId)); } catch (e) { reject(e); } },
     });
-    // 兜底超时（10 分钟），避免悬挂。
-    setTimeout(() => { sub.stop(); void getTask(taskId).then(resolve).catch(reject); }, 600000);
+    const timer = setTimeout(() => { done(); reject(new Error("等待超时，任务仍保留在后台，可稍后查看")); }, 600000);
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
   });
 }

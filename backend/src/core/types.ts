@@ -45,6 +45,11 @@ export interface Task {
   userId: string;
   goalId?: string;
   sessionId?: string;
+  turnId?: string;
+  turnSeq?: number;
+  inputHash?: string;
+  transcriptCommitted?: boolean;
+  promptUsage?: { inputTokens: number | null; contextLimit: number | null; outputReserve: number; source: "estimated" | "reported" | "unknown" };
   title: string;
   intent: string;
   images?: string[];
@@ -113,6 +118,7 @@ export interface AgentEvent {
 
 export interface CheckpointState {
   messages: ChatMessage[];
+  transcript?: ChatMessage[];
   stepProgress: Record<string, StepStatus>;
   repeat: Record<string, number>;
   usage: Usage;

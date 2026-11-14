@@ -80,9 +80,10 @@ async function executeTool(
   profile: Profile,
   actions: string[],
   scope: TaskScope,
+  memoryScope = "demo",
 ): Promise<string> {
   try {
-    return await dispatchTool(name, args, repo, profile, actions, scope);
+    return await dispatchTool(name, args, repo, profile, actions, scope, memoryScope);
   } catch (e) {
     return JSON.stringify({ error: `工具 ${name} 执行失败：${errorMessage(e)}` });
   }
@@ -95,6 +96,7 @@ async function dispatchTool(
   profile: Profile,
   actions: string[],
   scope: TaskScope,
+  memoryScope = "demo",
 ): Promise<string> {
   // 执行期门控：越界工具拒绝；源内检索/同步强制限定用户指定群（确定性，不依赖模型自觉）
   const gate = checkToolScope(scope, name, args);
@@ -318,7 +320,7 @@ async function dispatchTool(
   }
   if (name === "create_plan") {
     const plan = { goal: String(args.goal ?? ""), steps: (args.steps as string[]) ?? [], done: [] as number[], createdAt: new Date().toISOString() };
-    setPlan(plan);
+    setPlan(plan, memoryScope);
     actions.push(`制定长任务计划：${plan.goal}（${plan.steps.length} 步）`);
     return JSON.stringify({ ok: true, plan });
   }
@@ -377,6 +379,7 @@ export async function runChat(opts: {
   mode?: "auto" | "daily";
   model?: string;
   contextCap?: number;
+  memoryScope?: string;
 }): Promise<ChatOutcome> {
   const actions: string[] = [];
   const mode = opts.mode ?? "auto";
@@ -415,7 +418,7 @@ export async function runChat(opts: {
   const cap = resolveContextCap(opts.model, opts.contextCap);
   const tTools = toolsTokens(tools);
   const composed = composeContext({
-    system: SYSTEM(opts.profile, mode) + "\n" + scope.contract + "\n" + memoryPrompt(),
+    system: SYSTEM(opts.profile, mode) + "\n" + scope.contract + "\n" + memoryPrompt(opts.memoryScope),
     history: opts.history,
     user: opts.message,
     tools,
@@ -438,7 +441,7 @@ export async function runChat(opts: {
         for (const call of res.toolCalls) {
           let args: Record<string, unknown> = {};
           try { args = JSON.parse(call.function.arguments || "{}"); } catch {}
-          const out = await executeTool(call.function.name, args, opts.repository, opts.profile, actions, scope);
+          const out = await executeTool(call.function.name, args, opts.repository, opts.profile, actions, scope, opts.memoryScope);
           messages.push({ role: "tool", content: out, tool_call_id: call.id });
           noteRepeat(repeat, call.function.name, args, messages);
         }
@@ -457,7 +460,7 @@ export async function runChat(opts: {
       const jt = parseJsonTool(res.content);
       if (jt) {
         messages.push({ role: "assistant", content: res.content });
-        const out = await executeTool(jt.name, jt.args, opts.repository, opts.profile, actions, scope);
+        const out = await executeTool(jt.name, jt.args, opts.repository, opts.profile, actions, scope, opts.memoryScope);
         messages.push({ role: "user", content: `工具 ${jt.name} 返回：${out}` });
         noteRepeat(repeat, jt.name, jt.args, messages);
         const trimmed = trimToBudget(messages, cap, tTools);
@@ -466,7 +469,7 @@ export async function runChat(opts: {
         contextUsed = messagesTokens(messages) + tTools;
         continue;
       }
-      appendMemory(`${nowBeijingText()} 用户「${opts.message.slice(0, 40)}」→ ${actions.join("；").slice(0, 160) || "直接答复"}`);
+      appendMemory(`${nowBeijingText()} 用户「${opts.message.slice(0, 40)}」→ ${actions.join("；").slice(0, 160) || "直接答复"}`, opts.memoryScope);
       return { reply: res.content, actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed, pruned };
     }
     // 工具预算用尽：强制一次无工具最终总结，保证有可用产出（不再返回"请细化问题"）

@@ -14,7 +14,7 @@ Phase 4 — in progress. 用户已批准 Spec v2、实施计划及范围内子�
 - v2 修改前/后备份：`.agent_versions/v2_CAMPUSMATE_PLAN_20261114-132925/`，保留 v1 文档原件。
 - 用户在总审批问题后回复“确认”；本文件 v2 的契约、实施范围和技术方案获准实施，新增范围/不可逆动作仍单独确认。
 - 实施分支：`codex/campusmate-reliability-experience`；实施补充备份：`.agent_versions/v3_CAMPUSMATE_IMPLEMENT_20261114-135858/`。
-- T1 存储底座正在 Red→Green；T2 仅基于冻结契约准备计划，实施须等待 T1 committed+accepted。
+- T1 已提交并本地验收（e9d83d4）；T2 会话/画像/原子轮次/恢复/UUID映射已完成本地验证，后端218项与前端104项通过，详见子规格。后续继续T3/T4/T5/T9及文档闭环；尚未声称整体交付。
 
 ## Problem and goal
 

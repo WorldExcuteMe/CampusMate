@@ -5,6 +5,7 @@ import {
   newSession,
   type ChatSession,
 } from "./sessions";
+import { useAuth } from "@/app/auth";
 
 interface SessionsState {
   sessions: ChatSession[];
@@ -22,13 +23,19 @@ interface SessionsState {
 const Ctx = createContext<SessionsState | null>(null);
 
 export function SessionsProvider({ children }: { children: ReactNode }) {
+  const { session } = useAuth();
+  const owner = session?.user.id ?? "demo";
+  return <OwnerSessionsProvider key={owner} owner={owner}>{children}</OwnerSessionsProvider>;
+}
+
+function OwnerSessionsProvider({ children, owner }: { children: ReactNode; owner: string }) {
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const s = loadSessions();
+    const s = loadSessions(owner);
     return s.length ? s : [newSession()];
   });
   const [activeId, setActiveId] = useState(() => sessions[0]?.id);
 
-  useEffect(() => saveSessions(sessions), [sessions]);
+  useEffect(() => saveSessions(sessions, owner), [sessions, owner]);
 
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0];
 

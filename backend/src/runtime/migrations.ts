@@ -6,6 +6,7 @@ export const MIGRATION_PATHS = [
   "backend/migrations/0002_agent_runtime.sql",
   "backend/migrations/0003_personal_context.sql",
   "supabase/migrations/20261114061420_campusmate_shared_storage.sql",
+  "supabase/migrations/20261114113238_campusmate_session_turns.sql",
 ] as const;
 
 export async function readMigrations() {

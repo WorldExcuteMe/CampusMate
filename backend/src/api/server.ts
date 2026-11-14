@@ -14,6 +14,10 @@ import { DEFAULT_BUDGET } from "../core/types.ts";
 import { verifySupabaseJwt, bearerToken } from "./jwt.ts";
 import { errorMessage } from "../core/errors.ts";
 import type { Budget } from "../core/types.ts";
+import type { SessionStore } from "../core/storage-contracts.ts";
+import { SessionConflict } from "../runtime/store.ts";
+import { randomUUID } from "node:crypto";
+import { requireUuid } from "../runtime/postgres-shared.ts";
 
 export interface ApiDeps {
   store: TaskStore;
@@ -25,6 +29,7 @@ export interface ApiDeps {
   companion?: CompanionRegistry;
   personalContext?: PersonalContextStore;
   opportunityStore?: OpportunityStore;
+  sessionStore?: SessionStore;
 }
 
 function json(res: http.ServerResponse, code: number, obj: unknown): void {
@@ -63,15 +68,43 @@ export function createApiServer(deps: ApiDeps): http.Server {
       if (!claims) return json(res, 401, { error: "unauthorized" });
       const uid = claims.sub;
 
+      if (deps.sessionStore) {
+        const sessions = deps.sessionStore;
+        if (req.method === "POST" && path === "/v1/sessions") {
+          const body = JSON.parse((await readBody(req)) || "{}");
+          if (body.id !== undefined) requireUuid(body.id);
+          const session = await sessions.create({ userId: uid, id: body.id, title: typeof body.title === "string" ? body.title.slice(0, 160) : undefined, mode: body.mode === "daily" ? "daily" : "auto" });
+          return json(res, 201, { session });
+        }
+        if (req.method === "GET" && path === "/v1/sessions") return json(res, 200, { sessions: await sessions.list(uid) });
+        const sessionMatch = path.match(/^\/v1\/sessions\/([^/]+)\/(messages|tasks)$/);
+        if (req.method === "GET" && sessionMatch) {
+          requireUuid(sessionMatch[1]);
+          if (!await sessions.get(uid, sessionMatch[1])) return json(res, 404, { error: "session not found" });
+          if (sessionMatch[2] === "tasks") return json(res, 200, { tasks: (await store.listTasksByUser(uid)).filter((t) => t.sessionId === sessionMatch[1]) });
+          const after = Number(url.searchParams.get("afterSeq") ?? 0);
+          if (!Number.isSafeInteger(after) || after < 0) return json(res, 400, { error: "invalid afterSeq" });
+          return json(res, 200, { messages: await sessions.listMessages(uid, sessionMatch[1], after) });
+        }
+      }
+
       if (req.method === "POST" && path === "/v1/tasks") {
         const body = JSON.parse((await readBody(req)) || "{}");
         if (!body.title || typeof body.title !== "string") return json(res, 400, { error: "title required" });
+        if (body.sessionId !== undefined) {
+          requireUuid(body.sessionId);
+          if (!deps.sessionStore || !await deps.sessionStore.get(uid, body.sessionId)) return json(res, 404, { error: "session not found" });
+        }
+        if (body.turnId !== undefined) requireUuid(body.turnId);
         const images = Array.isArray(body.images) ? body.images.filter((x: unknown) => typeof x === "string").slice(0, 4) : undefined;
-        const task = await store.createTask({
+        const input = {
           userId: uid, title: body.title, intent: body.intent, sessionId: body.sessionId,
           images, priority: body.priority, budget: body.budget as Budget | undefined,
-        });
-        return json(res, 201, { taskId: task.id, status: task.status });
+        };
+        const accepted = body.sessionId && deps.sessionStore && store.createSessionTask
+          ? await store.createSessionTask({ ...input, sessionId: body.sessionId, turnId: body.turnId ?? randomUUID() }, deps.sessionStore)
+          : { task: await store.createTask(input), deduped: false };
+        return json(res, 201, { taskId: accepted.task.id, sessionId: accepted.task.sessionId, turnId: accepted.task.turnId, status: accepted.task.status, deduped: accepted.deduped });
       }
 
       const taskMatch = path.match(/^\/v1\/tasks\/([^/]+)(\/events|\/cancel|\/resume|\/stream)?$/);
@@ -98,7 +131,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
             const evs = await store.listEvents(id, seq);
             for (const e of evs) { send("task_event", e); seq = e.seq; }
             const t = await store.getTask(id);
-            if (t) send("task_status", { status: t.status, usage: t.usage, result: t.result });
+            if (t) send("task_status", { id: t.id, status: t.status, usage: t.usage, result: t.result, promptUsage: t.promptUsage, sessionId: t.sessionId, turnId: t.turnId });
             if (t && ["succeeded", "failed", "cancelled", "needs_input", "paused"].includes(t.status)) { send("close", { status: t.status }); closed = true; res.end(); return; }
           };
           await tick();
@@ -112,7 +145,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         }
         if (req.method === "POST" && sub === "/resume") {
           if (!["needs_input", "paused", "failed"].includes(task.status)) return json(res, 409, { error: `cannot resume from ${task.status}` });
-          const t = await store.updateTask(id, { status: "queued" });
+          const t = store.resumeSessionTask ? await store.resumeSessionTask(id, uid) : await store.updateTask(id, { status: "queued" });
           return json(res, 200, { task: t });
         }
       }
@@ -192,6 +225,9 @@ export function createApiServer(deps: ApiDeps): http.Server {
 
       return json(res, 404, { error: "not found" });
     } catch (err) {
+      if (err instanceof SessionConflict) return json(res, 409, { error: err.message });
+      if (err instanceof SyntaxError || (err instanceof Error && err.message === "Invalid UUID")) return json(res, 400, { error: "invalid input" });
+      if (err instanceof Error && err.message === "Session owner forbidden") return json(res, 403, { error: "forbidden" });
       return json(res, 500, { error: errorMessage(err) });
     }
   });

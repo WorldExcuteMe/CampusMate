@@ -16,11 +16,12 @@ import {
 import { cn } from "@/lib/utils";
 import { repository } from "@/app/config";
 import { runChat } from "@/lib/agent/chat";
-import { backendEnabled, runTaskViaBackend } from "@/lib/agent/api-client";
+import { backendEnabled, runTaskViaBackend, ensureSession } from "@/lib/agent/api-client";
 import { errorMessage } from "@/lib/llm/errors";
 import { listProviders, type ProviderPublic, type ChatMessage } from "@/lib/llm/proxy";
 import { useSessions } from "@/lib/agent/sessions-context";
-import { autoName } from "@/lib/agent/sessions";
+import { autoName, backendSessionId } from "@/lib/agent/sessions";
+import { useAuth } from "@/app/auth";
 import { resolveContextCap } from "@/lib/agent/context";
 import { MockBadge } from "@/components/shared";
 import { SetupWizard } from "./SetupWizard";
@@ -35,6 +36,11 @@ const WORKSPACES = [
 ];
 
 export function AgentChatPage() {
+  const { session } = useAuth();
+  const owner = session?.user.id ?? "demo";
+  const alive = useRef(true);
+  const requestController = useRef<AbortController | null>(null);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; requestController.current?.abort(); }; }, []);
   const { active, update, rename } = useSessions();
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -72,12 +78,14 @@ export function AgentChatPage() {
     setAttachments((a) => [...a, ...parsed]);
   }
 
-  async function send() {
+  async function send(retry = false) {
     const text = input.trim();
-    if ((!text && attachments.length === 0) || busy || !profile || !active) return;
+    if ((!text && attachments.length === 0 && !retry) || busy || !active || (!backendEnabled() && !profile)) return;
     const docText = attachments.filter((a) => a.kind === "doc" && a.text).map((a) => `\n[附件 ${a.name}]\n${a.text}`).join("");
     const imgMarkers = attachments.filter((a) => a.kind === "image").map((a) => `[图片附件 ${a.name}]`).join(" ");
-    const content = (text + docText + (imgMarkers ? "\n" + imgMarkers : "")).trim();
+    const content = retry ? active.pendingTurn?.content ?? "" : (text + docText + (imgMarkers ? "\n" + imgMarkers : "")).trim();
+    if (!content) return;
+    const pendingTurn = retry && active.pendingTurn ? active.pendingTurn : { turnId: crypto.randomUUID(), content, images: attachments.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) };
     setInput("");
     setAttachments([]);
     setBusy(true);
@@ -85,29 +93,43 @@ export function AgentChatPage() {
     update(active.id, (s) => ({
       ...s,
       name: s.name === "新会话" ? autoName(content) : s.name,
-      messages: [...s.messages, { role: "user", content }],
+      pendingTurn: backendEnabled() ? pendingTurn : undefined,
+      messages: retry ? s.messages : [...s.messages, { role: "user", content, turnId: pendingTurn.turnId }],
     }));
     try {
       // AC01：配置 VITE_BACKEND_URL 时默认走服务端 Task Runtime（浏览器关闭不影响后台任务）；
       // 未配置时保留浏览器 runChat 作为开发/兼容 fallback。
       if (backendEnabled()) {
+        const controller = new AbortController();
+        requestController.current = controller;
+        const id = await ensureSession({ id: active.backendId ?? backendSessionId(owner, active.id), title: active.name, mode: active.mode });
+        if (!alive.current) return;
+        update(active.id, (s) => ({ ...s, backendId: id }));
         const task = await runTaskViaBackend(
-          { title: content.slice(0, 80), intent: content, sessionId: active.id, images: attachments.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) },
+          { title: content.slice(0, 80), intent: content, sessionId: id, turnId: pendingTurn.turnId, images: pendingTurn.images },
           (t) => {
-            update(active.id, (s) => ({ ...s, contextUsed: t.usage?.tokens ?? s.contextUsed ?? 0 }));
+            if (!alive.current) return;
+            update(active.id, (s) => ({ ...s, contextUsed: t.promptUsage?.inputTokens ?? undefined, contextCap: t.promptUsage?.contextLimit ?? undefined, promptSource: t.promptUsage?.source ?? "unknown" }));
           },
+          { signal: controller.signal, onAccepted: (taskId) => { if (alive.current) update(active.id, (s) => ({ ...s, pendingTurn: { ...pendingTurn, taskId } })); } },
         );
+        if (!alive.current) return;
         const reply = (task.status === "needs_input" || task.status === "paused")
           ? "该任务触发了高危操作审批门控，已暂停等待人工批准（如 propose_verification 写入全局核验）。批准后任务可继续；这是安全设计，不是故障。"
           : (task.result?.summary ?? task.error ?? `任务${task.status}`);
         update(active.id, (s) => ({
           ...s,
+          pendingTurn: undefined,
+          contextUsed: task.promptUsage?.inputTokens ?? undefined,
+          contextCap: task.promptUsage?.contextLimit ?? undefined,
+          promptSource: task.promptUsage?.source ?? "unknown",
           tokens: s.tokens + (task.usage?.tokens ?? 0),
-          messages: [...s.messages, { role: "assistant", content: reply, actions: [], failed: task.status === "failed" }],
+          messages: [...s.messages, { role: "assistant", content: reply, taskId: task.id, turnId: pendingTurn.turnId, actions: [], failed: task.status === "failed" }],
         }));
         if (task.status === "needs_input") toast.message("任务等待审批/补充信息，可在后端恢复。");
       } else {
-        const out = await runChat({ message: content, history, repository, profile, providerId, mode: active.mode, model: modelName });
+        const out = await runChat({ message: content, history, repository, profile: profile!, providerId, mode: active.mode, model: modelName, memoryScope: `${owner}:${active.id}` });
+        if (!alive.current) return;
         if (out.needsSetup) setShowSetup(true);
         update(active.id, (s) => ({
           ...s,
@@ -120,15 +142,16 @@ export function AgentChatPage() {
         }));
       }
     } catch (e) {
+      if (!alive.current || (e instanceof DOMException && e.name === "AbortError")) return;
       // 兜底：runChat 理论上自兜底，此处再防一层，保证 busy 复位且错误可读（绝不 [object Object]）。
       const reason = errorMessage(e);
       update(active.id, (s) => ({
         ...s,
-        messages: [...s.messages, { role: "assistant", content: `处理失败（${reason}）。请重发本条重试。`, failed: true }],
+        messages: [...s.messages, { role: "assistant", content: `处理失败（${reason}）。${backendEnabled() ? "可重试提交同一轮次。" : "请重发本条重试。"}`, failed: true }],
       }));
       toast.error(`处理失败：${reason}`);
     } finally {
-      setBusy(false);
+      if (alive.current) setBusy(false);
     }
   }
 
@@ -242,6 +265,7 @@ export function AgentChatPage() {
             </div>
           ))}
           {busy && <Loader2 className="size-5 animate-spin text-muted-foreground" />}
+          {!busy && active.pendingTurn && <Button variant="outline" size="sm" onClick={() => send(true)}>重试提交同一轮次</Button>}
           <div ref={endRef} />
         </div>
       </div>
@@ -319,7 +343,7 @@ export function AgentChatPage() {
               className="text-xs text-muted-foreground"
               title={`上下文组成：system+工具定义+历史摘要+近期历史+当前输入+输出预留；模型 ${modelName} 上限 ${contextCap.toLocaleString()} tok；累计用量 ${(active?.tokens ?? 0).toLocaleString()} tok`}
             >
-              上下文 {(active?.contextUsed ?? 0).toLocaleString()} / {contextCap.toLocaleString()} tok
+              窗口输入 {active?.contextUsed === undefined ? "未知" : `${active.promptSource === "estimated" ? "约 " : ""}${active.contextUsed.toLocaleString()}`} / {backendEnabled() ? active.contextCap?.toLocaleString() ?? "上限未知" : contextCap.toLocaleString()} tok · 累计 {(active?.tokens ?? 0).toLocaleString()} tok
               {active?.compressed && (
                 <span className="ml-1 rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">已压缩</span>
               )}
@@ -327,7 +351,7 @@ export function AgentChatPage() {
                 <span className="ml-1 rounded bg-info/15 px-1 py-0.5 text-info">工具截断</span>
               )}
             </span>
-            <Button size="sm" className="ml-auto" disabled={busy || (!input.trim() && attachments.length === 0)} onClick={send}>
+            <Button size="sm" className="ml-auto" disabled={busy || (!input.trim() && attachments.length === 0)} onClick={() => send()}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
               发送
             </Button>

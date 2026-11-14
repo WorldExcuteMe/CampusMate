@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import type { AcceptanceCriterion, CompletionCertificate, Task, ToolDef, ToolInvocation } from "../core/types.ts";
 import type { LlmTransport } from "../core/llm.ts";
-import { runAgentLoop, type AgentLoopResult } from "../core/agent-loop.ts";
+import { CheckpointWriteError, runAgentLoop, type AgentLoopResult } from "../core/agent-loop.ts";
 import { errorMessage } from "../core/errors.ts";
 import type { CompanionRegistry } from "../core/companion.ts";
 import { checkFsPath, checkTerminal, checkGroup } from "../core/companion.ts";
@@ -15,13 +15,17 @@ import { manifestTools } from "../core/tool-registry.ts";
 import { TOOL_SPECS } from "../core/tool-registry.ts";
 import type { MemoryStore } from "../core/memory.ts";
 import { buildContext, retrieveRelevantMemory, taskContextSummary } from "../core/context-builder.ts";
-import { contentText } from "../core/context.ts";
+import { contentText, messagesTokens, resolveContextCap } from "../core/context.ts";
 import type { CompanionServer } from "../core/companion-server.ts";
 import type { TaskStore } from "./store.ts";
 import type { ApprovalStore } from "./approval.ts";
 import { requiresApproval } from "./approval.ts";
 import { idempotencyKey, sha256, canonicalArgs } from "./idempotency.ts";
 import { canMarkSucceeded } from "./state-machine.ts";
+import type { SessionStore } from "../core/storage-contracts.ts";
+import type { PersonalContextStore } from "../core/personal-context.ts";
+import type { ChatMessage } from "../core/types.ts";
+import { assertTurnLease, LeaseLostError, sessionHistory, identityContext, committedPrefix } from "../core/session-context.ts";
 
 export interface WorkerDeps {
   store: TaskStore;
@@ -36,6 +40,8 @@ export interface WorkerDeps {
   acceptance?: (task: Task) => AcceptanceCriterion[];
   capabilityRegistry?: CapabilityRegistry;
   memoryStore?: MemoryStore;
+  sessionStore?: SessionStore;
+  personalContext?: PersonalContextStore;
   companionServer?: CompanionServer;
   workerId?: string;
   concurrency?: number;
@@ -63,6 +69,8 @@ export class Worker {
   private independentEvaluator?: Evaluator;
   private capabilityRegistry?: CapabilityRegistry;
   private memoryStore?: MemoryStore;
+  private sessions?: SessionStore;
+  private personalContext?: PersonalContextStore;
   private companionServer?: CompanionServer;
   private workerId: string;
   private concurrency: number;
@@ -83,6 +91,8 @@ export class Worker {
     if (deps.evidenceStore) this.independentEvaluator = new Evaluator({ evidenceStore: deps.evidenceStore });
     this.capabilityRegistry = deps.capabilityRegistry;
     this.memoryStore = deps.memoryStore;
+    this.sessions = deps.sessionStore;
+    this.personalContext = deps.personalContext;
     this.companionServer = deps.companionServer;
     this.evaluator = deps.evaluator ?? this.defaultEvaluate.bind(this);
     this.workerId = deps.workerId ?? `worker-${randomUUID().slice(0, 8)}`;
@@ -128,13 +138,57 @@ export class Worker {
     const store = this.store;
     const heartbeat = setInterval(() => { void store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now()); }, this.heartbeatMs);
     try {
+      if (task.turnId) assertTurnLease(await store.getTask(task.id), { userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now() });
       if (task.cancelRequested) { await this.finalize(task, "cancelled"); return; }
 
       // 恢复：从最新 checkpoint 还原 messages/repeat/usage。
       const cp = await store.latestCheckpoint(task.id);
-      // 清理审批暂停哨兵：resume 后让模型重新发起工具调用（审批已决），不重放旧 pending 结果。
-      const resumeMessages = cp?.state.messages.filter((m) => !(m.role === "tool" && contentText(m.content).includes("__approval_pending__")));
+      const resumeMessages = cp?.state.messages;
       const repeat = cp ? new Map(Object.entries(cp.state.repeat)) : undefined;
+      let history: ChatMessage[] = [];
+      let identity = "";
+      let priorSummary = "";
+      if (task.sessionId && this.sessions) {
+        let session = await this.sessions.get(task.userId, task.sessionId);
+        if (!session) throw new Error("Session owner forbidden");
+        const rows = await this.sessions.listMessages(task.userId, task.sessionId);
+        const tasks = await store.listTasksByUser(task.userId);
+        history = sessionHistory(rows, tasks, task);
+        identity = identityContext(rows, tasks, task);
+        if (task.turnSeq && messagesTokens(history) > resolveContextCap() * 0.5) {
+          const prefix = committedPrefix(rows, tasks);
+          const oldTasks = new Set(tasks.filter((t) => (t.turnSeq ?? task.turnSeq!) < task.turnSeq! - 6).map((t) => t.id));
+          const recentStart = Math.min(Infinity, ...rows.filter((m) => !m.taskId || !oldTasks.has(m.taskId)).map((m) => m.seq));
+          const through = Math.min(prefix, recentStart - 1);
+          const oldRows = rows.filter((m) => m.seq <= through);
+          if (through > session.summaryThroughSeq) {
+            const summary = `已提交历史片段，原文仍可按seq查阅；摘要不能取代证据：\n${oldRows.map((m) => `[seq=${m.seq},${m.role}] ${contentText(m.content).slice(0, 160)}`).join("\n").slice(0, 6000)}`;
+            session = await this.sessions.updateSummary(task.userId, task.sessionId, summary, through);
+            if (!session) throw new Error("Session summary owner forbidden");
+          }
+        }
+        if (session.summary) {
+          priorSummary = `【历史摘要，覆盖已提交seq<=${session.summaryThroughSeq}；最新用户纠正优先】\n${session.summary}`;
+          history = sessionHistory(rows.filter((m) => m.seq > session.summaryThroughSeq), tasks, task);
+        }
+        if (!rows.some((m) => m.taskId === task.id && m.role === "user")) {
+          await this.sessions.appendMessage({ userId: task.userId, sessionId: task.sessionId, turnId: task.turnId ?? task.id, messageKey: `${task.turnId ?? task.id}:user`, taskId: task.id, role: "user", content: task.intent });
+        }
+      }
+      const profile = await this.personalContext?.getProfile(task.userId);
+      const userProfile = [profile ? JSON.stringify(profile) : "", priorSummary, identity].filter(Boolean).join("\n\n");
+      const saveTranscript = async (transcript: ChatMessage[]) => {
+        if (!task.sessionId || !this.sessions) return;
+        for (let index = 0; index < transcript.length; index++) {
+          await this.sessions.appendMessage({ ...transcript[index], userId: task.userId, sessionId: task.sessionId, turnId: task.id, messageKey: `${task.id}:transcript:${index}`, taskId: task.id });
+        }
+      };
+      let latestState = cp?.state;
+      const finishTurn = async (patch: Partial<Task>) => {
+        if (task.turnId && this.sessions && store.finishSessionTurn && latestState) {
+          await store.finishSessionTurn({ taskId: task.id, userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now(), state: latestState, patch }, this.sessions);
+        } else await store.updateTask(task.id, patch);
+      };
 
       // 幂等 + 授权 + 审批包装：已成功的调用直接返回缓存；本机工具需 Companion 授权；高危需审批。
       const wrappedExecuteTool = async (name: string, args: Record<string, unknown>): Promise<string> => {
@@ -195,18 +249,22 @@ export class Worker {
 
       // 分层上下文：taskContext（事实来源）恒注入 + 记忆隔离检索。
       let system = this.buildSystem(task);
-      if (this.memoryStore) {
-        const relevantMemory = await retrieveRelevantMemory(this.memoryStore, task.userId, task.id);
+      if (this.memoryStore || this.sessions || userProfile) {
+        const relevantMemory = this.memoryStore ? await retrieveRelevantMemory(this.memoryStore, task.userId, task.id) : "";
         const taskContext = taskContextSummary(task, []);
-        const composed = buildContext({ layers: { stableInstructions: this.buildSystem(task), taskContext, userProfile: "", relevantMemory, toolSchemas: taskTools }, history: [], user: task.intent, cap: 200000 });
+        const composed = buildContext({ layers: { stableInstructions: this.buildSystem(task), taskContext, userProfile, relevantMemory, toolSchemas: taskTools }, history, user: task.intent, cap: resolveContextCap() });
         system = composed.messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
+        history = composed.messages.filter((m) => m.role !== "system").slice(0, -1);
       }
 
       const result = await runAgentLoop({
         system,
         user: task.intent,
         images: task.images,
+        history,
         resumeMessages,
+        resumeTranscript: cp?.state.transcript,
+        initialUsage: cp?.state.usage,
         repeat,
         deps: {
           transport: this.transport,
@@ -215,18 +273,27 @@ export class Worker {
           executeTool: wrappedExecuteTool,
           hooks: {
             now: this.now,
+            onPromptUsage: async (promptUsage) => { await store.updateTask(task.id, { promptUsage }); },
             onEvent: (type, payload) => { void store.appendEvent({ taskId: task.id, userId: task.userId, type, payload }); },
-            onCheckpoint: (state) => {
-              void store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now());
-              void store.writeCheckpoint({ taskId: task.id, userId: task.userId, eventSeq: 0, state });
+            onCheckpoint: async (state) => {
+              latestState = state;
+              await store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now());
+              if (task.turnId && this.sessions && store.saveTurnProgress) {
+                await store.saveTurnProgress({ taskId: task.id, userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now(), state }, this.sessions);
+                return;
+              }
+              await saveTranscript(state.transcript ?? []);
+              await store.writeCheckpoint({ taskId: task.id, userId: task.userId, eventSeq: 0, state });
             },
           },
         },
       });
+      latestState = { messages: result.messages, transcript: result.transcript, stepProgress: {}, repeat: {}, usage: result.usage, pendingApprovals: [] };
+      if (!task.turnId) await saveTranscript(result.transcript);
 
       // 协作式取消：执行后检查标志。
       const fresh = await store.getTask(task.id);
-      if (fresh?.cancelRequested) { await this.finalize(task, "cancelled"); return; }
+      if (fresh?.cancelRequested) { await finishTurn({ status: "cancelled" }); return; }
 
       await store.updateTask(task.id, { usage: result.usage });
 
@@ -241,16 +308,22 @@ export class Worker {
       await store.appendEvent({ taskId: task.id, userId: task.userId, type: certificate.passed ? "eval.passed" : "eval.failed", payload: { certificate } });
 
       if (canMarkSucceeded(certificate.passed)) {
-        await store.updateTask(task.id, {
+        await finishTurn({
           status: "succeeded",
           result: { summary: result.reply, certificate, artifactIds: [], partial: result.budgetExceeded },
         });
         await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.succeeded", payload: { partial: result.budgetExceeded } });
       } else {
-        await store.updateTask(task.id, { status: "failed", error: result.reply, result: { summary: result.reply, certificate, artifactIds: [] } });
+        await finishTurn({ status: "failed", error: result.reply, result: { summary: result.reply, certificate, artifactIds: [] } });
         await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.failed", payload: { reason: result.reply, certificate } });
       }
     } catch (err) {
+      if (err instanceof LeaseLostError) return;
+      if (err instanceof CheckpointWriteError) {
+        await store.updateTask(task.id, { status: "paused", error: err.message }).catch(() => {});
+        await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.needs_input", payload: { reason: "persistence_failed", message: err.message } }).catch(() => {});
+        return;
+      }
       await store.updateTask(task.id, { status: "failed", error: errorMessage(err) }).catch(() => {});
       await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.failed", payload: { reason: errorMessage(err) } });
     } finally {
