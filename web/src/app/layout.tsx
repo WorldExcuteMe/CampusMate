@@ -39,7 +39,7 @@ export function Layout() {
 
   return (
     <div className="flex min-h-dvh bg-background text-foreground">
-      <aside className="hidden w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
+      <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col overflow-y-auto border-r border-sidebar-border bg-sidebar md:flex">
         <div className="px-4 py-4">
           <BrandMark />
           <p className="mt-1 pl-10 text-[11px] text-muted-foreground">校园机会管家 · Agent</p>

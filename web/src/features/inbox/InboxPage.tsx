@@ -1,65 +1,45 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { Plus } from "lucide-react";
+import { Plus, Search, Inbox, ArrowUpRight, Clock3, ShieldAlert, Sparkles, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { repository } from "@/app/config";
-import {
-  CategoryBadge,
-  ClassBadge,
-  DeadlineTag,
-  EmptyState,
-  PageHeader,
-} from "@/components/shared";
+import { useAuth } from "@/app/auth";
+import { ClassBadge, CategoryBadge, DeadlineTag } from "@/components/shared";
+import { deadlineInstant } from "../../../../shared/calendar";
+import { InboxPreview, INBOX_STATUS } from "./InboxPreview";
 
+const FILTERS = [{ id: "active", label: "全部信息" }, { id: "pending", label: "待确认" }, { id: "opportunity", label: "机会" }, { id: "risk", label: "风险提醒" }, { id: "archived", label: "归档" }];
 export function InboxPage() {
-  const { data: items = [], isLoading } = useQuery({
-    queryKey: ["inbox"],
-    queryFn: () => repository.listInbox(),
-  });
-
-  return (
-    <div className="mx-auto max-w-4xl">
-      <PageHeader
-        title="Campus Inbox"
-        description="导入校园通知，AI 提取结构化信息并经你确认后保存。"
-        actions={
-          <Button asChild>
-            <Link to="/app/inbox/new"><Plus className="size-4" />导入通知</Link>
-          </Button>
-        }
-      />
-      {isLoading ? (
-        <p className="text-sm text-muted-foreground">加载中…</p>
-      ) : items.length === 0 ? (
-        <EmptyState title="收件箱为空" hint="点击「导入通知」粘贴一条校园通知开始。" />
-      ) : (
-        <div className="flex flex-col gap-3">
-          {items.map((item) => (
-            <Link key={item.id} to={`/app/inbox/${item.id}`}>
-              <Card className="transition-shadow hover:shadow-md">
-                <CardContent className="flex flex-col gap-2 p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <ClassBadge value={item.classification.class} />
-                    <CategoryBadge value={item.extracted.category} />
-                    <span className="ml-auto text-xs text-muted-foreground">
-                      优先级 {item.classification.priorityScore}
-                    </span>
-                  </div>
-                  <p className="font-medium leading-snug">{item.extracted.title}</p>
-                  <div className="flex flex-wrap items-center gap-3">
-                    <DeadlineTag deadline={item.extracted.deadline} />
-                    {item.extracted.org && (
-                      <span className="text-xs text-muted-foreground">{item.extracted.org}</span>
-                    )}
-                    <span className="ml-auto text-xs text-muted-foreground">{item.status}</span>
-                  </div>
-                </CardContent>
-              </Card>
-            </Link>
-          ))}
-        </div>
-      )}
+  const owner = useAuth().session?.user.id ?? "demo";
+  const query = useQuery({ queryKey: ["inbox", owner], queryFn: () => repository.listInbox() });
+  const [search, setSearch] = useState(""), [filter, setFilter] = useState("active"), [sort, setSort] = useState("priority"), [selectedId, setSelectedId] = useState<string>(), [previewOpen, setPreviewOpen] = useState(false);
+  const items = query.data ?? [], active = items.filter((i) => i.status !== "archived" && i.status !== "ignored"), now = Date.now();
+  const filtered = items.filter((i) => {
+    if (filter === "archived" ? !["archived", "ignored"].includes(i.status) : ["archived", "ignored"].includes(i.status)) return false;
+    if (filter === "pending" && i.status !== "pending_review") return false;
+    if (filter === "opportunity" && !["high_value", "worth_watching"].includes(i.classification.class)) return false;
+    if (filter === "risk" && i.classification.class !== "risk") return false;
+    return [i.extracted.title, i.extracted.org, i.rawText].join(" ").toLowerCase().includes(search.trim().toLowerCase());
+  }).sort((a, b) => sort === "newest" ? b.createdAt.localeCompare(a.createdAt) : sort === "deadline" ? ((a.extracted.deadline ? deadlineInstant(a.extracted.deadline, "Asia/Shanghai") : Infinity) - (b.extracted.deadline ? deadlineInstant(b.extracted.deadline, "Asia/Shanghai") : Infinity)) : b.classification.priorityScore - a.classification.priorityScore || b.createdAt.localeCompare(a.createdAt));
+  const selected = filtered.find((i) => i.id === selectedId) ?? filtered[0];
+  const stats = [
+    { label: "等待你确认", value: active.filter((i) => i.status === "pending_review").length, icon: Inbox, color: "bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-200" },
+    { label: "七天内截止", value: active.filter((i) => { const time = i.extracted.deadline ? deadlineInstant(i.extracted.deadline, "Asia/Shanghai") : NaN; return time >= now && time <= now + 7 * 86400000; }).length, icon: Clock3, color: "bg-teal-100 text-teal-700 dark:bg-teal-950 dark:text-teal-200" },
+    { label: "需要核对风险", value: active.filter((i) => i.classification.class === "risk").length, icon: ShieldAlert, color: "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-200" },
+  ];
+  return <div className="mx-auto max-w-7xl space-y-6">
+    <header className="flex flex-wrap items-start justify-between gap-4"><div><p className="mb-2 flex items-center gap-2 text-xs font-semibold tracking-widest text-primary"><Inbox className="size-4" />CAMPUS / INBOX</p><h1 className="text-3xl font-semibold tracking-tight">重要消息，值得被好好看见。</h1><p className="mt-2 text-sm text-muted-foreground">从校园通知到下一步行动，给信息一点秩序。</p></div><Button asChild className="rounded-xl px-4 shadow-sm"><Link to="/app/inbox/new"><Plus className="size-4" />导入通知</Link></Button></header>
+    <div className="grid gap-3 sm:grid-cols-3">{stats.map((s) => <section key={s.label} className="flex items-center gap-3 rounded-2xl border bg-card px-4 py-3"><div className={`flex size-10 shrink-0 items-center justify-center rounded-xl ${s.color}`}><s.icon className="size-4.5" /></div><div><p className="text-2xl font-semibold tabular-nums">{query.isLoading || query.isError ? "—" : s.value}</p><p className="text-xs text-muted-foreground">{s.label}</p></div></section>)}</div>
+    <div className="overflow-hidden rounded-2xl border bg-card shadow-[0_8px_32px_-24px_rgb(58_47_94/0.25)]">
+      <div className="space-y-3 border-b p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex min-w-0 items-center gap-2 text-sm font-semibold"><Sparkles className="size-4 text-primary" />你的信息中心<span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-normal text-muted-foreground">{filtered.length}</span></div><div className="flex w-full gap-2 sm:w-auto"><label className="relative min-w-0 flex-1"><Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" /><span className="sr-only">搜索通知</span><input type="search" placeholder="搜索标题、发布方或原文" value={search} onChange={(e) => setSearch(e.target.value)} className="h-9 w-full rounded-lg border bg-background pl-9 pr-3 text-xs outline-none focus:ring-2 focus:ring-ring sm:w-60" /></label><select aria-label="通知排序" value={sort} onChange={(e) => setSort(e.target.value)} className="rounded-lg border bg-background px-2 text-xs"><option value="priority">优先处理</option><option value="newest">最新收到</option><option value="deadline">最早截止</option></select></div></div><div className="flex gap-1 overflow-x-auto" aria-label="通知筛选">{FILTERS.map((f) => <button key={f.id} aria-pressed={filter === f.id} onClick={() => setFilter(f.id)} className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${filter === f.id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted"}`}>{f.label}</button>)}</div></div>
+      {query.isError && <div role="alert" className="flex flex-wrap items-center justify-between gap-2 border-b bg-destructive/5 px-4 py-3 text-sm text-destructive">读取失败，暂时无法取得最新通知。<Button size="sm" variant="outline" onClick={() => void query.refetch()}>重试</Button></div>}
+      {query.isLoading ? <div role="status" className="space-y-4 p-5" aria-label="正在读取通知">{[1, 2, 3].map((i) => <div key={i} className="h-28 animate-pulse rounded-xl bg-muted/60" />)}</div> : !filtered.length ? <div className="px-5 py-14 text-center"><Inbox className="mx-auto mb-4 size-8 text-primary/50" /><h2 className="text-base font-semibold">{items.length ? "没有匹配的通知" : query.isError ? "通知尚未载入" : "把第一条校园通知放进来"}</h2><p className="mt-2 text-sm text-muted-foreground">{items.length ? "换个关键词，或切换上方筛选。" : "粘贴文字或添加附件，整理出截止、材料和下一步。"}</p>{items.length ? <Button variant="ghost" className="mt-3" onClick={() => { setSearch(""); setFilter("active"); }}>清除筛选</Button> : !query.isError && <Button asChild variant="outline" className="mt-4"><Link to="/app/inbox/new">导入第一条通知<ArrowUpRight className="size-4" /></Link></Button>}</div> : <div className="grid lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+        <div className="divide-y lg:max-h-[820px] lg:overflow-y-auto" aria-label="通知列表">{filtered.map((item) => <button key={item.id} aria-label={`预览${item.extracted.title}`} aria-pressed={selected?.id === item.id} onClick={() => { setSelectedId(item.id); if (window.innerWidth < 1024) setPreviewOpen(true); }} className={`group relative flex w-full gap-3 p-4 text-left outline-none transition-colors focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${selected?.id === item.id ? "bg-primary/[0.055] shadow-[inset_3px_0_0_var(--primary)]" : "hover:bg-muted/40"}`}><span className={`mt-2 size-2 shrink-0 rounded-full ${item.status === "pending_review" ? "bg-primary" : "bg-border"}`} /><div className="min-w-0 flex-1"><div className="mb-2 flex flex-wrap items-center gap-1.5"><ClassBadge value={item.classification.class} /><CategoryBadge value={item.extracted.category} /><span className="ml-auto text-[10px] text-muted-foreground">{INBOX_STATUS[item.status] ?? "待处理"}</span></div><h2 className="line-clamp-2 text-sm font-semibold leading-6">{item.extracted.title}</h2><p className="mt-1 line-clamp-2 text-xs leading-6 text-muted-foreground">{item.extracted.summary || item.rawText}</p><div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1"><DeadlineTag deadline={item.extracted.deadline} />{item.extracted.org && <span className="truncate text-[11px] text-muted-foreground">{item.extracted.org}</span>}</div></div><ChevronRight className="mt-12 size-4 shrink-0 text-muted-foreground/50" /></button>)}</div>
+        <aside aria-label="通知预览" className="hidden border-l bg-muted/[0.08] p-5 lg:block"><div className="mb-4 flex items-center gap-2 text-[11px] text-muted-foreground"><span className="size-1.5 rounded-full bg-teal-500" />摘要与原文，一起核对</div>{selected && <InboxPreview item={selected} />}</aside>
+      </div>}
     </div>
-  );
+    <Dialog open={previewOpen} onOpenChange={setPreviewOpen}><DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>通知预览</DialogTitle><DialogDescription>核对摘要与原文，再进入详情处理。</DialogDescription></DialogHeader>{selected && <InboxPreview item={selected} />}</DialogContent></Dialog>
+  </div>;
 }

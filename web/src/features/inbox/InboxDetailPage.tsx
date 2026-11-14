@@ -75,7 +75,7 @@ export function InboxDetailPage() {
         title={e.title}
         actions={
           <div className="flex items-center gap-2">
-            <MockBadge />
+            {item.demo && <MockBadge />}
             <ClassBadge value={item.classification.class} />
             <CategoryBadge value={e.category} />
           </div>

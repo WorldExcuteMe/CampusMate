@@ -34,10 +34,6 @@ import { TaskWorkspace } from "./TaskWorkspace";
 const CONTROL_FEEDBACK =
   "group cursor-pointer rounded-md border border-transparent bg-muted transition-all duration-150 hover:border-ring/40 hover:bg-accent hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.97]";
 
-const WORKSPACES = [
-  { id: "local", name: "本地工作区", path: "C:\\Users\\Asus\\Documents\\QQ工具", python: "miniconda3 (64-bit)" },
-];
-
 export function AgentChatPage() {
   const { session } = useAuth();
   const owner = session?.user.id ?? "demo";
@@ -49,12 +45,11 @@ export function AgentChatPage() {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
-  const [ws] = useState("local");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSetup, setShowSetup] = useState(false);
   const [picking, setPicking] = useState(false);
   const [showOnboard, setShowOnboard] = useState(() => !localStorage.getItem("campusmate.onboarded"));
-  const [wsPath, setWsPath] = useState(() => localStorage.getItem("campusmate.workspace") || "");
+  const [wsPath, setWsPath] = useState(() => localStorage.getItem(`campusmate.workspace:${owner}`) || "");
   const fileRef = useRef<HTMLInputElement>(null);
   const [providerId, setProviderId] = useState(
     () => localStorage.getItem(`campusmate.providerId:${owner}`) || "",
@@ -66,7 +61,6 @@ export function AgentChatPage() {
   const { data: providers = [], error: providerError } = useQuery({ queryKey: ["providers", owner], queryFn: listProviders });
   const { data: profile } = useQuery({ queryKey: ["profile", owner], queryFn: () => repository.getProfile() });
   const endRef = useRef<HTMLDivElement>(null);
-  const workspace = WORKSPACES.find((w) => w.id === ws) ?? WORKSPACES[0];
   const provider = providers.find((p: ProviderPublic) => p.id === providerId) ?? providers.find((p) => p.isDefault) ?? providers[0];
   const modelName = provider?.model || "未知模型";
   const contextCap = resolveContextCap(modelName);
@@ -172,14 +166,14 @@ export function AgentChatPage() {
         // 浏览器原生文件夹对话框：在用户桌面即时弹出，不受服务端会话隔离影响
         const handle = await w.showDirectoryPicker({ mode: "read" });
         setWsPath(handle.name);
-        localStorage.setItem("campusmate.workspace", handle.name);
+        localStorage.setItem(`campusmate.workspace:${owner}`, handle.name);
         toast.success(`工作区已设置：${handle.name}`);
       } else {
         const res = await fetch("/api/workspace/pick");
         const data = await res.json();
         if (data.path) {
           setWsPath(data.path);
-          localStorage.setItem("campusmate.workspace", data.path);
+          localStorage.setItem(`campusmate.workspace:${owner}`, data.path);
           toast.success("工作区已设置");
         } else {
           toast.error("未选择文件夹");
@@ -241,7 +235,7 @@ export function AgentChatPage() {
         <div className="border-b border-border bg-secondary/40 px-4 py-2 text-xs text-secondary-foreground">
           <div className="mx-auto flex max-w-3xl items-center gap-2">
             <span className="flex-1">
-              首次使用：点「选择工作区文件夹」设定本地目录；粘贴/拖拽通知或附件即可解析；输入「去QQ/微信群获取信息」会自动引导配置环境并摄取、更新 Dashboard。
+              描述你的任务，或添加通知与附件开始。执行过程、来源和文档会显示在任务面板；本机资料与群消息需要先连接并授权 Companion。
             </span>
             <button
               className={cn(CONTROL_FEEDBACK, "shrink-0 px-2 py-1")}
@@ -317,14 +311,14 @@ export function AgentChatPage() {
                 className={cn(CONTROL_FEEDBACK, "flex max-w-56 items-center gap-1 px-2 py-1 text-xs")}
                 title="点击选择工作区文件夹"
                 onClick={pickWorkspace}
-                disabled={picking}
+                disabled={picking || backendEnabled()}
               >
                 {picking ? (
                   <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
                 ) : (
                   <FolderOpen className="size-3.5 shrink-0 text-primary transition-transform group-hover:scale-110" />
                 )}
-                <span className="truncate">{wsPath || workspace.path || "选择工作区文件夹"}</span>
+                <span className="truncate">{backendEnabled() ? "云端文档工作区" : wsPath || "选择本地文件夹"}</span>
               </button>
             )}
             <input
@@ -356,7 +350,7 @@ export function AgentChatPage() {
                 <option value="auto">自动</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option>
               </select>
             </label>
-            {!["reasoning_effort", "enable_thinking"].includes(String(provider?.capabilities?.reasoning)) && <span className="text-xs text-muted-foreground">接口暂未提供可调思考参数</span>}
+            {!["reasoning_effort", "enable_thinking"].includes(String(provider?.capabilities?.reasoning)) && <span className="text-xs text-muted-foreground">尚未确认该接口的思考控制能力</span>}
             {providerError && <span className="text-xs text-destructive">模型目录加载失败：{errorMessage(providerError)}</span>}
             {active.actualModel && <span className="text-xs text-muted-foreground" title={`最近任务配置：${active.configuredModel ?? "未知"}`}>最近返回：{active.actualModel}</span>}
             <span
