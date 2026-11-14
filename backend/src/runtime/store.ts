@@ -1,9 +1,10 @@
 // TaskStore 接口 + 内存实现（开发/测试）。Postgres 适配器实现同一接口（migrations/0002，待应用）。
 // 结构化状态=事实来源；事件 append-only；检查点用于恢复；幂等唯一键防重复副作用。
 import { randomUUID } from "node:crypto";
-import type { AgentEvent, Checkpoint, EventType, Task, TaskStatus, ToolInvocation, Budget, Usage } from "../core/types.ts";
+import type { AgentEvent, ChatMessage, Checkpoint, EventType, Task, TaskStatus, ToolInvocation, Budget, Usage } from "../core/types.ts";
 import { DEFAULT_BUDGET, EMPTY_USAGE } from "../core/types.ts";
 import { assertTaskTransition } from "./state-machine.ts";
+import { sessionMessages, sessionTurnLimit, type SessionHistoryQuery } from "./session-history.ts";
 
 export interface CreateTaskInput {
   userId: string;
@@ -22,6 +23,7 @@ export interface TaskStore {
   getTask(id: string): Promise<Task | null>;
   updateTask(id: string, patch: Partial<Task>): Promise<Task>;
   listTasksByUser(userId: string): Promise<Task[]>;
+  listSessionHistory(query: SessionHistoryQuery): Promise<ChatMessage[]>;
   claimNext(opts: { workerId: string; leaseTtlMs: number; now: number }): Promise<Task | null>;
   renewLease(id: string, workerId: string, leaseTtlMs: number, now: number): Promise<boolean>;
   requestCancel(id: string, userId: string): Promise<boolean>;
@@ -83,6 +85,23 @@ export class InMemoryStore implements TaskStore {
 
   async listTasksByUser(userId: string): Promise<Task[]> {
     return [...this.tasks.values()].filter((t) => t.userId === userId).sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  async listSessionHistory(query: SessionHistoryQuery): Promise<ChatMessage[]> {
+    const anchor = this.tasks.get(query.beforeTaskId);
+    if (!query.sessionId || !anchor || anchor.userId !== query.userId || anchor.sessionId !== query.sessionId) return [];
+    // Queue-event identity gives stable submission order even within one millisecond.
+    const queued = new Map<string, AgentEvent>();
+    for (const event of this.events) {
+      if (event.type === "task.queued" && event.userId === query.userId && !queued.has(event.taskId)) queued.set(event.taskId, event);
+    }
+    const anchorSeq = queued.get(anchor.id)?.id;
+    if (anchorSeq === undefined) return [];
+    const turns = [...queued.values()].filter(event => event.id < anchorSeq)
+      .map(event => this.tasks.get(event.taskId))
+      .filter((task): task is Task => Boolean(task && task.userId === query.userId && task.sessionId === query.sessionId && ["succeeded", "failed", "cancelled"].includes(task.status)))
+      .slice(-sessionTurnLimit(query.maxTurns));
+    return sessionMessages(turns);
   }
 
   // 原子认领：queued 或 lease 过期的 running，按 priority↑ createdAt↑。单线程 JS 内原子；Postgres 用 FOR UPDATE SKIP LOCKED。

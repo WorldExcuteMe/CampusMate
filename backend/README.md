@@ -1,6 +1,6 @@
 # CampusMate Backend（Agent Core 2.0 · Phase 0–3 基础）
 
-服务端 Agent 运行时。零运行时依赖（Node ≥24 直接运行 `.ts`，内置 `node --test`）。
+服务端 Agent 运行时。Node ≥24 直接运行 `.ts`，内置 `node --test`；先 `npm ci` 安装 pg/ws/xlsx 等依赖。
 对应 `docs/agent-core/` 架构规范；本目录是 MIGRATION_PLAN Phase 0–3 的可运行可测实现。
 
 ## 运行
@@ -12,7 +12,7 @@ LLM_API_KEY=sk-... SUPABASE_JWT_SECRET=... PORT=8788 node src/main.ts
 # 启用 Postgres 持久化（Phase 2）：设置 DATABASE_URL 或 SUPABASE_DB_PASSWORD+SUPABASE_PROJECT_REF
 DATABASE_URL=postgresql://postgres:PWD@db.REF.supabase.co:5432/postgres node src/main.ts
 
-# 测试（无需安装依赖即可跑单元；pg 已入 dependencies）
+# 测试（先 npm ci）
 node --test
 
 # 类型检查
@@ -96,3 +96,12 @@ DATABASE_URL=postgresql://postgres:PWD@db.REF.supabase.co:5432/postgres node scr
 ## 约束
 
 本阶段未改前端、未改生产库。`migrations/0002_agent_runtime.sql` 为提案 DDL，**未应用**。
+## 本机同步复核 · 2026-11-14
+
+当前 `npm test` 为正常退出的 node --test（不强退）；168 通过、1 真实 Postgres 集成跳过。组合迁移验证 19 项、脚本化基准 30 项通过，不代表真实云端验收。**API 与 Worker 仅 TaskStore 有 Postgres 实现，其他内存 Store 无法跨进程共享**，生产拆分前需补齐，详见仓库根 docs/SYNC_REVIEW_2026-11-14.md。
+
+### 服务端会话历史修复 · 2026-11-14
+
+Worker 按 `userId + sessionId` 从同一个 TaskStore 读取前序已结束轮次，使用已有 `intent/result/status`，不把 sessionId 标签或进程内 MemoryStore 当成会话记忆。队列创建事件 identity 提供稳定顺序，重试不重复消息；历史成对限长，失败/取消有标记。既有 Runtime schema 即可，无新增迁移。Postgres 模式可跨 API/Worker 进程与重启；InMemory 仅当前进程有效。画像等其他 MemoryStore 数据仍未全部共享持久化；浏览器旧会话不自动迁入后台。
+
+本次验证：typecheck；192 测试中 191 通过、1 外部 Postgres 集成跳过；PGlite 实际 SQL + API/Worker + 独立子进程磁盘重开回归通过；组合迁移 19/19。不代表云端部署或真实模型质量验收。

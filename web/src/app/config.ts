@@ -1,6 +1,5 @@
-import { getProvider, resolveConfig, type LlmProvider } from "@/lib/llm";
-import { getRepository, type Repository } from "@/lib/data";
-import { withBackendOpportunities } from "@/lib/data/backend-opportunities";
+import { BrowserProvider } from "@/lib/llm/browser";
+import { configureAiAuth } from "@/lib/llm/transport";
 import { createSupabaseClient } from "@/lib/data/supabase";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -17,16 +16,12 @@ export const supabaseClient: SupabaseClient | null = isDemo
   ? null
   : createSupabaseClient(appConfig.supabaseUrl!, appConfig.supabaseAnonKey!);
 
-// 会话绑定：AuthProvider 登录后切换为 SupabaseRepository（按 auth.uid 隔离）。
-// backendEnabled 时机会雷达读写走后端真相源（装饰器仅覆盖机会方法）。
-export let repository: Repository = withBackendOpportunities(getRepository({}));
+configureAiAuth(async () => {
+  if (!supabaseClient) return null;
+  const { data, error } = await supabaseClient.auth.getSession();
+  if (error) throw error;
+  return data.session?.access_token ?? null;
+});
 
-export function setRepository(r: Repository): void {
-  repository = withBackendOpportunities(r);
-}
-
-// 浏览器端始终使用明确标识的 Mock Provider；真实模型经服务端代理/Edge Function，
-// API Key 不落前端（见 docs/AGENT_DESIGN.md / SECURITY.md）。
-export const llmProvider: LlmProvider = getProvider(
-  resolveConfig({ LLM_PROVIDER: "mock" }),
-);
+// Model credentials never enter the browser; each result reports real provenance.
+export const llmProvider = new BrowserProvider();

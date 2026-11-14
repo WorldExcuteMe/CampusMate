@@ -3,15 +3,17 @@
 // 浏览器经同源 /api/* 调用；前端 bundle 与 localStorage 不含任何密钥。
 // 生产环境同一接口契约由 Supabase Edge Function / Sites Function 实现。
 import http from "node:http";
+import { createHandler } from "../functions/handler.ts";
+import { safeFetch, htmlToText } from "../../backend/src/core/ssrf.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile, execSync, spawn, exec } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const root = process.env.CAMPUSMATE_DEV_ROOT || path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PROVIDERS_FILE = path.join(root, ".providers.local.json");
-const PORT = 8787;
+const PORT = Number(process.env.CAMPUSMATE_PROXY_PORT ?? 8787);
 
 function loadEnv() {
   const env = {};
@@ -38,19 +40,34 @@ function saveProviders(list) {
 function publicView(p) {
   return { id: p.id, name: p.name, baseUrl: p.baseUrl, protocol: p.protocol, model: p.model, hasKey: Boolean(p.apiKey) };
 }
-function readBody(req) {
-  return new Promise((resolve) => {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", () => resolve(body));
-  });
+async function readBody(req) {
+  let size = 0; const chunks = [];
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 1_000_000) { const error = new Error("request_too_large"); error.status = 413; throw error; }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
+
 function json(res, code, obj) {
   res.writeHead(code, { "Content-Type": "application/json" });
   res.end(JSON.stringify(obj));
 }
 
-const env = loadEnv();
+const env = { ...loadEnv(), ...Object.fromEntries(Object.entries(process.env).filter(([,v]) => v !== undefined)) };
+const origins = ["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:4173", "http://localhost:4173"];
+const modelHandler = createHandler({
+  authorize: async () => "local-developer",
+  allowedOrigins: origins,
+  providers: () => {
+    const list = loadProviders();
+    if (env.LLM_API_KEY) list.unshift({ id: "builtin-deepseek", name: env.LLM_DISPLAY_NAME || "服务端模型", baseUrl: env.LLM_BASE_URL || "https://api.deepseek.com", protocol: "openai", model: env.LLM_MODEL || "deepseek-chat", apiKey: env.LLM_API_KEY });
+    return list;
+  },
+  saveProvider: (p) => saveProviders([...loadProviders().filter((x) => x.id !== p.id), p]),
+  removeProvider: (id) => saveProviders(loadProviders().filter((x) => x.id !== id)),
+});
 
 // 普适：QQ 摄取工具默认用入仓 tools/qq-ingest（任何用户都有），env 可覆盖；python 自动探测 64 位。
 const QQ_DIR = env.QQ_TOOL_DIR || path.join(root, "..", "tools", "qq-ingest");
@@ -73,7 +90,8 @@ function detectPython64() {
   }
   return "python";
 }
-const PY64 = detectPython64();
+let python64;
+const getPython64 = () => python64 ??= detectPython64();
 
 // 预热常驻 PowerShell 对话框进程：启动时加载 WinForms，点击时立即弹出，消除每次冷启动延迟。
 let dialogChild = null;
@@ -93,7 +111,7 @@ function ensureDialog() {
     "  }",
     "}",
   ].join("\n");
-  dialogChild = spawn("powershell", ["-STA", "-NoProfile", "-Command", script], { stdio: ["pipe", "pipe", "pipe"] });
+  dialogChild = spawn("powershell", ["-STA", "-NoProfile", "-Command", script], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
   dialogChild.stdout.on("data", (d) => {
     outBuf += d.toString("utf8");
     let i;
@@ -121,86 +139,26 @@ function reasoningParams(model, tier) {
 }
 
 const server = http.createServer(async (req, res) => {
+  try {
   const url = req.url || "";
-  // 供应商列表（不含密钥）
-  if (req.method === "GET" && url === "/api/providers") {
-    const list = loadProviders().map(publicView);
-    if (env.LLM_API_KEY) {
-      list.unshift({ id: "builtin-deepseek", name: "DeepSeek（内置）", baseUrl: env.LLM_BASE_URL, protocol: "openai", model: env.LLM_MODEL, hasKey: true });
-    }
-    return json(res, 200, { providers: list });
-  }
-  // 新增/更新供应商（密钥仅在此一次提交，存服务端）
-  if (req.method === "POST" && url === "/api/providers") {
-    const p = JSON.parse(await readBody(req));
-    if (!p.id || !p.baseUrl) return json(res, 400, { error: "id/baseUrl required" });
-    const list = loadProviders().filter((x) => x.id !== p.id);
-    list.push({ id: p.id, name: p.name || p.id, baseUrl: p.baseUrl, protocol: p.protocol || "openai", model: p.model || "", apiKey: p.apiKey || "" });
-    saveProviders(list);
-    return json(res, 200, { ok: true, provider: publicView(p) });
-  }
-  // 删除供应商
-  if (req.method === "DELETE" && url.startsWith("/api/providers/")) {
-    const id = decodeURIComponent(url.split("/").pop());
-    saveProviders(loadProviders().filter((x) => x.id !== id));
-    return json(res, 200, { ok: true });
-  }
-  // LLM 调用（密钥服务端解析）
-  if (req.method === "POST" && url === "/api/llm") {
-    const payload = JSON.parse(await readBody(req));
-    let key = env.LLM_API_KEY;
-    let baseUrl = env.LLM_BASE_URL || "https://api.deepseek.com";
-    let model = env.LLM_MODEL || "deepseek-chat";
-    if (payload.providerId && payload.providerId !== "builtin-deepseek") {
-      const p = loadProviders().find((x) => x.id === payload.providerId);
-      if (!p || !p.apiKey) return json(res, 503, { error: "provider key not configured (server-side)" });
-      key = p.apiKey; baseUrl = p.baseUrl; model = p.model || model;
-    }
-    if (!key) return json(res, 503, { error: "LLM_API_KEY not configured (server-side)" });
-    const retryable = new Set([429, 500, 502, 503, 504]);
-    let lastErr = null;
-    for (let attempt = 0; attempt <= 3; attempt++) {
-      try {
-        const upstream = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-        body: JSON.stringify({
-          model: payload.model || model,
-          messages: payload.messages,
-          temperature: payload.temperature ?? 0.2,
-          ...reasoningParams(payload.model || model, payload.reasoning),
-          ...(payload.tools ? { tools: payload.tools, tool_choice: payload.tool_choice ?? "auto" } : {}),
-          ...(payload.responseFormat ? { response_format: payload.responseFormat } : {}),
-        }),
-      });
-        if (retryable.has(upstream.status) && attempt < 3) {
-          const ra = Number(upstream.headers.get("retry-after")) || 0;
-          const delay = Math.min(10000, Math.max(ra * 1000, 500 * 2 ** attempt)) * (1 + Math.random() * 0.1);
-          await new Promise((r) => setTimeout(r, delay));
-          continue;
-        }
-        const data = await upstream.json();
-        if (!upstream.ok) {
-          const e = data?.error;
-          const msg = typeof e === "string" ? e : (e?.message ?? JSON.stringify(data).slice(0, 300));
-          return json(res, upstream.status, { error: `上游模型错误 HTTP ${upstream.status}: ${msg}` });
-        }
-        return json(res, upstream.status, data);
-      } catch (err) {
-        lastErr = err;
-        if (attempt < 3) {
-          const delay = Math.min(10000, 500 * 2 ** attempt) * (1 + Math.random() * 0.1);
-          await new Promise((r) => setTimeout(r, delay));
-          continue;
-        }
-      }
-    }
-    return json(res, 502, { error: String(lastErr) });
+  // All endpoints have host/origin checks before any local filesystem/process access.
+  const host = new URL(`http://${req.headers.host || "invalid"}`).hostname;
+  const origin = req.headers.origin;
+  const ownOrigin = `http://${req.headers.host}`;
+  if (!["127.0.0.1", "localhost"].includes(host) || req.headers["sec-fetch-site"] === "cross-site" ||
+      origin && origin !== ownOrigin && !origins.includes(origin)) return json(res, 403, { error: "origin_not_allowed" });
+  if (req.method === "GET" && url === "/api/health") return json(res, 200, { ok: true, service: "campusmate-local-proxy" });
+  const route = url.split("?")[0].replace(/^\/functions\/v1\/app/, "/api");
+  if (route === "/api/llm" || route === "/api/providers" || route.startsWith("/api/providers/")) {
+    const body = ["GET", "HEAD"].includes(req.method) ? undefined : await readBody(req);
+    const result = await modelHandler(new Request(`http://${req.headers.host}${url}`, { method: req.method, headers: req.headers, ...(body === undefined ? {} : { body }) }));
+    res.writeHead(result.status, Object.fromEntries(result.headers));
+    res.end(Buffer.from(await result.arrayBuffer())); return;
   }
   // 普适群发现：枚举本机所有群（uin/总数/信息密度/样例），供 agent 自动定位通知群
   if (req.method === "GET" && url.split("?")[0] === "/api/ingest/qq/groups") {
     const qqDir = QQ_DIR;
-    const py64 = PY64;
+    const py64 = getPython64();
     const script = path.join(qqDir, "group_export.py");
     execFile(py64, [script, "--list", "--limit", "3"], { cwd: qqDir, timeout: 180000, maxBuffer: 16 * 1024 * 1024, encoding: "utf8" }, (err, stdout, stderr) => {
       if (err) return json(res, 503, { error: `群发现失败: ${stderr || err.message}`, hint: "先运行 qq_cli.py key + decrypt，且 QQ 已登录" });
@@ -213,7 +171,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url === "/api/ingest/bootstrap") {
     const cli = path.join(QQ_DIR, "qq_cli.py");
     const run = (args) => new Promise((resolve) => {
-      execFile(PY64, [cli, ...args], { cwd: QQ_DIR, timeout: 120000 }, (err, stdout, stderr) => resolve({ err: err ? String(stderr || err.message) : null, stdout }));
+      execFile(getPython64(), [cli, ...args], { cwd: QQ_DIR, timeout: 120000 }, (err, stdout, stderr) => resolve({ err: err ? String(stderr || err.message) : null, stdout }));
     });
     const key = await run(["key"]);
     const dec = await run(["decrypt", "--no-wal"]);
@@ -227,7 +185,7 @@ const server = http.createServer(async (req, res) => {
     const name = params.get("name") || "";
     const uin = params.get("uin") || "";
     const qqDir = QQ_DIR;
-    const py64 = PY64;
+    const py64 = getPython64();
     const script = path.join(qqDir, "group_export.py");
     const args = [script];
     if (uin) args.push("--uin", uin);
@@ -258,7 +216,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && url.startsWith("/api/ingest/wechat")) {
     const name = new URL(url, "http://local").searchParams.get("name") || "网安2401班";
     const qqDir = QQ_DIR;
-    const py64 = PY64;
+    const py64 = getPython64();
     const script = path.join(qqDir, "wechat_cli.py");
     execFile(py64, [script, "run", "--name", name, "--auto"], { cwd: qqDir, timeout: 180000 }, (err, stdout, stderr) => {
       try {
@@ -273,7 +231,7 @@ const server = http.createServer(async (req, res) => {
   // 环境检测（零配置引导 / grill me）：本地进程/文件检查，不涉外部 URL
   if (req.method === "GET" && url === "/api/env/check") {
     const qqDir = QQ_DIR;
-    const py64 = PY64;
+    const py64 = getPython64();
     let tasks = "";
     try { tasks = execSync("tasklist", { encoding: "utf8", timeout: 10000 }); } catch {}
     const lower = tasks.toLowerCase();
@@ -321,8 +279,8 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url === "/api/web/fetch") {
     const { url: target } = JSON.parse(await readBody(req));
     try {
-      const r = await fetch(target, { headers: { "User-Agent": "CampusMate" }, redirect: "follow" });
-      const html = await r.text();
+      const r = await safeFetch(target);
+      const html = r.text;
       const text = html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
       return json(res, 200, { status: r.status, text: text.slice(0, 20000) });
     } catch (e) { return json(res, 200, { error: String(e.message) }); }
@@ -369,9 +327,13 @@ const server = http.createServer(async (req, res) => {
     }
   }
   json(res, 404, { error: "not found" });
+  } catch (e) {
+    if (!res.headersSent) json(res, e.status || (e instanceof SyntaxError ? 400 : 500), { error: e instanceof SyntaxError ? "invalid_json" : "local_request_failed" });
+    else res.end();
+  }
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`[llm-proxy] http://127.0.0.1:${PORT} (keys server-side only)`);
-  ensureDialog(); // 预热对话框进程，首次点击即弹出
+  console.log(`[llm-proxy] http://127.0.0.1:${server.address().port} (keys server-side only)`);
+  // Dialog and Python discovery are lazy: do not spawn UI/process probes at startup.
 });

@@ -7,6 +7,7 @@ import {
 import type { LlmProvider } from "../llm/types";
 import { errorMessage } from "../llm/errors";
 import { classify } from "./classifier";
+import { uid } from "../data/types";
 
 export interface AgentRun {
   id: string;
@@ -25,10 +26,6 @@ export interface InboxPipelineResult {
   extracted: ExtractedNotice;
   classification: Classification;
   run: AgentRun;
-}
-
-function uid(): string {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
 export async function runInboxPipeline(

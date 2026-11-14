@@ -35,7 +35,7 @@ test("costUsd 预算硬停（fault injection）", async () => {
   assert.equal(r.budgetExceeded, true);
 });
 
-test("tokens 预算硬停后强制总结（部分交付）", async () => {
+test("tokens 预算硬停后返回本地部分结果", async () => {
   let calls = 0;
   const transport: LlmTransport = { async chat() { calls++; return { content: "", toolCalls: [{ id: `c${calls}`, type: "function", function: { name: "web_search", arguments: "{}" } }], usage: { input: 100, output: 100 }, model: "fake" }; } };
   const r = await runAgentLoop({ system: "s", user: "x", deps: { transport, tools, budget: { ...DEFAULT_BUDGET, tokens: 150 }, executeTool: async () => JSON.stringify({ ok: true }) } });

@@ -6,6 +6,7 @@ import {
   demoTasks,
 } from "../../demo/seed";
 import type { AgentRun } from "../agent/orchestrator";
+import { groupSeenKey } from "../ingest/group-seen";
 import type {
   ActivityEvent,
   InboxItem,
@@ -29,7 +30,8 @@ interface DemoState {
 }
 
 function seedState(): DemoState {
-  return {
+  // First-write mutations must not modify module-level seeds across resets/tests.
+  return structuredClone({
     profile: demoProfile,
     inbox: demoInbox,
     tasks: demoTasks,
@@ -37,7 +39,7 @@ function seedState(): DemoState {
     reports: demoReports,
     activity: [],
     runs: [],
-  };
+  });
 }
 
 function load(): DemoState {
@@ -58,6 +60,7 @@ function save(s: DemoState): void {
 
 export class DemoRepository implements Repository {
   readonly mode = "demo" as const;
+  readonly storageScope = "demo";
 
   async getProfile(): Promise<Profile> {
     return load().profile;
@@ -149,4 +152,6 @@ export class DemoRepository implements Repository {
 
 export function resetDemo(): void {
   localStorage.removeItem(KEY);
+  localStorage.removeItem("campusmate.daily.seen.demo");
+  localStorage.removeItem(groupSeenKey("demo"));
 }

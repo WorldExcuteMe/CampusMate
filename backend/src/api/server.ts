@@ -12,7 +12,6 @@ import { onboarding, intelligentInbox, opportunityDiscovery, weeklyPlanning } fr
 import { buildManifest } from "../core/manifest.ts";
 import { DEFAULT_BUDGET } from "../core/types.ts";
 import { verifySupabaseJwt, bearerToken } from "./jwt.ts";
-import { errorMessage } from "../core/errors.ts";
 import type { Budget } from "../core/types.ts";
 
 export interface ApiDeps {
@@ -20,6 +19,7 @@ export interface ApiDeps {
   jwtSecret: string;
   corsOrigin?: string;
   storeKind?: string;
+  maxBodyBytes?: number;
   approvals?: ApprovalStore;
   capabilityRegistry?: CapabilityRegistry;
   companion?: CompanionRegistry;
@@ -32,12 +32,43 @@ function json(res: http.ServerResponse, code: number, obj: unknown): void {
   res.end(JSON.stringify(obj));
 }
 
-function readBody(req: http.IncomingMessage): Promise<string> {
-  return new Promise((resolve) => {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", () => resolve(body));
+class ApiInputError extends Error {
+  status: number;
+  constructor(status: number, message: string) { super(message); this.status = status; }
+}
+function readBody(req: http.IncomingMessage, maxBytes: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let size = 0, failed = false;
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => {
+      if (failed) return;
+      size += chunk.length;
+      if (size > maxBytes) { failed = true; chunks.length = 0; reject(new ApiInputError(413, "request_too_large")); return; }
+      chunks.push(chunk);
+    });
+    req.on("end", () => { if (!failed) resolve(Buffer.concat(chunks).toString("utf8")); });
+    req.on("error", reject);
+    req.on("aborted", () => reject(new ApiInputError(400, "request_aborted")));
   });
+}
+async function readObject(req: http.IncomingMessage, maxBytes: number): Promise<Record<string, any>> {
+  let value: unknown;
+  const raw = await readBody(req, maxBytes);
+  try { value = JSON.parse(raw || "{}"); } catch { throw new ApiInputError(400, "invalid_json"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new ApiInputError(400, "invalid_request");
+  return value as Record<string, any>;
+}
+function boundedBudget(value: unknown): Budget {
+  const budget = { ...DEFAULT_BUDGET };
+  if (value === undefined) return budget;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new ApiInputError(400, "invalid_budget");
+  for (const key of Object.keys(budget) as (keyof Budget)[]) {
+    const limit = (value as Record<string, unknown>)[key];
+    if (limit === undefined) continue;
+    if (typeof limit !== "number" || !Number.isFinite(limit) || limit < 0) throw new ApiInputError(400, "invalid_budget");
+    budget[key] = Math.min(limit, budget[key]);
+  }
+  return budget;
 }
 
 export function createApiServer(deps: ApiDeps): http.Server {
@@ -58,18 +89,22 @@ export function createApiServer(deps: ApiDeps): http.Server {
       }
 
       // 以下端点需 JWT（SSE EventSource 无法设 header，支持 ?token= query）。
-      const token = bearerToken(req.headers.authorization) ?? url.searchParams.get("token") ?? "";
+      const token = bearerToken(req.headers.authorization) ?? (req.method === "GET" && /^\/v1\/tasks\/[^/]+\/stream$/.test(path) ? url.searchParams.get("token") ?? "" : "");
       const claims = verifySupabaseJwt(token, jwtSecret);
       if (!claims) return json(res, 401, { error: "unauthorized" });
       const uid = claims.sub;
 
       if (req.method === "POST" && path === "/v1/tasks") {
-        const body = JSON.parse((await readBody(req)) || "{}");
+        const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
         if (!body.title || typeof body.title !== "string") return json(res, 400, { error: "title required" });
+        if (body.intent !== undefined && typeof body.intent !== "string") return json(res, 400, { error: "invalid_intent" });
+        if (body.sessionId !== undefined && (typeof body.sessionId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.sessionId))) {
+          return json(res, 400, { error: "invalid_session_id" });
+        }
         const images = Array.isArray(body.images) ? body.images.filter((x: unknown) => typeof x === "string").slice(0, 4) : undefined;
         const task = await store.createTask({
           userId: uid, title: body.title, intent: body.intent, sessionId: body.sessionId,
-          images, priority: body.priority, budget: body.budget as Budget | undefined,
+          images, priority: body.priority, budget: boundedBudget(body.budget),
         });
         return json(res, 201, { taskId: task.id, status: task.status });
       }
@@ -92,18 +127,29 @@ export function createApiServer(deps: ApiDeps): http.Server {
           res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "Access-Control-Allow-Origin": cors });
           let seq = Number(url.searchParams.get("after") ?? 0);
           let closed = false;
+          let ticking = false;
+          let timer: ReturnType<typeof setInterval> | undefined;
+          const cleanup = () => { closed = true; if (timer) clearInterval(timer); };
+          res.once("close", cleanup);
           const send = (event: string, data: unknown) => { if (!closed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
           const tick = async () => {
-            if (closed) return;
-            const evs = await store.listEvents(id, seq);
-            for (const e of evs) { send("task_event", e); seq = e.seq; }
-            const t = await store.getTask(id);
-            if (t) send("task_status", { status: t.status, usage: t.usage, result: t.result });
-            if (t && ["succeeded", "failed", "cancelled", "needs_input", "paused"].includes(t.status)) { send("close", { status: t.status }); closed = true; res.end(); return; }
+            if (closed || ticking) return;
+            ticking = true;
+            try {
+              const evs = await store.listEvents(id, seq);
+              if (closed) return;
+              for (const e of evs) { send("task_event", e); seq = e.seq; }
+              const t = await store.getTask(id);
+              if (t) send("task_status", { id: t.id, status: t.status, usage: t.usage, result: t.result });
+              if (t && ["succeeded", "failed", "cancelled", "needs_input", "paused"].includes(t.status)) {
+                send("close", { status: t.status }); cleanup(); res.end();
+              }
+            } catch {
+              send("stream_error", { error: "stream_unavailable" }); cleanup(); res.end();
+            } finally { ticking = false; }
           };
           await tick();
-          const timer = setInterval(() => { void tick(); }, 1000);
-          req.on("close", () => { closed = true; clearInterval(timer); });
+          if (!closed) timer = setInterval(() => { void tick(); }, 1000);
           return;
         }
         if (req.method === "POST" && sub === "/cancel") {
@@ -122,7 +168,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         const pc = deps.personalContext;
         if (req.method === "GET" && path === "/v1/terms") return json(res, 200, { terms: await pc.listTerms(uid) });
         if (req.method === "POST" && path === "/v1/terms") {
-          const b = JSON.parse((await readBody(req)) || "{}");
+          const b = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           const term = await pc.createTerm({ userId: uid, institutionId: b.institutionId ?? "", name: b.name ?? "学期", startDate: b.startDate, endDate: b.endDate, totalWeeks: b.totalWeeks ?? 20, timezone: b.timezone ?? "Asia/Shanghai" });
           return json(res, 201, { term });
         }
@@ -131,7 +177,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
           return json(res, 200, { schedules: await pc.listSchedules(uid, termId), exceptions: await pc.listExceptions(uid, termId) });
         }
         if (req.method === "POST" && path === "/v1/schedules/import") {
-          const b = JSON.parse((await readBody(req)) || "{}");
+          const b = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           const preview = previewImport(b.format ?? "csv", b.data ?? "", b.termStart ?? "2026-09-01", b.totalWeeks ?? 20);
           if (b.confirm && b.termId) {
             const saved = await pc.saveSchedules(uid, b.termId, preview.schedules.map((s) => ({ ...s, courseId: "" })));
@@ -146,7 +192,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         const os = deps.opportunityStore;
         if (req.method === "GET" && path === "/v1/opportunities") return json(res, 200, { opportunities: await os.listByUser(uid) });
         if (req.method === "POST" && path === "/v1/opportunities") {
-          const b = JSON.parse((await readBody(req)) || "{}");
+          const b = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           if (!b.title) return json(res, 400, { error: "title required" });
           const rec = await os.create({ userId: uid, title: String(b.title), type: b.type, organizer: b.organizer, description: b.description, conditions: b.conditions, deadline: b.deadline ?? null, sourceUrl: b.sourceUrl, sourceType: b.sourceType });
           return json(res, 201, { opportunity: rec });
@@ -160,12 +206,24 @@ export function createApiServer(deps: ApiDeps): http.Server {
 
       // 个性化工作流（owner 隔离）
       if (deps.personalContext && req.method === "POST" && path.startsWith("/v1/workflows/")) {
-        const b = JSON.parse((await readBody(req)) || "{}");
+        const b = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
         const wf = path.slice("/v1/workflows/".length);
-        if (wf === "onboarding") return json(res, 200, await onboarding(deps.personalContext, { ...b, userId: uid }));
-        if (wf === "inbox") return json(res, 200, intelligentInbox({ ...b, userId: uid }));
-        if (wf === "opportunities") return json(res, 200, opportunityDiscovery(b));
-        if (wf === "weekly-plan") return json(res, 200, weeklyPlanning({ ...b, userId: uid }));
+        if (wf === "onboarding") {
+          if (![b.university, b.major, b.grade].every((v) => typeof v === "string") || !b.term || !b.schedule || typeof b.schedule.data !== "string" || !["csv", "ics", "xlsx"].includes(b.schedule.format)) throw new ApiInputError(400, "invalid_onboarding");
+          return json(res, 200, await onboarding(deps.personalContext, { ...b, userId: uid, university: b.university, major: b.major, grade: b.grade, term: b.term, schedule: b.schedule }));
+        }
+        if (wf === "inbox") {
+          if (![b.title, b.rawText, b.category].every((v) => typeof v === "string")) throw new ApiInputError(400, "invalid_inbox");
+          return json(res, 200, intelligentInbox({ ...b, userId: uid, title: b.title, rawText: b.rawText, category: b.category }));
+        }
+        if (wf === "opportunities") {
+          if (!b.profile || !Array.isArray(b.profile.skills) || !Array.isArray(b.profile.interests) || !Array.isArray(b.opportunities)) throw new ApiInputError(400, "invalid_opportunities");
+          return json(res, 200, opportunityDiscovery({ ...b, profile: b.profile, opportunities: b.opportunities }));
+        }
+        if (wf === "weekly-plan") {
+          if (typeof b.goal !== "string" || !Array.isArray(b.schedules) || !Array.isArray(b.tasks) || !Number.isInteger(b.week) || b.week < 1) throw new ApiInputError(400, "invalid_weekly_plan");
+          return json(res, 200, weeklyPlanning({ ...b, userId: uid, goal: b.goal, schedules: b.schedules, tasks: b.tasks, week: b.week }));
+        }
         return json(res, 404, { error: `unknown workflow ${wf}` });
       }
 
@@ -182,7 +240,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         }
         const apMatch = path.match(/^\/v1\/approvals\/([^/]+)$/);
         if (req.method === "POST" && apMatch) {
-          const body = JSON.parse((await readBody(req)) || "{}");
+          const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           if (body.decision !== "approved" && body.decision !== "rejected") return json(res, 400, { error: "decision must be approved|rejected" });
           const a = await deps.approvals.decide(apMatch[1], uid, body.decision);
           if (!a) return json(res, 404, { error: "approval not found or forbidden" });
@@ -192,7 +250,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
 
       return json(res, 404, { error: "not found" });
     } catch (err) {
-      return json(res, 500, { error: errorMessage(err) });
+      return json(res, err instanceof ApiInputError ? err.status : 500, { error: err instanceof ApiInputError ? err.message : "internal_error" });
     }
   });
 }

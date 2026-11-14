@@ -117,6 +117,7 @@ export interface CheckpointState {
   repeat: Record<string, number>;
   usage: Usage;
   pendingApprovals: string[];
+  toolErrors?: number; // Optional for checkpoints written by older versions.
 }
 
 export interface Checkpoint {

@@ -29,14 +29,18 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const base = backendUrl();
   if (!base) throw new Error("VITE_BACKEND_URL 未配置");
   const headers = { "Content-Type": "application/json", ...(await authHeader()), ...(init?.headers ?? {}) };
-  const res = await fetch(`${base}${path}`, { ...init, headers });
-  const text = await res.text();
-  if (!res.ok) {
-    let detail = text;
-    try { detail = JSON.parse(text).error ?? text; } catch { /* keep text */ }
-    throw new Error(`Backend HTTP ${res.status}: ${detail}`);
-  }
-  return JSON.parse(text) as T;
+  const controller = new AbortController();
+  const timer = init?.signal ? undefined : setTimeout(() => controller.abort(), 30_000);
+  try {
+    const res = await fetch(`${base}${path}`, { ...init, headers, signal: init?.signal ?? controller.signal });
+    const text = await res.text();
+    if (!res.ok) {
+      let detail = text;
+      try { detail = JSON.parse(text).error ?? text; } catch { /* keep text */ }
+      throw new Error(`Backend HTTP ${res.status}: ${detail}`);
+    }
+    return JSON.parse(text) as T;
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 export async function createTask(input: { title: string; intent?: string; sessionId?: string; images?: string[] }): Promise<{ taskId: string; status: string }> {
@@ -89,24 +93,40 @@ export function subscribeTask(id: string, handlers: { onEvent?: (e: AgentEvent) 
   let stopped = false;
   let es: EventSource | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let lastSeq = 0;
+  const deliverEvent = (event: AgentEvent) => {
+    if (stopped || event.taskId !== id || !Number.isFinite(event.seq) || event.seq <= lastSeq) return;
+    lastSeq = event.seq;
+    handlers.onEvent?.(event);
+  };
 
   const poll = async () => {
     if (stopped) return;
     try {
       const t = await getTask(id);
+      if (stopped) return;
       handlers.onStatus?.(t);
       if (["succeeded", "failed", "cancelled", "needs_input", "paused"].includes(t.status)) { handlers.onClose?.(t.status); stopped = true; return; }
+      if (handlers.onEvent) {
+        // SSE-less browsers still show actual stages; never invent them from elapsed time.
+        try {
+          const events = await listEvents(id, lastSeq);
+          for (const event of events ?? []) deliverEvent(event);
+        } catch { /* status polling remains usable if event retrieval fails */ }
+      }
     } catch { /* 瞬断继续轮询 */ }
-    timer = setTimeout(poll, 1500);
+    if (!stopped) timer = setTimeout(poll, 1500);
   };
 
   void (async () => {
-    const headers = await authHeader();
+    let headers: Record<string, string>;
+    try { headers = await authHeader(); } catch { if (!stopped) void poll(); return; }
+    if (stopped) return;
     const token = (headers.Authorization ?? "").replace(/^Bearer\s+/i, "");
     if (base && typeof EventSource !== "undefined" && token) {
       try {
         es = new EventSource(`${base}/v1/tasks/${id}/stream?token=${encodeURIComponent(token)}`);
-        es.addEventListener("task_event", (ev) => { try { handlers.onEvent?.(JSON.parse((ev as MessageEvent).data)); } catch { /* ignore */ } });
+        es.addEventListener("task_event", (ev) => { try { deliverEvent(JSON.parse((ev as MessageEvent).data)); } catch { /* ignore */ } });
         es.addEventListener("task_status", (ev) => { try { const d = JSON.parse((ev as MessageEvent).data); handlers.onStatus?.(d as AgentTask); } catch { /* ignore */ } });
         es.addEventListener("close", (ev) => { try { const d = JSON.parse((ev as MessageEvent).data); handlers.onClose?.(d.status); } catch { /* ignore */ } stopped = true; es?.close(); });
         es.onerror = () => { es?.close(); es = null; if (!stopped) void poll(); }; // SSE 失败 → 轮询回退
@@ -120,14 +140,23 @@ export function subscribeTask(id: string, handlers: { onEvent?: (e: AgentEvent) 
 }
 
 // 提交任务并等待终态（聊天式一次性调用）。返回最终任务。
-export async function runTaskViaBackend(input: { title: string; intent?: string; sessionId?: string; images?: string[] }, onProgress?: (t: AgentTask) => void): Promise<AgentTask> {
+export async function runTaskViaBackend(input: { title: string; intent?: string; sessionId?: string; images?: string[] }, onProgress?: (t: AgentTask) => void, onEvent?: (e: AgentEvent) => void): Promise<AgentTask> {
   const { taskId } = await createTask(input);
   return await new Promise<AgentTask>((resolve, reject) => {
+    let finished = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = async () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      sub.stop();
+      try { resolve(await getTask(taskId)); } catch (e) { reject(e); }
+    };
     const sub = subscribeTask(taskId, {
       onStatus: (t) => onProgress?.(t),
-      onClose: async () => { sub.stop(); try { resolve(await getTask(taskId)); } catch (e) { reject(e); } },
+      onEvent,
+      onClose: () => { void finish(); },
     });
-    // 兜底超时（10 分钟），避免悬挂。
-    setTimeout(() => { sub.stop(); void getTask(taskId).then(resolve).catch(reject); }, 600000);
+    timer = setTimeout(() => { void finish(); }, 600000);
   });
 }

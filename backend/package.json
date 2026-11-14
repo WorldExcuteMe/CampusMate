@@ -10,7 +10,7 @@
     "start": "node src/main.ts",
     "api": "node src/main-api.ts",
     "worker": "node src/main-worker.ts",
-    "test": "node --test --test-force-exit",
+    "test": "node --test",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {

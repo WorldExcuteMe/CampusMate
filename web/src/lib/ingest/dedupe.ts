@@ -43,16 +43,22 @@ function dice(a: string, b: string): number {
   return (2 * inter) / (A.size + B.size);
 }
 
+function hasRoundConflict(a: NoticeSig, b: NoticeSig): boolean {
+  const na = normalizeTitle(a.title);
+  const nb = normalizeTitle(b.title);
+  const ra = (na.match(/\d{1,2}(-\d{1,2})?月/) || [])[0];
+  const rb = (nb.match(/\d{1,2}(-\d{1,2})?月/) || [])[0];
+  return !!((ra && rb && ra !== rb) || (a.deadline && b.deadline && a.deadline !== b.deadline));
+}
+
 export function noticeSimilarity(a: NoticeSig, b: NoticeSig): number {
+  // 冲突优先于同 URL/同标题；共用页面不代表同一轮报名。
+  if (hasRoundConflict(a, b)) return 0.1;
   if (a.sourceUrl && b.sourceUrl && a.sourceUrl === b.sourceUrl) return 1;
   const na = normalizeTitle(a.title);
   const nb = normalizeTitle(b.title);
-  if (na && na === nb) return 1;
-  // 轮次/截止冲突 → 视为不同事件（不同轮次不合并）
-  const ra = (na.match(/\d{1,2}(-\d{1,2})?月/) || [])[0];
-  const rb = (nb.match(/\d{1,2}(-\d{1,2})?月/) || [])[0];
-  if (ra && rb && ra !== rb) return 0.1;
-  if (a.deadline && b.deadline && a.deadline !== b.deadline) return 0.15;
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
   const ca = eventCore(a.title);
   const cb = eventCore(b.title);
   let s = dice(ca, cb);
@@ -65,20 +71,39 @@ export function noticeSimilarity(a: NoticeSig, b: NoticeSig): number {
 export const MERGE_THRESHOLD = 0.6;
 
 export function clusterNotices<T extends NoticeSig>(items: T[], threshold = MERGE_THRESHOLD): T[][] {
-  const clusters: T[][] = [];
-  for (const it of items) {
-    let placed = false;
-    for (const c of clusters) {
-      // 与簇内任一成员相似即归簇（传递合并：正式通知/小程序/宣传语归一）
-      if (c.some((m) => noticeSimilarity(it, m) >= threshold)) {
-        c.push(it);
-        placed = true;
-        break;
-      }
+  // 按内容稳定排序，不依赖仓库 createdAt、数据库行顺序或原地排序副作用。
+  const key = (s: NoticeSig) => JSON.stringify([normalizeTitle(s.title), s.deadline ?? "", s.sourceUrl ?? "", s.title]);
+  const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+  const ordered = items.slice().sort((a, b) => compare(key(a), key(b)));
+  const parent = ordered.map((_, i) => i);
+  const members = ordered.map((item) => [item]);
+  const find = (index: number): number => {
+    while (parent[index] !== index) {
+      parent[index] = parent[parent[index]];
+      index = parent[index];
     }
-    if (!placed) clusters.push([it]);
+    return index;
+  };
+  const edges: { a: number; b: number; score: number }[] = [];
+  for (let a = 0; a < ordered.length; a++) {
+    for (let b = a + 1; b < ordered.length; b++) {
+      const score = noticeSimilarity(ordered[a], ordered[b]);
+      if (score >= threshold && !hasRoundConflict(ordered[a], ordered[b])) edges.push({ a, b, score });
+    }
   }
-  return clusters;
+  // 合并所有连通匹配，而非找到首组即停止。强匹配优先，平分时按稳定内容顺序处理。
+  edges.sort((x, y) => y.score - x.score || x.a - y.a || x.b - y.b);
+  for (const edge of edges) {
+    const a = find(edge.a);
+    const b = find(edge.b);
+    if (a === b) continue;
+    // 无日期的桥接通知也不能把两个已知截止/轮次冲突的组串起来。
+    if (members[a].some((x) => members[b].some((y) => hasRoundConflict(x, y)))) continue;
+    parent[b] = a;
+    members[a].push(...members[b]);
+    members[b] = [];
+  }
+  return members.filter((group) => group.length > 0);
 }
 
 function canonScore(s: NoticeSig & { item?: InboxItem }): number {

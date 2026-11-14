@@ -3,7 +3,7 @@ import type { Repository, Opportunity } from "./types";
 import { backendEnabled, listBackendOpportunities, getBackendOpportunity, createBackendOpportunity } from "@/lib/agent/api-client";
 
 export function withBackendOpportunities(base: Repository): Repository {
-  if (!backendEnabled()) return base;
+  if (!backendEnabled() || base.mode === "demo") return base;
   return new Proxy(base, {
     get(target, prop, receiver) {
       if (prop === "listOpportunities") return () => listBackendOpportunities();

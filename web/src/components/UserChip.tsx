@@ -4,12 +4,13 @@ import { ChevronUp, GraduationCap, LogIn, LogOut, Settings, UserRound } from "lu
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
-import { repository } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import { signOut, useAuth } from "@/app/auth";
 import { cn } from "@/lib/utils";
 
 // 左下角已登录用户芯片：头像+名字，展开显示画像摘要与设置/退出入口（DSH 左下角用户区理念）。
 export function UserChip() {
+  const repository = useRepository();
   const { session, configured } = useAuth();
   const nav = useNavigate();
   const { data: profile } = useQuery({ queryKey: ["profile"], queryFn: () => repository.getProfile() });

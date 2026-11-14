@@ -6,6 +6,8 @@ import {
   type ChatSession,
 } from "./sessions";
 
+import { useAuth } from "@/app/auth";
+
 interface SessionsState {
   sessions: ChatSession[];
   activeId: string;
@@ -22,13 +24,15 @@ interface SessionsState {
 const Ctx = createContext<SessionsState | null>(null);
 
 export function SessionsProvider({ children }: { children: ReactNode }) {
+  const { session } = useAuth();
+  const scope = session?.user.id ?? "demo";
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const s = loadSessions();
+    const s = loadSessions(scope);
     return s.length ? s : [newSession()];
   });
   const [activeId, setActiveId] = useState(() => sessions[0]?.id);
 
-  useEffect(() => saveSessions(sessions), [sessions]);
+  useEffect(() => saveSessions(sessions, scope), [sessions, scope]);
 
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0];
 

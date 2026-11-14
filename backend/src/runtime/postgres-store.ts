@@ -2,11 +2,12 @@
 // 队列：事务 + FOR UPDATE SKIP LOCKED + lease；幂等：ON CONFLICT DO NOTHING；事件 append-only。
 // Worker 用直连（postgres 角色，表 owner 绕过 RLS）；代码层强制 user_id 隔离。
 import { randomUUID } from "node:crypto";
-import type { AgentEvent, Checkpoint, EventType, Task, ToolInvocation } from "../core/types.ts";
+import type { AgentEvent, ChatMessage, Checkpoint, EventType, Task, ToolInvocation } from "../core/types.ts";
 import { DEFAULT_BUDGET, EMPTY_USAGE } from "../core/types.ts";
 import type { CreateTaskInput, TaskStore } from "./store.ts";
 import type { SqlClient, SqlPool } from "./sql.ts";
 import { assertTaskTransition } from "./state-machine.ts";
+import { sessionMessages, sessionTurnLimit, type SessionHistoryQuery, type SessionTurn } from "./session-history.ts";
 
 type Row = Record<string, unknown>;
 
@@ -128,6 +129,31 @@ export class PostgresStore implements TaskStore {
   async listTasksByUser(userId: string): Promise<Task[]> {
     const r = await this.pool.query(`select * from agent_tasks where user_id=$1 order by created_at desc`, [userId]);
     return r.rows.map(rowToTask);
+  }
+
+  async listSessionHistory(query: SessionHistoryQuery): Promise<ChatMessage[]> {
+    if (!query.sessionId) return [];
+    // Both the anchor and every previous Task must match the authenticated owner
+    // AND session. Never treat a visitor-supplied sessionId as an authorization token.
+    const result = await this.pool.query<SessionTurn>(
+      `with queued as (
+         select e.task_id, min(e.id) as turn_seq from agent_events e
+         join agent_tasks scoped on scoped.id=e.task_id and scoped.user_id=e.user_id
+         where e.user_id=$1 and scoped.session_id=$2 and e.type='task.queued'
+         group by e.task_id
+       ), anchor as (
+         select q.turn_seq from agent_tasks t join queued q on q.task_id=t.id
+         where t.id=$3 and t.user_id=$1 and t.session_id=$2
+       )
+       select t.intent, t.status, t.result, t.error
+       from agent_tasks t join queued q on q.task_id=t.id
+       where t.user_id=$1 and t.session_id=$2
+         and q.turn_seq < (select turn_seq from anchor)
+         and t.status in ('succeeded','failed','cancelled')
+       order by q.turn_seq desc limit $4`,
+      [query.userId, query.sessionId, query.beforeTaskId, sessionTurnLimit(query.maxTurns)],
+    );
+    return sessionMessages(result.rows.reverse());
   }
 
   // 原子认领：事务 + FOR UPDATE SKIP LOCKED。queued 或 lease 过期的 running；重认领 attempt+1。

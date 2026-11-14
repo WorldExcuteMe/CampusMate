@@ -1,5 +1,5 @@
 // Durable Worker：认领(lease)→执行 agent-loop→事件/检查点→心跳续 lease→Evaluator→终态。
-// at-least-once + 幂等键 ⇒ 副作用 exactly-once。崩溃后 lease 过期被重认领，从 checkpoint 续跑。
+// At-least-once with cached successful invocations. Crash windows are NOT exactly-once.
 import { randomUUID } from "node:crypto";
 import type { AcceptanceCriterion, CompletionCertificate, Task, ToolDef, ToolInvocation } from "../core/types.ts";
 import type { LlmTransport } from "../core/llm.ts";
@@ -15,13 +15,14 @@ import { manifestTools } from "../core/tool-registry.ts";
 import { TOOL_SPECS } from "../core/tool-registry.ts";
 import type { MemoryStore } from "../core/memory.ts";
 import { buildContext, retrieveRelevantMemory, taskContextSummary } from "../core/context-builder.ts";
-import { contentText } from "../core/context.ts";
+import { contentText, resolveContextCap } from "../core/context.ts";
 import type { CompanionServer } from "../core/companion-server.ts";
 import type { TaskStore } from "./store.ts";
 import type { ApprovalStore } from "./approval.ts";
 import { requiresApproval } from "./approval.ts";
 import { idempotencyKey, sha256, canonicalArgs } from "./idempotency.ts";
 import { canMarkSucceeded } from "./state-machine.ts";
+import { toolResultFailed } from "../core/tool-result.ts";
 
 export interface WorkerDeps {
   store: TaskStore;
@@ -44,7 +45,7 @@ export interface WorkerDeps {
   now?: () => number;
 }
 
-// 默认验收：模型可达（无独立证据要求时的基线）。有 evidenceStore 时由独立 Evaluator 按 acceptance 核验。
+// No inferred business criteria: the default certifies execution only, not goal fulfilment.
 function defaultAcceptance(_task: Task): AcceptanceCriterion[] {
   return [];
 }
@@ -92,7 +93,7 @@ export class Worker {
     this.now = deps.now ?? Date.now;
   }
 
-  // 默认评估：有独立 Evaluator + 验收条件→逐条核验证据；否则基线（模型可达）。
+  // Explicit required criteria may never silently degrade to "model reachable".
   private async defaultEvaluate(task: Task, result: AgentLoopResult): Promise<CompletionCertificate> {
     const criteria = this.acceptance(task);
     if (this.independentEvaluator && this.evidenceStore && criteria.length > 0) {
@@ -100,8 +101,12 @@ export class Worker {
       const input = buildEvaluationInput({ reply: result.reply, evidence, citedSources: evidence.map((e) => e.sourceUrl) });
       return this.independentEvaluator.evaluate(task.id, criteria, input);
     }
-    const passed = !result.mock;
-    return { taskId: task.id, evaluatedBy: "evaluator", passed, criteria: [{ id: "model_reachable", passed, evidenceIds: [], note: passed ? "模型真实答复" : "模型不可达，降级" }], evaluatedAt: this.now() };
+    if (criteria.length > 0) {
+      return { taskId: task.id, evaluatedBy: "evaluator", passed: !criteria.some(c => c.required),
+        criteria: criteria.map(c => ({ id: c.id, passed: false, evidenceIds: [], note: "未配置独立验收存储，无法证明此条件" })), evaluatedAt: this.now() };
+    }
+    return { taskId: task.id, evaluatedBy: "evaluator", passed: true,
+      criteria: [{ id: "execution_baseline", passed: true, evidenceIds: [], note: "仅通过执行基线；未配置业务验收条件，不代表业务目标已独立核验" }], evaluatedAt: this.now() };
   }
 
   // 认领并执行至多 concurrency 个任务，返回处理数。
@@ -126,7 +131,16 @@ export class Worker {
 
   async executeTask(task: Task): Promise<void> {
     const store = this.store;
-    const heartbeat = setInterval(() => { void store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now()); }, this.heartbeatMs);
+    let heartbeatFailure: Error | undefined;
+    let renewing = false;
+    const heartbeat = setInterval(async () => {
+      if (renewing) return;
+      renewing = true;
+      try {
+        if (!await store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now())) throw new Error("任务租约已丢失");
+      } catch (err) { heartbeatFailure = new Error(`续租失败：${errorMessage(err)}`); }
+      finally { renewing = false; }
+    }, this.heartbeatMs);
     try {
       if (task.cancelRequested) { await this.finalize(task, "cancelled"); return; }
 
@@ -135,6 +149,11 @@ export class Worker {
       // 清理审批暂停哨兵：resume 后让模型重新发起工具调用（审批已决），不重放旧 pending 结果。
       const resumeMessages = cp?.state.messages.filter((m) => !(m.role === "tool" && contentText(m.content).includes("__approval_pending__")));
       const repeat = cp ? new Map(Object.entries(cp.state.repeat)) : undefined;
+      // Never reset counters when retrying or resuming an older checkpoint.
+      const resumeUsage = { ...task.usage };
+      for (const key of ["tokens", "toolCalls", "wallMs", "costUsd"] as const) {
+        resumeUsage[key] = Math.max(resumeUsage[key], cp?.state.usage[key] ?? 0);
+      }
 
       // 幂等 + 授权 + 审批包装：已成功的调用直接返回缓存；本机工具需 Companion 授权；高危需审批。
       const wrappedExecuteTool = async (name: string, args: Record<string, unknown>): Promise<string> => {
@@ -174,8 +193,9 @@ export class Worker {
         } catch (e) {
           out = JSON.stringify({ error: errorMessage(e), class: "tool_transient" });
         }
-        let parsed: unknown = out; let ok = true;
-        try { parsed = JSON.parse(out); ok = !(parsed && typeof parsed === "object" && (parsed as Record<string, unknown>).error); } catch { /* non-json */ }
+        let parsed: unknown = out;
+        const ok = !toolResultFailed(out);
+        try { parsed = JSON.parse(out); } catch { /* non-json */ }
         const inv: ToolInvocation = {
           id: randomUUID(), taskId: task.id, userId: task.userId, toolName: name,
           idempotencyKey: key, argsHash: sha256(canonicalArgs(args)), runtime: this.companion?.resolve(task.userId) ? "local-companion" : "cloud",
@@ -193,32 +213,46 @@ export class Worker {
         await store.appendEvent({ taskId: task.id, userId: task.userId, type: "step.started", payload: { manifest: { runtime: manifest.runtime, capabilities: manifest.capabilities.filter((c) => c.available).map((c) => c.id) } } });
       }
 
-      // 分层上下文：taskContext（事实来源）恒注入 + 记忆隔离检索。
-      let system = this.buildSystem(task);
-      if (this.memoryStore) {
-        const relevantMemory = await retrieveRelevantMemory(this.memoryStore, task.userId, task.id);
-        const taskContext = taskContextSummary(task, []);
-        const composed = buildContext({ layers: { stableInstructions: this.buildSystem(task), taskContext, userProfile: "", relevantMemory, toolSchemas: taskTools }, history: [], user: task.intent, cap: 200000 });
-        system = composed.messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
-      }
+      // Session dialogue is loaded from the same durable Store as the Task, not
+      // the process-local MemoryStore. Checkpoints already contain their history.
+      const history = !cp && task.sessionId ? await store.listSessionHistory({
+        userId: task.userId, sessionId: task.sessionId, beforeTaskId: task.id,
+      }) : [];
+      const relevantMemory = this.memoryStore ? await retrieveRelevantMemory(this.memoryStore, task.userId, task.id) : "";
+      const userMemory = this.memoryStore ? await this.memoryStore.getUserMemory(task.userId) : null;
+      const composed = buildContext({ layers: {
+        stableInstructions: this.buildSystem(task), taskContext: taskContextSummary(task, []),
+        userProfile: userMemory ? JSON.stringify({ profile: userMemory.profile, preferences: userMemory.preferences }).slice(0, 6000) : "",
+        relevantMemory, toolSchemas: taskTools,
+      }, history, user: task.intent, cap: resolveContextCap() });
+      const system = contentText(composed.messages[0]?.content);
 
       const result = await runAgentLoop({
         system,
         user: task.intent,
+        history: composed.messages.slice(1, -1),
         images: task.images,
         resumeMessages,
+        resumeUsage,
+        resumeToolErrors: cp?.state.toolErrors ?? 0,
         repeat,
         deps: {
           transport: this.transport,
           tools: taskTools,
           budget: task.budget,
           executeTool: wrappedExecuteTool,
+          isCancelled: async () => {
+            if (heartbeatFailure) throw heartbeatFailure;
+            const current = await store.getTask(task.id);
+            if (!current || current.lease.owner !== this.workerId || current.status !== "running") throw new Error("任务租约已丢失，停止执行");
+            return current.cancelRequested;
+          },
           hooks: {
             now: this.now,
-            onEvent: (type, payload) => { void store.appendEvent({ taskId: task.id, userId: task.userId, type, payload }); },
-            onCheckpoint: (state) => {
-              void store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now());
-              void store.writeCheckpoint({ taskId: task.id, userId: task.userId, eventSeq: 0, state });
+            onEvent: async (type, payload) => { await store.appendEvent({ taskId: task.id, userId: task.userId, type, payload }); },
+            onCheckpoint: async (state) => {
+              if (!await store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now())) throw new Error("检查点续租失败");
+              await store.writeCheckpoint({ taskId: task.id, userId: task.userId, eventSeq: 0, state });
             },
           },
         },
@@ -226,9 +260,9 @@ export class Worker {
 
       // 协作式取消：执行后检查标志。
       const fresh = await store.getTask(task.id);
-      if (fresh?.cancelRequested) { await this.finalize(task, "cancelled"); return; }
-
+      if (!fresh || fresh.lease.owner !== this.workerId || fresh.status !== "running") return; // Do not clobber another worker.
       await store.updateTask(task.id, { usage: result.usage });
+      if (fresh.cancelRequested || result.stopReason === "cancelled") { await this.finalize(task, "cancelled"); return; }
 
       // 审批暂停：转 needs_input，等待人工审批后 resume（不执行未批准的高危工具）。
       if (result.paused) {
@@ -237,7 +271,15 @@ export class Worker {
         return;
       }
 
-      const certificate = await this.evaluator(task, result);
+      const executionPassed = !result.mock && result.stopReason === "completed" && result.toolErrors === 0;
+      const runtimeCriterion = { id: "runtime_execution", passed: executionPassed, evidenceIds: [],
+        note: executionPassed ? "正常结束，未观测到工具失败" : `执行未通过：stop=${result.stopReason}, toolErrors=${result.toolErrors}` };
+      // Custom business evaluators cannot bypass execution failures or limits.
+      const certificate: CompletionCertificate = executionPassed
+        ? await this.evaluator(task, result)
+        : { taskId: task.id, evaluatedBy: "evaluator", passed: false, criteria: [], evaluatedAt: this.now() };
+      certificate.passed = certificate.passed && executionPassed;
+      certificate.criteria = [...certificate.criteria, runtimeCriterion];
       await store.appendEvent({ taskId: task.id, userId: task.userId, type: certificate.passed ? "eval.passed" : "eval.failed", payload: { certificate } });
 
       if (canMarkSucceeded(certificate.passed)) {
@@ -247,8 +289,10 @@ export class Worker {
         });
         await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.succeeded", payload: { partial: result.budgetExceeded } });
       } else {
-        await store.updateTask(task.id, { status: "failed", error: result.reply, result: { summary: result.reply, certificate, artifactIds: [] } });
-        await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.failed", payload: { reason: result.reply, certificate } });
+        const failureNotes = certificate.criteria.filter(c => !c.passed).map(c => c.note).join("；");
+        const summary = `任务未通过验收（${failureNotes || runtimeCriterion.note}）。\n${result.reply}`;
+        await store.updateTask(task.id, { status: "failed", error: summary, result: { summary, certificate, artifactIds: [], partial: result.usage.toolCalls > 0 } });
+        await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.failed", payload: { reason: summary, certificate } });
       }
     } catch (err) {
       await store.updateTask(task.id, { status: "failed", error: errorMessage(err) }).catch(() => {});

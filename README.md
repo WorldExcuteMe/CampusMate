@@ -20,6 +20,8 @@ Information → Understanding → Discovery → Matching → Verification → De
 
 ## 开发
 
+**三人远程开发、各自电脑有 Docker：优先按 [本地数据库开发指南](docs/LOCAL_DEVELOPMENT.md) 启动独立 DB + Auth + REST。** 统一版本与迁移，不要求先建云项目；各人的本地数据互不共享。下方只启动网页的方式仍是 Demo，不等于已经接上数据库。
+
 ```bash
 cd web
 npm install
@@ -29,7 +31,11 @@ npm run build      # 类型检查 + 生产构建（dist/）
 npm run preview    # 预览构建产物
 ```
 
-无 Supabase 凭证时自动进入 **Demo 模式**：预设虚拟数据 + 明确标识的 Mock 提取，可完整体验第一条业务闭环。配置 `web/.env`（见 `.env.example`）后启用真实用户模式。
+无 Supabase 凭证时自动进入 **Demo 模式**：预设虚拟数据 + 明确标识的 Mock 提取，可完整体验第一条业务闭环。配置 `web/.env`（见 `.env.example`）后支持登录真实用户模式；未登录仍为 Demo。真实 AI 另需服务端 Function 与密钥，不能只配置前端。
+
+## 修复后的接线
+
+`web/` 的 `npm run dev` / `npm run preview` 会监督启动本地模型代理；`npm run dev:api` 仅用于独立调试。生产鉴权、密钥、0002 数据库升级与验证边界见 [AI_BACKEND_SETUP](docs/AI_BACKEND_SETUP.md)。已有数据库需先执行 0002；本次代码修复不代表云端已升级。
 
 ## 第一条业务闭环
 
@@ -61,3 +67,6 @@ project.md           # 长期项目状态文档（实时更新）
 ## 许可
 
 待定（参赛期间暂不开放复用）。
+## 上游 2.0 同步状态
+
+新增 Node 24 服务端 Agent Runtime（`backend/`）、个人上下文、课表与日历、会话与附件。当前默认仍可无凭据运行 Demo；生产配置与剩余持久化/多进程限制见 [同步复核](docs/SYNC_REVIEW_2026-11-14.md)。脚本化基准不代表真实模型或真实高校成功率。

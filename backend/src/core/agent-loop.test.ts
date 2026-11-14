@@ -49,7 +49,7 @@ test("工具失败 error 观测回传，循环不中断（mock=false）", async 
   assert.ok(!r.reply.includes("[object Object]"));
 });
 
-test("预算硬停：toolCalls=1 → 强制总结，budgetExceeded=true", async () => {
+test("预算硬停：toolCalls=1 → 本地部分结果，不再付费调用模型", async () => {
   const transport = new FakeTransport([
     { toolCalls: [tc("save_to_inbox", { title: "a" })] },
     { content: "最终总结。" },
@@ -60,7 +60,8 @@ test("预算硬停：toolCalls=1 → 强制总结，budgetExceeded=true", async 
   });
   assert.equal(r.budgetExceeded, true);
   assert.equal(r.usage.toolCalls, 1);
-  assert.equal(r.reply, "最终总结。");
+  assert.match(r.reply, /toolCalls 预算超限停止/);
+  assert.equal(transport.i, 1);
 });
 
 test("真实传输失败 → mock=true，可读，无 [object Object]", async () => {

@@ -33,6 +33,8 @@ export interface InboxItem {
   createdAt: string;
   demo: boolean;
   mergedFrom?: string[];
+  /** Extraction provenance is independent of the data storage mode. */
+  extractionMock?: boolean;
 }
 
 export interface Task {
@@ -92,6 +94,8 @@ export interface ActivityEvent {
 
 export interface Repository {
   readonly mode: "demo" | "supabase";
+  /** Stable local cache namespace for this repository's owner, not a permission grant. */
+  readonly storageScope: string;
   getProfile(): Promise<Profile>;
   updateProfile(p: Profile): Promise<Profile>;
   listInbox(): Promise<InboxItem[]>;
@@ -114,5 +118,5 @@ export interface Repository {
 }
 
 export function uid(): string {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+  return crypto.randomUUID();
 }

@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { CalendarDays, Clock } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader, EmptyState } from "@/components/shared";
-import { repository } from "@/app/config";
+import { useAuth, useRepository } from "@/app/auth";
 import { backendEnabled, listTerms, listSchedules, type ScheduleRow } from "@/lib/agent/api-client";
 import { buildWeekEntries, weekGrid, freeTime, type CalendarEntry } from "@/lib/domain/calendar-grid";
 
@@ -17,8 +17,10 @@ function currentWeek(startDate: string, totalWeeks: number): number {
 }
 
 export function CalendarPage() {
+  const repository = useRepository();
+  const { session } = useAuth();
   const [week, setWeek] = useState<number | null>(null);
-  const terms = useQuery({ queryKey: ["terms"], queryFn: () => listTerms(), enabled: backendEnabled() });
+  const terms = useQuery({ queryKey: ["terms"], queryFn: () => listTerms(), enabled: backendEnabled() && Boolean(session) });
   const term = terms.data?.[0];
   const schedules = useQuery({ queryKey: ["schedules", term?.id], queryFn: () => listSchedules(term!.id), enabled: Boolean(term) });
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: () => repository.listTasks() });

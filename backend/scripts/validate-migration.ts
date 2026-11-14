@@ -1,5 +1,5 @@
 // 在真实 Postgres 引擎（PGlite WASM）上应用 0001+0002 并跑 PostgresStore 完整契约。
-// 证明 migration DDL 有效（SKIP LOCKED / ON CONFLICT / 触发器 / RLS 策略），生产 dashboard 应用可保证成功。
+// 证明 migration DDL 有效（SKIP LOCKED / ON CONFLICT / 触发器 / RLS 策略），不能替代真实 Supabase 迁移和双账号 RLS 验收。
 // 运行：node scripts/validate-migration.ts
 import fs from "node:fs";
 import { PGlitePool } from "../src/runtime/pglite-pool.ts";
@@ -13,8 +13,15 @@ const stripExtension = (s: string) => s.replace(/create extension if not exists 
 const sql0001 = stripExtension(fs.readFileSync(new URL("supabase/migrations/0001_init.sql", root), "utf8"));
 const sql0002 = stripExtension(fs.readFileSync(new URL("backend/migrations/0002_agent_runtime.sql", root), "utf8"));
 
+const profileSql = fs.readFileSync(new URL("supabase/migrations/0002_profiles_and_provenance.sql", root), "utf8");
+const personalSql = stripExtension(fs.readFileSync(new URL("backend/migrations/0003_personal_context.sql", root), "utf8"));
+const verificationSql = fs.readFileSync(new URL("supabase/migrations/0003_atomic_verification_reports.sql", root), "utf8");
+
 // Supabase 专有对象桩：auth.users + auth.uid()（PGlite 无 Supabase auth schema）。
 const AUTH_STUB = `
+create role anon;
+create role authenticated;
+create role service_role bypassrls;
 create schema if not exists auth;
 create table if not exists auth.users (id uuid primary key default gen_random_uuid(), email text);
 create or replace function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
@@ -29,8 +36,18 @@ try {
   console.log("[1] 应用 auth 桩 + 0001_init + 0002_agent_runtime");
   await pool.exec(AUTH_STUB);
   await pool.exec(sql0001);
+  const legacyUser = randomUUID();
+  await pool.query("insert into auth.users (id) values ($1)", [legacyUser]);
+  await pool.exec(profileSql);
+  check("旧用户画像回填", (await pool.query("select id from profiles where id=$1", [legacyUser])).rows.length === 1);
   await pool.exec(sql0002);
+  await pool.exec(personalSql);
+  await pool.exec(verificationSql);
   await pool.query("insert into auth.users (id, email) values ($1, $2)", [userId, "test@example.com"]);
+  check("新用户注册触发器建档", (await pool.query("select id from profiles where id=$1", [userId])).rows.length === 1);
+  await pool.query("update profiles set name='保留资料' where id=$1", [userId]);
+  await pool.exec(profileSql);
+  check("重跑修复迁移不覆盖画像", (await pool.query<{name:string}>("select name from profiles where id=$1", [userId])).rows[0].name === "保留资料");
   const tables = await pool.query<{ t: string }>("select table_name as t from information_schema.tables where table_name like 'agent_%' order by table_name");
   check("agent_* 8 表创建", tables.rows.length >= 8);
   console.log("    表:", tables.rows.map((r) => r.t).join(", "));

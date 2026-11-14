@@ -16,9 +16,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "dev:function": "deno run --allow-net=127.0.0.1:8000 dev/function-local.ts",
-    "check:function": "deno check functions/index.ts",
-    "benchmark": "vitest run benchmark"
+    "dev:function": "deno run --allow-net --allow-env=SUPABASE_URL,SUPABASE_ANON_KEY,LLM_API_KEY,LLM_DISPLAY_NAME,LLM_BASE_URL,LLM_MODEL,AI_ALLOWED_ORIGINS dev/function-local.ts",
+    "check:function": "npx --yes deno@2.9.6 check functions/index.ts dev/function-local.ts",
+    "benchmark": "vitest run benchmark",
+    "dev:api": "node --experimental-strip-types dev/llm-proxy.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -40,9 +41,11 @@
     "react-day-picker": "^10.0.1",
     "react-dom": "19.2.6",
     "react-hook-form": "^7.85.0",
+    "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.12.2",
     "react-router-dom": "^7.0.0",
     "recharts": "^3.8.0",
+    "remark-gfm": "^4.0.1",
     "sonner": "^2.0.8",
     "tailwind-merge": "3.6.0",
     "vaul": "^1.1.2",

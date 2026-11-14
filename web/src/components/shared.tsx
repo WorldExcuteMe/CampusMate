@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { daysUntil } from "@/lib/time-policy";
+import { useBeijingDay } from "@/lib/use-beijing-day";
 import type { NoticeClass, NoticeCategory, VerificationStatus } from "@/lib/schemas";
 
 const CLASS_META: Record<NoticeClass, { label: string; className: string }> = {
@@ -38,9 +40,10 @@ export function MockBadge() {
   );
 }
 
-export function DeadlineTag({ deadline }: { deadline: string | null }) {
-  if (!deadline) return <span className="text-xs text-muted-foreground">无截止日期</span>;
-  const days = Math.ceil((Date.parse(deadline) - Date.now()) / 86_400_000);
+export function DeadlineTag({ deadline, pastLabel = "已过期" }: { deadline: string | null; pastLabel?: string }) {
+  const today = useBeijingDay();
+  const days = daysUntil(deadline, today);
+  if (days === null) return <span className="text-xs text-muted-foreground">{deadline ? `截止 ${deadline} · 日期无效，待核实` : "无截止日期 · 待核实"}</span>;
   const urgent = days <= 3;
   const soon = days <= 7;
   return (
@@ -51,8 +54,8 @@ export function DeadlineTag({ deadline }: { deadline: string | null }) {
       )}
     >
       截止 {deadline}
-      {Number.isFinite(days) && days >= 0 && ` · 剩 ${days} 天`}
-      {Number.isFinite(days) && days < 0 && " · 已过期"}
+      {days >= 0 && ` · 剩 ${days} 天`}
+      {days < 0 && ` · ${pastLabel}`}
     </span>
   );
 }

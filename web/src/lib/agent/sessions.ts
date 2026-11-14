@@ -22,21 +22,21 @@ export interface ChatSession {
 
 const KEY = "campusmate.sessions.v1";
 
-export function loadSessions(): ChatSession[] {
+export function loadSessions(scope = "demo"): ChatSession[] {
   try {
-    return JSON.parse(localStorage.getItem(KEY) || "[]") as ChatSession[];
+    return JSON.parse(localStorage.getItem(`${KEY}.${encodeURIComponent(scope)}`) ?? (scope === "demo" ? localStorage.getItem(KEY) : null) ?? "[]") as ChatSession[];
   } catch {
     return [];
   }
 }
 
-export function saveSessions(list: ChatSession[]): void {
-  localStorage.setItem(KEY, JSON.stringify(list));
+export function saveSessions(list: ChatSession[], scope = "demo"): void {
+  localStorage.setItem(`${KEY}.${encodeURIComponent(scope)}`, JSON.stringify(list));
 }
 
 export function newSession(mode: "auto" | "daily" = "auto"): ChatSession {
   return {
-    id: Math.random().toString(36).slice(2) + Date.now().toString(36),
+    id: crypto.randomUUID(),
     name: "新会话",
     mode,
     createdAt: new Date().toISOString(),

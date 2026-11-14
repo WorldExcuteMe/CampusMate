@@ -13,11 +13,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { listProviders, saveProvider, removeProvider } from "@/lib/llm/proxy";
+import { providerCatalog, saveProvider, removeProvider } from "@/lib/llm/proxy";
 
 export function ProviderSettings() {
   const qc = useQueryClient();
-  const { data: providers = [] } = useQuery({ queryKey: ["providers"], queryFn: listProviders });
+  const { data: catalog } = useQuery({ queryKey: ["provider-catalog"], queryFn: providerCatalog });
+  const providers = catalog?.providers ?? [];
+  const mutable = catalog?.mutable === true;
   const [form, setForm] = useState({ id: "", name: "", baseUrl: "", protocol: "openai", model: "", apiKey: "" });
 
   const save = useMutation({
@@ -25,13 +27,20 @@ export function ProviderSettings() {
     onSuccess: (ok) => {
       if (!ok) return toast.error("保存失败（需本地代理服务运行）");
       qc.invalidateQueries({ queryKey: ["providers"] });
+      qc.invalidateQueries({ queryKey: ["provider-catalog"] });
       toast.success("供应商已保存（密钥仅存服务端）");
       setForm({ id: "", name: "", baseUrl: "", protocol: "openai", model: "", apiKey: "" });
     },
+    onError: () => toast.error("保存失败，请检查代理连接"),
   });
   const del = useMutation({
     mutationFn: (id: string) => removeProvider(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["providers"] }),
+    onSuccess: (ok) => {
+      if (!ok) return toast.error("删除失败");
+      qc.invalidateQueries({ queryKey: ["providers"] });
+      qc.invalidateQueries({ queryKey: ["provider-catalog"] });
+    },
+    onError: () => toast.error("删除失败，请检查代理连接"),
   });
 
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
@@ -45,7 +54,7 @@ export function ProviderSettings() {
       <CardContent className="flex flex-col gap-4">
         <div className="flex items-start gap-2 rounded-md bg-muted p-3 text-xs text-muted-foreground">
           <ShieldCheck className="mt-0.5 size-4 shrink-0 text-emerald-600" />
-          <p>API 密钥仅提交一次并存储于服务端（本地 gitignored 文件 / 生产 Supabase Secret），前端 bundle、localStorage 与 GitHub 均不含密钥。列表仅显示掩码状态。</p>
+          <p>生产模型由管理员配置服务端 Secret；当前只支持 OpenAI 兼容协议。本地开发代理支持保存自定义供应商，密钥不写入前端 bundle 或 localStorage。</p>
         </div>
 
         <div className="flex flex-col gap-2">
@@ -55,7 +64,7 @@ export function ProviderSettings() {
                 <p className="font-medium">{p.name} <span className="text-xs text-muted-foreground">({p.id})</span></p>
                 <p className="truncate text-xs text-muted-foreground">{p.baseUrl} · {p.protocol} · {p.model || "默认模型"} · 密钥 {p.hasKey ? "已配置 ••••" : "未配置"}</p>
               </div>
-              {p.id !== "builtin-deepseek" && (
+              {mutable && p.id !== "builtin-deepseek" && (
                 <Button size="icon-xs" variant="ghost" aria-label="删除" onClick={() => del.mutate(p.id)}>
                   <Trash2 className="size-4 text-muted-foreground" />
                 </Button>
@@ -64,7 +73,8 @@ export function ProviderSettings() {
           ))}
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        {!mutable && <p className="text-xs text-muted-foreground">供应商管理为只读。生产环境请配置服务端 Secret；本地编辑需运行 npm run dev:api。</p>}
+        {mutable && <div className="grid gap-3 sm:grid-cols-2">
           <div><Label>Provider ID</Label><Input placeholder="my-provider" value={form.id} onChange={set("id")} /></div>
           <div><Label>显示名称</Label><Input placeholder="我的供应商" value={form.name} onChange={set("name")} /></div>
           <div><Label>API 地址</Label><Input placeholder="https://api.example.com/v1" value={form.baseUrl} onChange={set("baseUrl")} /></div>
@@ -74,19 +84,17 @@ export function ProviderSettings() {
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="openai">OpenAI 兼容</SelectItem>
-                <SelectItem value="anthropic">Anthropic</SelectItem>
-                <SelectItem value="custom">自定义</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div><Label>模型</Label><Input placeholder="deepseek-chat" value={form.model} onChange={set("model")} /></div>
           <div><Label>API 密钥</Label><Input type="password" placeholder="sk-…（仅提交到服务端）" value={form.apiKey} onChange={set("apiKey")} /></div>
           <div className="sm:col-span-2">
-            <Button disabled={!form.id || !form.baseUrl || save.isPending} onClick={() => save.mutate()}>
+            <Button disabled={!form.id || !form.baseUrl || !form.model || !form.apiKey || save.isPending} onClick={() => save.mutate()}>
               <Plus className="size-4" />添加供应商
             </Button>
           </div>
-        </div>
+        </div>}
       </CardContent>
     </Card>
   );
