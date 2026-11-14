@@ -5,7 +5,7 @@ export function canonicalArgs(args: unknown): string {
   const sort = (v: unknown): unknown =>
     Array.isArray(v) ? v.map(sort)
     : v && typeof v === "object"
-      ? Object.keys(v as object).sort().reduce((o, k) => { o[k] = sort((v as Record<string, unknown>)[k]); return o; }, {} as Record<string, unknown>)
+      ? Object.keys(v as object).sort().reduce((o, k) => { o[k] = sort((v as Record<string, unknown>)[k]); return o; }, Object.create(null) as Record<string, unknown>)
       : v;
   return JSON.stringify(sort(args));
 }

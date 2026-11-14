@@ -4,6 +4,8 @@
 
 Phase 4 — in progress. 用户已批准 Spec v2、实施计划及范围内子任务阶段委托。
 
+执行方式更新：用户随后明确“将子智能体召回，你来进行全权任务吧”。所有运行子代理已中断，后续由主代理单独实施、测试、自检与提交，采用 spec-tdd-workflow；下文历史的子代理分工不再作为调度指令。
+
 - 版本：v2，纳入用户新增的调用调优、time table、思考策略及 Word/PDF/通用工具评估。
 - 档位：Standard。涉及跨模块行为、用户数据、任务契约、模型配置及视觉交互。
 - 日期：2026-11-14；项目工作区：`C:\Users\Asus\CodeBuddy\qoder比赛`。
@@ -12,7 +14,7 @@ Phase 4 — in progress. 用户已批准 Spec v2、实施计划及范围内子�
 - v2 修改前/后备份：`.agent_versions/v2_CAMPUSMATE_PLAN_20261114-132925/`，保留 v1 文档原件。
 - 用户在总审批问题后回复“确认”；本文件 v2 的契约、实施范围和技术方案获准实施，新增范围/不可逆动作仍单独确认。
 - 实施分支：`codex/campusmate-reliability-experience`；实施补充备份：`.agent_versions/v3_CAMPUSMATE_IMPLEMENT_20261114-135858/`。
-- 正在准备 T1 存储底座；任务实际修改、测试和提交按下方调度及证据记录，不提前声明完成。
+- T1 存储底座正在 Red→Green；T2 仅基于冻结契约准备计划，实施须等待 T1 committed+accepted。
 
 ## Problem and goal
 
@@ -348,19 +350,29 @@ Phase 4 — in progress. 用户已批准 Spec v2、实施计划及范围内子�
 - 用户追加四点：授权继续评估与补充方案；并非 Phase4 总计划批准。v1 的“仅 Markdown”边界已被本次 DOCX/PDF 提议取代，避免新旧计划冲突。
 - 2026-11-14 总审批：主代理询问“请确认是否批准这份 Spec v2 和实施计划，并授权我在计划范围内审核、推进子代理各阶段”，用户原话：“确认”。覆盖 v2 的 20 项 AC、10 项任务，本地实现、测试及逐任务提交；授权主代理审核推进范围内子阶段。无跳过阶段授权。
 - 部署/发布/push、生产数据库写入、付费模型实测预算以及新目标/行为/影响扩大仍不在本次授权内。
+- 用户异步确认恢复规则：同会话已有后续对话时，旧失败任务提示“用新消息继续”，保留旧任务记录；不自动创建继续任务或插回旧轮次。
+- 用户要求召回子智能体并由主代理全权执行；已停止全部运行代理，后续不再派发。该执行方式覆盖历史编排要求，批准的产品范围与验收不变。
 - 待记录：用户批准原话、计划版本、委托范围及任何偏差。获得批准后在范围内推进到完成，不逐任务重复索取同一授权。
 
 ## 调度状态与实施证据
 
 | 任务 | 当前状态 | 所有者 | 依赖 | 提交/证据 |
 |---|---|---|---|---|
-| T1 | clarifying | 存储子代理，主代理提交 | v2 授权有效 | 待回报 |
-| T2 | pending | 待分派 | T1 accepted | — |
-| T3 | pending | 待分派 | T1 accepted | — |
-| T4 | pending | 待分派 | T2/T3 accepted | — |
-| T5 | pending | 待分派 | T1 accepted | — |
-| T6 | pending | 待分派 | T2/T3/T4/T9 accepted | — |
-| T7 | pending | 待分派 | T4/T5/T6 accepted | — |
-| T8 | pending | 主代理 | 其余实施任务 accepted | — |
-| T9 | pending | 待分派 | T2/T3 accepted | — |
-| T10 | pending | 待分派 | T6 accepted | — |
+| T1 | ready_to_commit | 本人 | v2 授权有效；各阶段已审 | 边界修复及最终回归194/194；待主要提交 |
+| T2 | ready | 本人 | 已有细化计划；实施等 T1 accepted | 恢复规则已获用户答复 |
+| T3 | pending | 本人 | T1 accepted | — |
+| T4 | pending | 本人 | T2/T3 accepted | — |
+| T5 | pending | 本人 | T1 accepted | — |
+| T6 | pending | 本人 | T2/T3/T4/T9 accepted | — |
+| T7 | pending | 本人 | T4/T5/T6 accepted | — |
+| T8 | pending | 本人 | 其余实施任务 accepted | — |
+| T9 | pending | 本人 | T2/T3 accepted | — |
+| T10 | pending | 本人 | T6 accepted | — |
+
+### T1 当前证据
+
+- Red：聚焦 shared-state/storage-contracts 11 tests、0 pass、11 fail，exit 1；全为真实断言失败，没有缺导入或语法错误充当 Red。日志：仓库外 `campusmate-evidence/t1-red.log`。
+- 独立 SQL 评审发现 private 机会子资源仍公开；新增 opportunity-visibility 真正 RLS 测试先 Red（来源预期1条，实际2条），修新增迁移策略后 Green（1 pass/0 fail）。
+- 本地增量迁移由官方 Supabase CLI 3.1.0 生成；只写文件，未连库或应用生产迁移。
+- 评审追加的真实 pg DATE、memory import/evidence owner、path-only/canonical artifact问题已按边界 Red→Green修复；原聚焦25/25、四版本迁移16/16和类型检查通过，真实DB集成明确未连接。
+- 最终独立评审发现 canonicalArgs 丢失 JSON 自有 __proto__ 键。主代理新增两模式正文/哈希/同版本冲突回归：先2 fail（content hash mismatch），使用无原型字典修复后2 pass；类型检查exit0，最终本地后端回归194/194、0fail、exit0。未通过任意宿主文件读取绕过内容校验。

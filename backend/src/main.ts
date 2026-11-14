@@ -1,38 +1,18 @@
 // 一体化开发入口：API + Worker 同进程共享 InMemoryStore（可立即运行/演示）。
 // 生产拆分：api/worker 独立进程 + PostgresStore（migrations/0002，Phase 2）。
 import "./load-env.ts";
-import { createApiServer } from "./api/server.ts";
-import { InMemoryStore } from "./runtime/store.ts";
-import type { TaskStore } from "./runtime/store.ts";
-import { PostgresStore } from "./runtime/postgres-store.ts";
-import { PgPool, connectionStringFromEnv } from "./runtime/sql.ts";
-import { InMemoryApprovalStore } from "./runtime/approval.ts";
-import { CompanionRegistry } from "./core/companion.ts";
-import { InMemoryEvidenceStore } from "./core/evidence.ts";
-import { CapabilityRegistry, registerCloudDefaults } from "./core/capability.ts";
-import { InMemoryMemoryStore } from "./core/memory.ts";
-import { InMemoryPersonalContextStore } from "./core/personal-context.ts";
-import { InMemoryOpportunityStore } from "./core/opportunity-store.ts";
+import { buildContext, createApiServer } from "./app-context.ts";
 import { CompanionServer } from "./core/companion-server.ts";
 import { Worker } from "./runtime/worker.ts";
 import { transportFromEnv } from "./core/llm.ts";
 import { CLOUD_TOOLS, executeCloudTool } from "./core/cloud-tools.ts";
 
 const env = process.env;
-const conn = connectionStringFromEnv(env);
-const store: TaskStore = conn ? new PostgresStore(new PgPool(conn)) : new InMemoryStore();
-const approvals = new InMemoryApprovalStore();
-const companion = new CompanionRegistry();
-const evidenceStore = new InMemoryEvidenceStore();
-const capabilityRegistry = new CapabilityRegistry();
-registerCloudDefaults(capabilityRegistry);
-const memoryStore = new InMemoryMemoryStore();
-const ctxPersonal = new InMemoryPersonalContextStore();
-const opportunityStore = new InMemoryOpportunityStore();
-const storeKind = conn ? "postgres" : "memory";
+const ctx = buildContext(env);
+const { store, approvals, companion, evidenceStore, capabilityRegistry, memoryStore, opportunityStore, storeKind } = ctx;
 const port = Number(env.PORT ?? 8788);
 
-const server = createApiServer({ store, jwtSecret: env.SUPABASE_JWT_SECRET ?? "", storeKind, approvals, capabilityRegistry, companion, personalContext: ctxPersonal, opportunityStore });
+const server = createApiServer({ store, jwtSecret: env.SUPABASE_JWT_SECRET ?? "", storeKind, approvals, capabilityRegistry, companion, personalContext: ctx.personalContext, opportunityStore });
 // Companion 出站 WSS：设备令牌经 COMPANION_TOKENS（JSON: {token:{userId,capabilities,grantedScopes}}）授权。
 const companionTokens: Record<string, { userId: string; capabilities: string[]; grantedScopes: Record<string, unknown> }> = (() => { try { return JSON.parse(env.COMPANION_TOKENS ?? "{}"); } catch { return {}; } })();
 const companionServer = new CompanionServer(server, {

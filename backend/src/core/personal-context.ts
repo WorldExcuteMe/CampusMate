@@ -120,7 +120,7 @@ export class InMemoryPersonalContextStore implements PersonalContextStore {
   private schedules = new Map<string, CourseSchedule>();
   private exceptions = new Map<string, ScheduleException>();
   private sources = new Map<string, InformationSource>();
-  private jobs = new Map<string, ImportJob>();
+  protected jobs = new Map<string, ImportJob>();
 
   async getProfile(userId: string) { return this.profiles.get(userId) ?? null; }
   async setProfile(p: InstitutionProfile) { const next = { ...p, updatedAt: Date.now() }; this.profiles.set(p.userId, next); return next; }

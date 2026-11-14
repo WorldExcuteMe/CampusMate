@@ -4,13 +4,23 @@ import { createApiServer } from "./api/server.ts";
 import { InMemoryStore, type TaskStore } from "./runtime/store.ts";
 import { PostgresStore } from "./runtime/postgres-store.ts";
 import { PgPool, connectionStringFromEnv } from "./runtime/sql.ts";
-import { InMemoryApprovalStore, type ApprovalStore } from "./runtime/approval.ts";
+import type { ApprovalStore } from "./runtime/approval.ts";
 import { CompanionRegistry } from "./core/companion.ts";
-import { InMemoryEvidenceStore, type EvidenceStore } from "./core/evidence.ts";
+import type { EvidenceStore } from "./core/evidence.ts";
 import { CapabilityRegistry, registerCloudDefaults } from "./core/capability.ts";
 import { InMemoryMemoryStore, type MemoryStore } from "./core/memory.ts";
-import { InMemoryPersonalContextStore, type PersonalContextStore } from "./core/personal-context.ts";
+import type { PersonalContextStore } from "./core/personal-context.ts";
 import { InMemoryOpportunityStore, type OpportunityStore } from "./core/opportunity-store.ts";
+import type { ArtifactStore, ProviderStore, SessionStore } from "./core/storage-contracts.ts";
+import type { SqlPool } from "./runtime/sql.ts";
+import { MemoryArtifactStore, MemoryProviderStore, MemorySessionStore, ValidatedMemoryApprovalStore, ValidatedMemoryEvidenceStore, ValidatedMemoryPersonalContextStore } from "./runtime/memory-storage.ts";
+import { PostgresApprovalStore } from "./runtime/postgres-approval-store.ts";
+import { PostgresEvidenceStore } from "./runtime/postgres-evidence-store.ts";
+import { PostgresPersonalContextStore } from "./runtime/postgres-personal-context-store.ts";
+import { PostgresOpportunityStore } from "./runtime/postgres-opportunity-store.ts";
+import { PostgresSessionStore } from "./runtime/postgres-session-store.ts";
+import { PostgresProviderStore } from "./runtime/postgres-provider-store.ts";
+import { PostgresArtifactStore } from "./runtime/postgres-artifact-store.ts";
 
 export interface AppContext {
   store: TaskStore;
@@ -21,30 +31,40 @@ export interface AppContext {
   memoryStore: MemoryStore;
   personalContext: PersonalContextStore;
   opportunityStore: OpportunityStore;
+  sessionStore: SessionStore;
+  providerStore: ProviderStore;
+  artifactStore: ArtifactStore;
   storeKind: "postgres" | "memory";
+  dispose: () => Promise<void>;
 }
 
 export class ProductionDbRequiredError extends Error {
   constructor() { super("生产环境必须配置 DATABASE_URL（Postgres）；不允许静默降级 InMemory。"); this.name = "ProductionDbRequiredError"; }
 }
 
-export function buildContext(env: Record<string, string | undefined>): AppContext {
+export function buildContext(env: Record<string, string | undefined>, options: { pool?: SqlPool } = {}): AppContext {
   const conn = connectionStringFromEnv(env);
   const isProd = env.NODE_ENV === "production";
-  if (isProd && !conn) throw new ProductionDbRequiredError();
-  const store: TaskStore = conn ? new PostgresStore(new PgPool(conn)) : new InMemoryStore();
+  if (isProd && !conn && !options.pool) throw new ProductionDbRequiredError();
+  const pool = options.pool ?? (conn ? new PgPool(conn) : undefined);
+  const store: TaskStore = pool ? new PostgresStore(pool) : new InMemoryStore();
+  const artifactStore: ArtifactStore = pool ? new PostgresArtifactStore(pool) : new MemoryArtifactStore(store);
   const capabilityRegistry = new CapabilityRegistry();
   registerCloudDefaults(capabilityRegistry);
   return {
     store,
-    approvals: new InMemoryApprovalStore(),
+    approvals: pool ? new PostgresApprovalStore(pool) : new ValidatedMemoryApprovalStore(store),
     companion: new CompanionRegistry(),
-    evidenceStore: new InMemoryEvidenceStore(),
+    evidenceStore: pool ? new PostgresEvidenceStore(pool) : new ValidatedMemoryEvidenceStore(store, artifactStore),
     capabilityRegistry,
     memoryStore: new InMemoryMemoryStore(),
-    personalContext: new InMemoryPersonalContextStore(),
-    opportunityStore: new InMemoryOpportunityStore(),
-    storeKind: conn ? "postgres" : "memory",
+    personalContext: pool ? new PostgresPersonalContextStore(pool) : new ValidatedMemoryPersonalContextStore(),
+    opportunityStore: pool ? new PostgresOpportunityStore(pool) : new InMemoryOpportunityStore(),
+    sessionStore: pool ? new PostgresSessionStore(pool) : new MemorySessionStore(store),
+    providerStore: pool ? new PostgresProviderStore(pool) : new MemoryProviderStore(),
+    artifactStore,
+    storeKind: pool ? "postgres" : "memory",
+    dispose: async () => { if (pool && !options.pool) await pool.end(); },
   };
 }
 

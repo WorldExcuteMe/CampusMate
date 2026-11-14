@@ -4,6 +4,8 @@ web/dist/
 backend/node_modules/
 web/coverage/
 backend/coverage/
+.agent_versions/
+supabase/.temp/
 
 # env / secrets
 .env
