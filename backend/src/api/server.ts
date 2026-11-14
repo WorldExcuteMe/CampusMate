@@ -7,7 +7,8 @@ import type { CapabilityRegistry } from "../core/capability.ts";
 import type { CompanionRegistry } from "../core/companion.ts";
 import type { PersonalContextStore } from "../core/personal-context.ts";
 import type { OpportunityStore } from "../core/opportunity-store.ts";
-import { previewImport } from "../core/schedule-import.ts";
+import { previewImport, detectConflicts } from "../core/schedule-import.ts";
+import { validDate, validTime, validateTerm, validateScheme, scheduleKey, weekday, teachingWeek, occursInWeek } from "../../../shared/calendar.ts";
 import { onboarding, intelligentInbox, opportunityDiscovery, weeklyPlanning } from "../core/workflows.ts";
 import { buildManifest } from "../core/manifest.ts";
 import { DEFAULT_BUDGET } from "../core/types.ts";
@@ -197,21 +198,59 @@ export function createApiServer(deps: ApiDeps): http.Server {
         if (req.method === "GET" && path === "/v1/terms") return json(res, 200, { terms: await pc.listTerms(uid) });
         if (req.method === "POST" && path === "/v1/terms") {
           const b = JSON.parse((await readBody(req)) || "{}");
-          const term = await pc.createTerm({ userId: uid, institutionId: b.institutionId ?? "", name: b.name ?? "学期", startDate: b.startDate, endDate: b.endDate, totalWeeks: b.totalWeeks ?? 20, timezone: b.timezone ?? "Asia/Shanghai" });
+          const input = { userId: uid, institutionId: String(b.institutionId ?? ""), name: String(b.name ?? "学期"), startDate: b.startDate, endDate: b.endDate, totalWeeks: b.totalWeeks ?? 20, timezone: b.timezone ?? "Asia/Shanghai", weekAnchor: b.weekAnchor || undefined };
+          try { validateTerm(input); } catch (e) { return json(res, 400, { error: errorMessage(e) }); }
+          const term = await pc.createTerm(input);
           return json(res, 201, { term });
         }
         if (req.method === "GET" && path === "/v1/schedules") {
           const termId = url.searchParams.get("termId") ?? "";
-          return json(res, 200, { schedules: await pc.listSchedules(uid, termId), exceptions: await pc.listExceptions(uid, termId) });
+          if (!(await pc.listTerms(uid)).some((t) => t.id === termId)) return json(res, 404, { error: "学期不存在" });
+          return json(res, 200, { schedules: await pc.listSchedules(uid, termId), exceptions: await pc.listExceptions(uid, termId), schemes: await pc.listTimeSchemes(uid, termId) });
+        }
+        if (req.method === "POST" && path === "/v1/schedules/exceptions") {
+          const b = JSON.parse((await readBody(req)) || "{}");
+          const term = (await pc.listTerms(uid)).find((t) => t.id === b.termId);
+          if (!term) return json(res, 404, { error: "学期不存在" });
+          if (!validDate(b.date) || b.date < term.startDate || b.date > term.endDate || !["reschedule", "makeup", "cancel", "holiday", "room_change"].includes(b.kind)) return json(res, 400, { error: "例外类型或日期无效" });
+          if (b.kind !== "holiday" && !(await pc.listSchedules(uid, term.id)).some((s) => s.id === b.scheduleId)) return json(res, 400, { error: "请选择本学期课程" });
+          if (b.kind === "reschedule" && (!validDate(b.sourceDate) || b.sourceDate < term.startDate || b.sourceDate > term.endDate)) return json(res, 400, { error: "调课须指定有效源日期，date表示目标日期" });
+          if (b.kind === "reschedule") { const source = (await pc.listSchedules(uid, term.id)).find((s) => s.id === b.scheduleId)!; if (source.weekday !== weekday(b.sourceDate) || !occursInWeek(source, teachingWeek(term, b.sourceDate))) return json(res, 400, { error: "源日期不在该课程正常上课规则内，请核对教学周" }); }
+          if ((b.startTime || b.endTime) && (!validTime(b.startTime) || !validTime(b.endTime) || b.endTime <= b.startTime)) return json(res, 400, { error: "例外起止时间无效" });
+          const exception = await pc.addException({ userId: uid, termId: term.id, scheduleId: b.scheduleId, kind: b.kind, date: b.date, sourceDate: b.sourceDate, startTime: b.startTime, endTime: b.endTime, classroom: b.classroom, note: b.note });
+          return json(res, 201, { exception });
+        }
+        if (req.method === "POST" && path === "/v1/timetable-schemes") {
+          const b = JSON.parse((await readBody(req)) || "{}");
+          const term = (await pc.listTerms(uid)).find((t) => t.id === b.termId);
+          if (!term) return json(res, 404, { error: "学期不存在" });
+          const input = { userId: uid, termId: term.id, institutionId: term.institutionId, campus: String(b.campus ?? ""), name: String(b.name ?? ""), effectiveFrom: b.effectiveFrom, effectiveTo: b.effectiveTo, periods: b.periods };
+          try { validateScheme(input); } catch (e) { return json(res, 400, { error: errorMessage(e) }); }
+          return json(res, 201, { scheme: await pc.saveTimeScheme(input) });
         }
         if (req.method === "POST" && path === "/v1/schedules/import") {
           const b = JSON.parse((await readBody(req)) || "{}");
-          const preview = previewImport(b.format ?? "csv", b.data ?? "", b.termStart ?? "2026-09-01", b.totalWeeks ?? 20);
-          if (b.confirm && b.termId) {
-            const saved = await pc.saveSchedules(uid, b.termId, preview.schedules.map((s) => ({ ...s, courseId: "" })));
-            return json(res, 200, { confirmed: true, saved: saved.length, preview });
+          if (b.confirm === true) {
+            if (typeof b.jobId !== "string") return json(res, 400, { error: "请先上传并预览，再确认jobId" });
+            const job = await pc.getImportJob(uid, b.jobId);
+            if (!job) return json(res, 404, { error: "导入预览不存在" });
+            if (!job.preview?.schedules.length || (job.errorCount && b.allowPartial !== true)) return json(res, 422, { error: "请修复错误，或明确选择仅导入有效行" });
+            const saved = await pc.confirmImportJob(uid, job.id, b.allowPartial === true);
+            return json(res, 200, { confirmed: true, saved: saved.length, preview: job.preview, jobId: job.id });
           }
-          return json(res, 200, { confirmed: false, preview });
+          const term = (await pc.listTerms(uid)).find((t) => t.id === b.termId);
+          if (!term) return json(res, 404, { error: "请先创建或选择学期" });
+          if (!["csv", "ics", "xlsx"].includes(b.format) || typeof b.data !== "string" || b.data.length > 3000000) return json(res, 400, { error: "支持不超过2MB的CSV/ICS/XLSX文件" });
+          if (b.format === "xlsx" && (b.encoding !== "base64" || !/^[A-Za-z0-9+/]*={0,2}$/.test(b.data))) return json(res, 400, { error: "XLSX须使用base64编码" });
+          const data = b.format === "xlsx" ? Buffer.from(b.data, "base64") : b.data;
+          const preview = previewImport(b.format, data, term.startDate, term.totalWeeks, term.timezone);
+          const existing = await pc.listSchedules(uid, term.id);
+          const existingKeys = new Set(existing.map(scheduleKey));
+          const fresh = preview.schedules.filter((s) => !existingKeys.has(scheduleKey(s)));
+          preview.duplicates += preview.schedules.length - fresh.length; preview.schedules = fresh;
+          preview.conflicts = detectConflicts([...preview.schedules, ...existing]).filter((c) => preview.schedules.includes(c.a) || preview.schedules.includes(c.b));
+          const job = await pc.createImportJob({ userId: uid, termId: term.id, format: b.format, status: "previewed", sourceName: String(b.sourceName ?? "课表").slice(0, 200), previewCount: preview.schedules.length, errorCount: preview.errors.length, version: 1, createdAt: Date.now(), preview });
+          return json(res, 200, { confirmed: false, preview, jobId: job.id });
         }
       }
 

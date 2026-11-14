@@ -1,18 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { Check, Inbox, Radar, ShieldAlert, ListTodo } from "lucide-react";
+import { CalendarDays, Clock3, Inbox, Radar, ShieldAlert, ListTodo } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { repository } from "@/app/config";
 import { ClassBadge, DeadlineTag, EmptyState, PageHeader } from "@/components/shared";
+import { useCampusCalendar } from "@/features/calendar/use-campus-calendar";
+import { todayTasks, overdueTasks, upcomingDeadlines } from "@/lib/domain/today";
+import { dateEntries, localParts, projectCourses } from "../../../../shared/calendar";
 
 export function DashboardPage() {
   const qc = useQueryClient();
   const inbox = useQuery({ queryKey: ["inbox"], queryFn: () => repository.listInbox() });
-  const tasks = useQuery({ queryKey: ["tasks"], queryFn: () => repository.listTasks() });
-  const opps = useQuery({ queryKey: ["opps"], queryFn: () => repository.listOpportunities() });
+  const calendar = useCampusCalendar();
+  const { tasks, opps, term, today, timezone, knowledge, schedules } = calendar;
 
   const complete = useMutation({
     mutationFn: (id: string) => repository.updateTask(id, { status: "done" }),
@@ -25,9 +28,11 @@ export function DashboardPage() {
   const allTasks = tasks.data ?? [];
   const openTasks = allTasks.filter((t) => t.status === "todo" || t.status === "in_progress");
   const riskCount = (inbox.data ?? []).filter((i) => i.classification.class === "risk").length;
-  const urgent = openTasks.filter(
-    (t) => t.dueAt && Math.ceil((Date.parse(t.dueAt) - Date.now()) / 86_400_000) <= 7,
-  ).length;
+  const urgent = upcomingDeadlines(allTasks, 7, Date.now(), timezone).length;
+  const todayTodo = todayTasks(allTasks, Date.now(), timezone);
+  const overdue = overdueTasks(allTasks, Date.now(), timezone);
+  const courses = term && knowledge === "ready" ? projectCourses(term, schedules.data?.schedules ?? [], schedules.data?.exceptions ?? [], today, today).entries : [];
+  const next = [...courses, ...dateEntries({ from: today, to: today, timezone, tasks: allTasks, opps: opps.data ?? [] })].filter((e) => e.allDay || e.endTime >= localParts(Date.now(), timezone).time).sort((a, b) => a.startTime.localeCompare(b.startTime))[0];
 
   const stats = [
     { label: "待办任务", value: openTasks.length, icon: ListTodo, to: "/app/growth" },
@@ -38,7 +43,7 @@ export function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-5xl">
-      <PageHeader title="Dashboard" description="你的待办、临近截止与风险一览。" />
+      <PageHeader title="今天，先做好这几件事。" description={`${today} · 课程、待办与临近截止。`} />
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {stats.map((s) => (
@@ -54,6 +59,13 @@ export function DashboardPage() {
             </Card>
           </Link>
         ))}
+      </div>
+
+      <div className="mb-5 grid gap-4 lg:grid-cols-[1.5fr_1fr]">
+        <section className="rounded-2xl border bg-card p-5"><div className="flex items-center justify-between"><h2 className="flex items-center gap-2 font-semibold"><CalendarDays className="size-4 text-primary" />今日课程</h2><Link to="/app/calendar" className="text-xs text-primary">打开课表 →</Link></div>
+          {knowledge === "ready" ? courses.length ? <div className="mt-3 space-y-2">{courses.map((c) => <div key={c.id} className="flex items-center gap-4 rounded-xl bg-primary/5 px-3 py-2"><span className="text-xs font-semibold text-primary">{c.startTime}<span className="block font-normal text-muted-foreground">{c.endTime}</span></span><div className="min-w-0"><p className="truncate text-sm font-semibold">{c.title}</p><p className="text-xs text-muted-foreground">{[c.classroom, c.campus].filter(Boolean).join(" · ")}</p></div></div>)}</div> : <p className="mt-3 text-sm text-muted-foreground">今天没有已记录的课程</p> : <p className="mt-3 text-sm text-muted-foreground">{knowledge === "loading" ? "正在读取课表…" : knowledge === "error" ? "课表读取失败，请在日历中重试" : "尚无课表记录，可到日历导入"}</p>}
+        </section>
+        <section className="rounded-2xl border bg-primary/5 p-5"><h2 className="flex items-center gap-2 font-semibold"><Clock3 className="size-4 text-primary" />接下来</h2><p className="mt-3 text-lg font-semibold">{next?.title ?? "暂无后续已记录安排"}</p>{next && <p className="mt-1 text-sm text-muted-foreground">{next.allDay ? "当天截止" : `${next.startTime}–${next.endTime}`}</p>}<p className="mt-4 text-xs text-muted-foreground">今日待办 {todayTodo.length} · 逾期待处理 {overdue.length}</p></section>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">

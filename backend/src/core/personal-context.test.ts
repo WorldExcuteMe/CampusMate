@@ -17,6 +17,22 @@ test("CSV 解析 + 标准化", () => {
   assert.equal(r.schedules[1].weekPattern, "odd");
 });
 
+test("ICS UTC时刻转换到学期时区，非循环事件仅出现一周", () => {
+  const ics = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:晚课\nDTSTART:20260901T080000Z\nDTEND:20260901T094000Z\nEND:VEVENT\nEND:VCALENDAR";
+  const r = parseIcs(ics, "2026-09-01", 20);
+  assert.equal(r.schedules[0].startTime, "16:00");
+  assert.equal(r.schedules[0].endWeek, 1);
+});
+
+test("ICS UTC周循环跨夏令时保持原UTC时刻，多BYDAY/INTERVAL按实际出现次数，复杂规则报错", () => {
+  const ics = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:UTC课程\nDTSTART:20261027T090000Z\nDTEND:20261027T100000Z\nRRULE:FREQ=WEEKLY;COUNT=2\nEND:VEVENT\nEND:VCALENDAR";
+  const r = parseIcs(ics, "2026-10-26", 10, "America/Los_Angeles");
+  assert.deepEqual(r.schedules.map((s) => s.startTime), ["02:00", "01:00"]);
+  const multi = parseIcs(ics.replace("COUNT=2", "BYDAY=TU,TH;INTERVAL=2;COUNT=4"), "2026-10-26", 10, "UTC");
+  assert.deepEqual(multi.schedules.map((s) => [s.weekday, s.startWeek, s.endWeek]), [[2, 1, 1], [4, 1, 1], [2, 3, 3], [4, 3, 3]]);
+  assert.ok(parseIcs(ics.replace("COUNT=2", "COUNT=2;BYMONTH=10"), "2026-10-26", 10).errors.length);
+});
+
 test("CSV 错误行部分恢复（不整体失败）", () => {
   const bad = CSV + "\n坏行,9,08:00,07:00,1,16,every,X,Y";
   const r = parseCsv(bad);

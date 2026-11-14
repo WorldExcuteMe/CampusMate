@@ -11,7 +11,7 @@ const proxy = {
 export default defineConfig({
   plugins: [react()],
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
-  server: { host: "127.0.0.1", proxy },
+  server: { host: "127.0.0.1", proxy, fs: { allow: [fileURLToPath(new URL("..", import.meta.url))] } },
   preview: { host: "127.0.0.1", proxy },
   build: { outDir: "dist" },
 });

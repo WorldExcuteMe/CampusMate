@@ -362,7 +362,7 @@ Phase 4 — in progress. 用户已批准 Spec v2、实施计划及范围内子�
 | T2 | accepted | 本人 | T1已提交并验收 | 350caed；后端218/前端104，类型/迁移/构建通过 |
 | T3 | accepted | 本人 | T1/T2 accepted | 完整后端224+最终定向13，前端106，类型/迁移/构建通过；见子规格 |
 | T4 | accepted | 本人 | T2/T3/T9 accepted | 后端240/240、前端114/114，类型/构建通过；真实事件/恢复/取消，详见tasks/t4-visible-workspace.md |
-| T5 | pending | 本人 | T1 accepted | — |
+| T5 | accepted | 本人 | T1 accepted | 后端244+最终定向15，前端122+最终日期5，类型/迁移/构建通过；UI跨尺寸T7/T8继续 |
 | T6 | pending | 本人 | T2/T3/T4/T9 accepted | — |
 | T7 | pending | 本人 | T4/T5/T6 accepted | — |
 | T8 | pending | 本人 | 其余实施任务 accepted | — |

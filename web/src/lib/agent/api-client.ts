@@ -70,18 +70,24 @@ export async function listApprovals(): Promise<TaskApproval[]> { return (await r
 export async function decideApproval(id: string, decision: "approved" | "rejected"): Promise<void> { await req(`/v1/approvals/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ decision }) }); }
 
 // ── 个人上下文：学期 / 课表 ──
-export interface Term { id: string; name: string; startDate: string; endDate: string; totalWeeks: number; timezone: string; }
-export interface ScheduleRow { id: string; courseName: string; weekday: number; startTime: string; endTime: string; startWeek: number; endWeek: number; weekPattern: "every" | "odd" | "even"; classroom?: string; }
+export interface Term { id: string; institutionId?: string; name: string; startDate: string; endDate: string; totalWeeks: number; timezone: string; weekAnchor?: string; }
+export interface ScheduleRow { id: string; courseId?: string; courseName: string; weekday: number; startTime: string; endTime: string; startWeek: number; endWeek: number; weekPattern: "every" | "odd" | "even"; classroom?: string; campus?: string; }
+export type { CourseException, TimeScheme } from "../../../../shared/calendar";
+import type { CourseException, TimeScheme } from "../../../../shared/calendar";
+export interface SchedulePreview { schedules: Omit<ScheduleRow, "id">[]; errors: string[]; duplicates: number; conflicts: { a: Pick<ScheduleRow, "courseName">; b: Pick<ScheduleRow, "courseName"> }[]; }
+export interface ScheduleImportResult { confirmed: boolean; jobId: string; preview: SchedulePreview; saved?: number; }
 
 export async function listTerms(): Promise<Term[]> {
   return (await req<{ terms: Term[] }>("/v1/terms")).terms;
 }
-export async function listSchedules(termId: string): Promise<{ schedules: ScheduleRow[]; exceptions: unknown[] }> {
+export async function listSchedules(termId: string): Promise<{ schedules: ScheduleRow[]; exceptions: CourseException[]; schemes: TimeScheme[] }> {
   return req(`/v1/schedules?termId=${encodeURIComponent(termId)}`);
 }
-export async function importSchedule(input: { format: string; data: string; termStart: string; totalWeeks: number; termId?: string; confirm?: boolean }): Promise<{ confirmed: boolean; preview: { schedules: ScheduleRow[]; errors: string[]; duplicates: number }; saved?: number }> {
+export async function importSchedule(input: { format?: string; data?: string; encoding?: "base64"; sourceName?: string; termId?: string; confirm?: boolean; jobId?: string; allowPartial?: boolean }): Promise<ScheduleImportResult> {
   return req("/v1/schedules/import", { method: "POST", body: JSON.stringify(input) });
 }
+export async function createTerm(input: Omit<Term, "id">): Promise<Term> { return (await req<{ term: Term }>("/v1/terms", { method: "POST", body: JSON.stringify(input) })).term; }
+export async function saveTimeScheme(input: TimeScheme): Promise<TimeScheme> { return (await req<{ scheme: TimeScheme }>("/v1/timetable-schemes", { method: "POST", body: JSON.stringify(input) })).scheme; }
 
 // ── 机会雷达（后端真相源；Agent 经 save_opportunity 写入）──
 export async function listBackendOpportunities(): Promise<Opportunity[]> {

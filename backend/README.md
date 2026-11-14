@@ -1,5 +1,9 @@
 # CampusMate Backend（Agent Core 2.0 · Phase 0–3 基础）
 
+当前新增课表API：`POST /v1/terms`创建学期，`GET /v1/schedules?termId=...`返回课程/例外/作息，`POST /v1/schedules/import`上传预览并返回jobId，再以`{confirm:true,jobId}`确认（可选allowPartial）。XLSX的data需base64并指定encoding。确认只追加去重，不覆盖旧课程。`POST /v1/schedules/exceptions`写例外，调课sourceDate是源日期、date是目标。`POST /v1/timetable-schemes`保存学校/校区/学期生效作息。全部需要owner身份。
+
+分发后端时需保留仓库同级`shared/`纯逻辑模块及其package.json。完整迁移顺序以`src/runtime/migrations.ts`为准，新增DDL尚未应用远程库。本地执行与生产应用是不同验收层。
+
 服务端 Agent 运行时（Node ≥24 直接运行 `.ts`，内置 `node --test`；生产依赖见package.json）。
 对应 `docs/agent-core/` 架构规范；本目录是 MIGRATION_PLAN Phase 0–3 的可运行可测实现。
 
