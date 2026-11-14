@@ -2,7 +2,7 @@
 // 队列：事务 + FOR UPDATE SKIP LOCKED + lease；幂等：ON CONFLICT DO NOTHING；事件 append-only。
 // Worker 用直连（postgres 角色，表 owner 绕过 RLS）；代码层强制 user_id 隔离。
 import { randomUUID } from "node:crypto";
-import type { AgentEvent, Checkpoint, EventType, Task, ToolInvocation } from "../core/types.ts";
+import type { AgentEvent, Checkpoint, EventType, Task, ToolInvocation, Budget } from "../core/types.ts";
 import { DEFAULT_BUDGET, EMPTY_USAGE } from "../core/types.ts";
 import type { CreateTaskInput, TaskStore } from "./store.ts";
 import type { SqlClient, SqlPool } from "./sql.ts";
@@ -105,14 +105,14 @@ export class PostgresStore implements TaskStore {
     });
   }
 
-  async resumeSessionTask(id: string, userId: string): Promise<Task> {
+  async resumeSessionTask(id: string, userId: string, budget?: Budget): Promise<Task> {
     return this.pool.transaction(async (client) => {
       const tasks = new PostgresStore(transactionPool(client));
       const task = await tasks.getTask(id);
       if (!task || task.userId !== userId) throw new Error("Task owner forbidden");
       if (task.sessionId) await client.query("select id from agent_sessions where id=$1 and user_id=$2 for update", [task.sessionId, userId]);
       if (task.turnSeq !== undefined && (await client.query("select id from agent_tasks where user_id=$1 and session_id=$2 and turn_seq>$3 limit 1", [userId, task.sessionId, task.turnSeq])).rows.length) throw new SessionConflict("后续对话已开始，请用新消息继续；原任务记录已保留。");
-      return tasks.updateTask(id, { status: "queued", transcriptCommitted: false });
+      return tasks.updateTask(id, { status: "queued", transcriptCommitted: false, ...(budget ? { budget } : {}), error: "" });
     });
   }
 

@@ -10,7 +10,7 @@ import { backendEnabled } from "@/lib/agent/api-client";
 import { useAuth } from "@/app/auth";
 import { errorMessage } from "@/lib/llm/errors";
 
-const blank = () => ({ id: "", name: "", baseUrl: "", protocol: "openai", model: "", apiKey: "", contextLimit: "", tools: "unknown", vision: "unknown", reasoning: "unknown", maxOutputTokens: "" });
+const blank = () => ({ id: "", name: "", baseUrl: "", protocol: "openai", model: "", apiKey: "", contextLimit: "", tools: "unknown", vision: "unknown", reasoning: "unknown", maxOutputTokens: "", streaming: "unknown", temperature: "unknown", outputParameter: "unknown" });
 
 export function ProviderSettings() {
   const qc = useQueryClient();
@@ -24,7 +24,7 @@ export function ProviderSettings() {
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const refresh = () => { void qc.invalidateQueries({ queryKey }); };
   const save = useMutation({
-    mutationFn: () => saveProvider({ id: form.id, name: form.name, baseUrl: form.baseUrl, protocol: "openai", model: form.model, apiKey: form.apiKey || undefined, contextLimit: form.contextLimit ? Number(form.contextLimit) : null, capabilities: { tools: form.tools, vision: form.vision === "unknown" ? "unknown" : form.vision === "true", reasoning: form.reasoning, ...(form.maxOutputTokens ? { maxOutputTokens: Number(form.maxOutputTokens) } : {}) } }),
+    mutationFn: () => saveProvider({ id: form.id, name: form.name, baseUrl: form.baseUrl, protocol: "openai", model: form.model, apiKey: form.apiKey || undefined, contextLimit: form.contextLimit ? Number(form.contextLimit) : null, capabilities: { tools: form.tools, vision: form.vision === "unknown" ? "unknown" : form.vision === "true", reasoning: form.reasoning, streaming: form.streaming === "unknown" ? "unknown" : form.streaming === "true", temperature: form.temperature === "unknown" ? "unknown" : form.temperature === "true", outputParameter: form.outputParameter, ...(form.maxOutputTokens ? { maxOutputTokens: Number(form.maxOutputTokens) } : {}) } }),
     onSuccess: (ok) => { if (!ok) throw new Error("保存失败"); refresh(); setForm(blank()); setEditing(false); },
   });
   const action = useMutation({
@@ -39,7 +39,7 @@ export function ProviderSettings() {
   });
   function edit(p: ProviderPublic) {
     const caps = p.capabilities ?? {};
-    setForm({ id: p.id, name: p.name, baseUrl: p.baseUrl, protocol: "openai", model: p.model, apiKey: "", contextLimit: p.contextLimit?.toString() ?? "", tools: String(caps.tools ?? "unknown"), vision: String(caps.vision ?? "unknown"), reasoning: String(caps.reasoning ?? "unknown"), maxOutputTokens: caps.maxOutputTokens?.toString() ?? "" });
+    setForm({ id: p.id, name: p.name, baseUrl: p.baseUrl, protocol: "openai", model: p.model, apiKey: "", contextLimit: p.contextLimit?.toString() ?? "", tools: String(caps.tools ?? "unknown"), vision: String(caps.vision ?? "unknown"), reasoning: String(caps.reasoning ?? "unknown"), maxOutputTokens: caps.maxOutputTokens?.toString() ?? "", streaming: String(caps.streaming ?? "unknown"), temperature: String(caps.temperature ?? "unknown"), outputParameter: String(caps.outputParameter ?? "unknown") });
     setEditing(true);
     save.reset();
   }
@@ -94,7 +94,10 @@ export function ProviderSettings() {
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div><Label htmlFor="provider-tools">工具调用</Label><select id="provider-tools" className={selectClass} disabled={!enabled} value={form.tools} onChange={set("tools")}><option value="unknown">未知</option><option value="native">原生工具</option><option value="json">JSON回退协议</option><option value="none">不支持</option></select></div>
               <div><Label htmlFor="provider-vision">图片输入</Label><select id="provider-vision" className={selectClass} disabled={!enabled} value={form.vision} onChange={set("vision")}><option value="unknown">未知</option><option value="true">支持</option><option value="false">不支持</option></select></div>
-              <div><Label htmlFor="provider-reasoning">思考参数</Label><select id="provider-reasoning" className={selectClass} disabled={!enabled} value={form.reasoning} onChange={set("reasoning")}><option value="unknown">未知</option><option value="none">不可调节</option><option value="reasoning_effort">reasoning_effort</option><option value="enable_thinking">enable_thinking</option><option value="thinking_budget">thinking budget</option></select></div>
+              <div><Label htmlFor="provider-reasoning">思考参数</Label><select id="provider-reasoning" className={selectClass} disabled={!enabled} value={form.reasoning} onChange={set("reasoning")}><option value="unknown">未知</option><option value="none">不可调节</option><option value="reasoning_effort">reasoning_effort</option><option value="enable_thinking">enable_thinking</option><option value="thinking_budget" disabled>预算型参数（待适配）</option></select></div>
+              <div><Label htmlFor="provider-streaming">正文流式输出</Label><select id="provider-streaming" className={selectClass} disabled={!enabled} value={form.streaming} onChange={set("streaming")}><option value="unknown">未知</option><option value="true">支持SSE</option><option value="false">不支持</option></select></div>
+              <div><Label htmlFor="provider-temperature">temperature 参数</Label><select id="provider-temperature" className={selectClass} disabled={!enabled} value={form.temperature} onChange={set("temperature")}><option value="unknown">未知</option><option value="true">支持</option><option value="false">不支持</option></select></div>
+              <div><Label htmlFor="provider-output-param">输出上限参数</Label><select id="provider-output-param" className={selectClass} disabled={!enabled} value={form.outputParameter} onChange={set("outputParameter")}><option value="unknown">未知，不发送</option><option value="max_tokens">max_tokens</option><option value="max_completion_tokens">max_completion_tokens</option></select></div>
               <div><Label htmlFor="provider-output">最大输出 token（可选）</Label><Input id="provider-output" type="number" min="256" disabled={!enabled} value={form.maxOutputTokens} onChange={set("maxOutputTokens")} /></div>
             </div>
           </details>

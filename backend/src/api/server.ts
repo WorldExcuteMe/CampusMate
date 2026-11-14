@@ -19,6 +19,7 @@ import { SessionConflict } from "../runtime/store.ts";
 import { randomUUID } from "node:crypto";
 import { requireUuid } from "../runtime/postgres-shared.ts";
 import { ProviderService, ProviderError } from "../core/providers.ts";
+import { parseBudget } from "../core/budget.ts";
 
 export interface ApiDeps {
   store: TaskStore;
@@ -114,11 +115,14 @@ export function createApiServer(deps: ApiDeps): http.Server {
         const prior = body.sessionId && body.turnId ? (await store.listTasksByUser(uid)).find((t) => t.sessionId === body.sessionId && t.turnId === body.turnId) : undefined;
         const requestedProvider = body.providerId === "builtin-deepseek" ? "builtin" : body.providerId;
         const sameSelection = prior && (!requestedProvider || prior.modelConfig?.providerId === requestedProvider);
-        const modelConfig = sameSelection ? prior.modelConfig : deps.providers && (requestedProvider !== undefined || (await deps.providers.list(uid)).length > 0) ? await deps.providers.snapshot(uid, requestedProvider) : undefined;
+        const selectedConfig = sameSelection ? prior.modelConfig : deps.providers && (requestedProvider !== undefined || (await deps.providers.list(uid)).length > 0) ? await deps.providers.snapshot(uid, requestedProvider) : undefined;
+        const modelConfig = selectedConfig ? structuredClone(selectedConfig) : undefined;
+        if (body.reasoning !== undefined && !["auto", "low", "medium", "high"].includes(body.reasoning)) return json(res, 400, { error: "reasoning must be auto|low|medium|high" });
+        if (modelConfig && (!sameSelection || body.reasoning !== undefined)) modelConfig.reasoningPreference = body.reasoning ?? "auto";
         const images = Array.isArray(body.images) ? body.images.filter((x: unknown) => typeof x === "string").slice(0, 4) : undefined;
         const input = {
           userId: uid, title: body.title, intent: body.intent, sessionId: body.sessionId,
-          images, priority: body.priority, budget: body.budget as Budget | undefined,
+          images, priority: body.priority, budget: body.budget === undefined ? undefined : parseBudget(body.budget, DEFAULT_BUDGET),
           modelConfig,
         };
         const accepted = body.sessionId && deps.sessionStore && store.createSessionTask
@@ -165,7 +169,10 @@ export function createApiServer(deps: ApiDeps): http.Server {
         }
         if (req.method === "POST" && sub === "/resume") {
           if (!["needs_input", "paused", "failed"].includes(task.status)) return json(res, 409, { error: `cannot resume from ${task.status}` });
-          const t = store.resumeSessionTask ? await store.resumeSessionTask(id, uid) : await store.updateTask(id, { status: "queued" });
+          const body = JSON.parse((await readBody(req)) || "{}");
+          if (task.result?.completion?.reason === "budget_exceeded" && !body.budget) return json(res, 409, { error: "请先调整任务预算，再恢复继续" });
+          const budget = body.budget ? parseBudget(body.budget, task.budget) : undefined;
+          const t = store.resumeSessionTask ? await store.resumeSessionTask(id, uid, budget) : await store.updateTask(id, { status: "queued", ...(budget ? { budget } : {}) });
           return json(res, 200, { task: t });
         }
       }
@@ -248,6 +255,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
       if (err instanceof ProviderError) return json(res, err.status, { error: err.message });
       if (err instanceof SessionConflict) return json(res, 409, { error: err.message });
       if (err instanceof SyntaxError || (err instanceof Error && err.message === "Invalid UUID")) return json(res, 400, { error: "invalid input" });
+      if (err instanceof Error && /预算.*(范围|对象)/.test(err.message)) return json(res, 400, { error: err.message });
       if (err instanceof Error && err.message === "Session owner forbidden") return json(res, 403, { error: "forbidden" });
       return json(res, 500, { error: errorMessage(err) });
     }

@@ -8,9 +8,10 @@ import { Worker } from "../runtime/worker.ts";
 import { OWNER, OTHER, storageFixture } from "../runtime/storage-test-fixture.ts";
 
 for (const postgres of [false, true]) test(`${postgres ? "postgres" : "memory"}：认证BYOK加密保留/删除，所选模型经API到Worker实际路由`, async (t) => {
-  const requests: { url: string; model: string; auth: string }[] = [];
+  const requests: { url: string; model: string; auth: string; reasoning: string | undefined }[] = [];
   const fetchImpl: typeof fetch = async (url, init) => {
-    requests.push({ url: String(url), model: JSON.parse(init!.body as string).model, auth: (init!.headers as Record<string, string>).Authorization });
+    const body = JSON.parse(init!.body as string);
+    requests.push({ url: String(url), model: body.model, auth: (init!.headers as Record<string, string>).Authorization, reasoning: body.reasoning_effort });
     return new Response(JSON.stringify({ model: "actual-gemma", choices: [{ message: { content: "回答", tool_calls: [] } }], usage: { prompt_tokens: 10, completion_tokens: 2 } }));
   };
   const options = postgres ? { pool: (await storageFixture(t)).pool, providerFetch: fetchImpl } : { providerFetch: fetchImpl };
@@ -20,7 +21,7 @@ for (const postgres of [false, true]) test(`${postgres ? "postgres" : "memory"}�
   t.after(() => { server.close(); server.closeAllConnections(); });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const call = (path: string, uid = OWNER, body?: unknown, method?: string) => fetch(base + path, { method: method ?? (body ? "POST" : "GET"), headers: { "Content-Type": "application/json", Authorization: `Bearer ${signJwt({ sub: uid, exp: Math.floor(Date.now() / 1000) + 60 }, "provider-test")}` }, ...(body ? { body: JSON.stringify(body) } : {}) });
-  const config = { providerId: "custom", displayName: "自定义Gemma", protocol: "openai", baseUrl: "https://gateway.example/v1", modelId: "configured-gemma", apiKey: "secret-dummy-alice" };
+  const config = { providerId: "custom", displayName: "自定义Gemma", protocol: "openai", baseUrl: "https://gateway.example/v1", modelId: "configured-gemma", apiKey: "secret-dummy-alice", capabilities: { reasoning: "reasoning_effort" } };
   assert.equal((await call("/v1/providers", OWNER, config)).status, 200);
   assert.equal((await call("/v1/providers", OTHER, { ...config, modelId: "bob-model", apiKey: "secret-dummy-bob" })).status, 200);
   const firstSecret = (await ctx.providerStore.get(OWNER, "custom"))!.encryptedSecret;
@@ -32,13 +33,14 @@ for (const postgres of [false, true]) test(`${postgres ? "postgres" : "memory"}�
   assert.ok(!listed.includes("secret-dummy") && !listed.includes("ciphertext") && !listed.includes("builtin-test-key"));
   assert.equal((await call("/v1/providers/custom/test", OWNER, {})).status, 200);
   assert.equal((await call("/v1/providers/custom/default", OWNER, {})).status, 200);
-  const a = await (await call("/v1/tasks", OWNER, { title: "Alice", providerId: "custom" })).json() as { taskId: string };
+  const a = await (await call("/v1/tasks", OWNER, { title: "Alice", providerId: "custom", reasoning: "high" })).json() as { taskId: string };
   const b = await (await call("/v1/tasks", OTHER, { title: "Bob", providerId: "custom" })).json() as { taskId: string };
   const c = await (await call("/v1/tasks", OWNER, { title: "默认内置", providerId: "builtin" })).json() as { taskId: string };
   assert.ok(a.taskId && b.taskId && c.taskId);
   await new Worker({ ...ctx, resolveTransport: (task) => ctx.providers.transport(task), tools: [], buildSystem: () => "助手", executeTool: async () => "{}", concurrency: 3 }).tick();
   assert.deepEqual(requests.map((r) => r.model), ["configured-gemma", "configured-gemma", "bob-model", "Gemma-4-31B-IT"]);
   assert.deepEqual(requests.map((r) => r.auth), ["Bearer secret-dummy-alice", "Bearer secret-dummy-alice", "Bearer secret-dummy-bob", "Bearer builtin-test-key"]);
+  assert.equal(requests[1].reasoning, "high", "UI偏好经API、快照、Worker和transport真正生效");
   const task = await ctx.store.getTask(a.taskId);
   assert.equal(task?.modelConfig?.modelId, "configured-gemma");
   assert.equal(task?.modelRuntime?.actualModel, "actual-gemma");

@@ -12,7 +12,7 @@ export function completeTranscript(transcript: ChatMessage[]): ChatMessage[] {
   const complete: ChatMessage[] = [];
   for (let index = 0; index < transcript.length;) {
     const message = transcript[index];
-    if (message.role === "assistant" && transcript[index + 1]?.role === "user" && JSON.stringify(transcript[index + 1].content).includes("__approval_pending__")) break;
+    if (message.role === "assistant" && transcript[index + 1]?.role === "user" && /__approval_pending__|__budget_pending__/.test(JSON.stringify(transcript[index + 1].content))) break;
     if (message.role === "assistant" && message.tool_calls?.length) {
       const group = [message];
       let next = index + 1;

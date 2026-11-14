@@ -21,7 +21,7 @@ export interface ChatSession {
   pruned?: boolean;
   archived?: boolean;
   backendId?: string;
-  pendingTurn?: { turnId: string; content: string; images?: string[]; taskId?: string; providerId?: string };
+  pendingTurn?: { turnId: string; content: string; images?: string[]; taskId?: string; providerId?: string; reasoning?: "auto" | "low" | "medium" | "high" };
   promptSource?: "estimated" | "reported" | "unknown";
   actualModel?: string;
   configuredModel?: string;

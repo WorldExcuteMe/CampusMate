@@ -9,7 +9,6 @@ import { mergeInbox } from "../ingest/dedupe";
 import { uid, type Repository, type Profile, type Opportunity, type VerificationReport } from "../data/types";
 import { guardUrl } from "../security/urlGuard";
 import { composeContext, trimToBudget, resolveContextCap, messagesTokens, toolsTokens } from "./context";
-import { DEFAULT_REASONING } from "../llm/reasoning";
 import { detectScope, allowedTools, checkToolScope, type TaskScope } from "./scope";
 import { setPlan, memoryPrompt, appendMemory } from "./memory";
 
@@ -34,7 +33,6 @@ export function detectIngestIntent(message: string): boolean {
 
 const SYSTEM = (profile: Profile, mode: "auto" | "daily") =>
   `你是 CampusMate 校园机会管家，面向大学生的信息与机会管理 Agent。` +
-  `当前北京时间=${nowBeijingText()}（据此判断过期：截止/日期早于今天=已过期）。` +
   `用户画像：专业=${profile.major}，年级=${profile.grade}，兴趣=${profile.interests.join("、")}，技能=${profile.skills.join("、")}，目标=${profile.goals.join("、")}。` +
   `当前模式=${mode === "auto" ? "自动（全工具+群摄取+完全访问）" : "日常（聚焦日常事务）"}。` +
   `规则：1) 需要结构化信息/创建任务/检索机会/同步群通知时调用对应工具；2) 回答简洁中文、重点突出；` +
@@ -45,7 +43,8 @@ const SYSTEM = (profile: Profile, mode: "auto" | "daily") =>
   `10) 时间本位：一切截止/日期与当前北京时间比较。已过期（早于今天）的通知/机会不得作为当前可行动项呈现；总结群通知或 RAG 历史时只呈现未过期项，过期项仅在用户明确要历史回顾时列出并标注"已过期"。无明确截止的旧消息须结合消息时间判断时效，不得把陈旧信息当新通知。` +
   `11) 工具调用协议：优先使用原生 tool_calls；若你的接口不支持原生工具调用，则单独输出一个 JSON 对象 {"tool":"工具名","args":{...}} 作为工具指令，等待返回后再继续。` +
   `12) 对话体感：回复只给面向用户的结论与必要来源/截止/匹配建议，不提及工具名、调用过程、内部机制、"已同步/RAG/合并/归一"等噪声；不反问确认除非缺关键信息；落库动作静默完成只在结尾一句告知已写入几条。` +
-  (mode === "daily" ? `日常模式优先处理调课/班会/讲座等含时间信息，谨慎创建机会。` : `自动模式可主动调用 list_groups + sync_group_notices 摄取目标群通知。`);
+  (mode === "daily" ? `日常模式优先处理调课/班会/讲座等含时间信息，谨慎创建机会。` : `自动模式可主动调用 list_groups + sync_group_notices 摄取目标群通知。`) +
+  `当前北京时间=${nowBeijingText()}（据此判断过期：截止/日期早于今天=已过期）。`;
 
 // 工具端点安全调用：非 OK/空体/非 JSON 一律返回可读 error，绝不抛异常冒泡成「未连接模型」降级。
 async function toolPost(url: string, body: unknown): Promise<Record<string, unknown>> {
@@ -380,6 +379,7 @@ export async function runChat(opts: {
   model?: string;
   contextCap?: number;
   memoryScope?: string;
+  reasoning?: "auto" | "low" | "medium" | "high";
 }): Promise<ChatOutcome> {
   const actions: string[] = [];
   const mode = opts.mode ?? "auto";
@@ -433,7 +433,7 @@ export async function runChat(opts: {
   let model = "unknown";
   try {
     for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
-      const res = await llmChat({ providerId: opts.providerId, messages, tools, reasoning: DEFAULT_REASONING });
+      const res = await llmChat({ providerId: opts.providerId, messages, tools, reasoning: opts.reasoning ?? "auto" });
       usage = { input: usage.input + res.usage.input, output: usage.output + res.usage.output };
       model = res.model;
       if (res.toolCalls.length > 0) {
@@ -477,7 +477,7 @@ export async function runChat(opts: {
     const trimmedFin = trimToBudget(messages, cap, tTools);
     messages = trimmedFin.messages;
     compressed = compressed || trimmedFin.compressed; pruned = pruned || trimmedFin.pruned;
-    const fin = await llmChat({ providerId: opts.providerId, messages, reasoning: DEFAULT_REASONING });
+    const fin = await llmChat({ providerId: opts.providerId, messages, reasoning: "low" });
     usage = { input: usage.input + fin.usage.input, output: usage.output + fin.usage.output };
     const actionsSummary = actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}` : "（未获取到有效结果）";
     const finalText = fin.content && !parseJsonTool(fin.content) ? fin.content : actionsSummary;

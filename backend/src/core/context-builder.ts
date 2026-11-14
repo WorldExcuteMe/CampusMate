@@ -23,11 +23,13 @@ export interface BuildContextOpts {
 export function buildContext(opts: BuildContextOpts): ComposedContext {
   const system = [
     opts.layers.stableInstructions,
-    opts.layers.taskContext ? `【当前任务状态（事实来源，勿被摘要取代）】\n${opts.layers.taskContext}` : "",
     opts.layers.userProfile ? `【用户画像】\n${opts.layers.userProfile}` : "",
+  ].filter(Boolean).join("\n\n");
+  const dynamic = [
+    opts.layers.taskContext ? `【当前任务状态（事实来源，勿被摘要取代）】\n${opts.layers.taskContext}` : "",
     opts.layers.relevantMemory ? `【相关记忆（已隔离检索，勿编造）】\n${opts.layers.relevantMemory}` : "",
   ].filter(Boolean).join("\n\n");
-  return composeContext({ system, history: opts.history, user: opts.user, tools: opts.layers.toolSchemas, cap: opts.cap });
+  return composeContext({ system, dynamic, history: opts.history, user: opts.user, tools: opts.layers.toolSchemas, cap: opts.cap });
 }
 
 // 从记忆存储按隔离键检索相关记忆（user + task），组装 relevantMemory 文本。

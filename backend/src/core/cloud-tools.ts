@@ -6,8 +6,10 @@ import { safeFetch, htmlToText } from "./ssrf.ts";
 import type { EvidenceStore } from "./evidence.ts";
 import type { OpportunityStore } from "./opportunity-store.ts";
 import { sanitizeProposedStatus, type VerificationStatus } from "./verification.ts";
+import type { ArtifactStore } from "./storage-contracts.ts";
 
 export const CLOUD_TOOLS: ToolDef[] = [
+  { type: "function", function: { name: "read_artifact", description: "按artifactId分页读取本人任务生成的完整工具材料。offset从0开始，limit最多6000字符。", parameters: { type: "object", properties: { artifactId: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["artifactId"] } } },
   {
     type: "function",
     function: {
@@ -71,9 +73,17 @@ export const CLOUD_TOOLS: ToolDef[] = [
   },
 ];
 
-export interface CloudToolCtx { taskId: string; userId: string; evidenceStore?: EvidenceStore; opportunityStore?: OpportunityStore; }
+export interface CloudToolCtx { taskId: string; userId: string; evidenceStore?: EvidenceStore; opportunityStore?: OpportunityStore; artifactStore?: ArtifactStore; }
 
 export async function executeCloudTool(name: string, args: Record<string, unknown>, ctx?: CloudToolCtx): Promise<string> {
+  if (name === "read_artifact") {
+    const artifact = ctx?.artifactStore ? await ctx.artifactStore.get(ctx.userId, String(args.artifactId ?? "")) : null;
+    if (!artifact) return JSON.stringify({ error: "产物不存在或无权读取" });
+    const inline = artifact.inline as { text?: string };
+    const text = typeof inline?.text === "string" ? inline.text : JSON.stringify(artifact.inline);
+    const offset = Math.max(0, Math.floor(Number(args.offset) || 0)), limit = Math.min(6000, Math.max(1, Math.floor(Number(args.limit) || 4000)));
+    return JSON.stringify({ artifactId: artifact.id, sha256: artifact.sha256, offset, text: text.slice(offset, offset + limit), nextOffset: offset + limit < text.length ? offset + limit : null, totalChars: text.length });
+  }
   if (name === "web_search") {
     // 搜索引擎用 Bing 中国（DDG 在国内网络不可达会挂起）。fetch 自带 12s 超时，先于 Worker 15s 兜底自 abort。
     try {

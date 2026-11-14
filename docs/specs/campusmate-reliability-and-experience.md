@@ -366,7 +366,7 @@ Phase 4 — in progress. 用户已批准 Spec v2、实施计划及范围内子�
 | T6 | pending | 本人 | T2/T3/T4/T9 accepted | — |
 | T7 | pending | 本人 | T4/T5/T6 accepted | — |
 | T8 | pending | 本人 | 其余实施任务 accepted | — |
-| T9 | pending | 本人 | T2/T3 accepted | — |
+| T9 | accepted | 本人 | T2/T3 accepted | 完整后端236+最终相关14，前端107，类型/迁移/构建通过；真实KV收益未实测 |
 | T10 | pending | 本人 | T6 accepted | — |
 
 ### T1 当前证据

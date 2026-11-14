@@ -19,6 +19,7 @@ function capabilities(input: unknown): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   const enums: Record<string, unknown[]> = { tools: ["native", "json", "none", "unknown"], vision: [true, false, "unknown"], streaming: [true, false, "unknown"], temperature: [true, false, "unknown"], reasoning: ["reasoning_effort", "enable_thinking", "thinking_budget", "none", "unknown"], outputParameter: ["max_tokens", "max_completion_tokens", "unknown"] };
   for (const [key, values] of Object.entries(enums)) result[key] = values.includes(data[key]) ? data[key] : "unknown";
+  if (typeof data.streamUsage === "boolean") result.streamUsage = data.streamUsage;
   if (Number.isSafeInteger(data.maxOutputTokens) && Number(data.maxOutputTokens) >= 256) result.maxOutputTokens = Number(data.maxOutputTokens);
   return result;
 }
@@ -90,12 +91,12 @@ export class ProviderService {
     try { key = p.providerId === "builtin" ? this.env.LLM_API_KEY! : p.encryptedSecret ? this.vault.decrypt(p.encryptedSecret, task.userId, p.providerId) : ""; } catch (error) { throw new ProviderError((error as Error).message, 503); }
     if (!key) throw new ProviderError("所选供应商未配置API密钥");
     const fetchImpl: typeof fetch = p.providerId === "builtin" && this.fetch === providerFetch ? (url, init) => fetch(url, { ...init, redirect: "error" }) : this.fetch;
-    return new DeepSeekTransport({ apiKey: key, baseUrl: p.baseUrl, model: p.modelId, fetchImpl, maxRetries: Number(this.env.LLM_MAX_RETRIES ?? 2), timeoutMs: Number(this.env.LLM_TIMEOUT_MS ?? 120000) });
+    return new DeepSeekTransport({ apiKey: key, baseUrl: p.baseUrl, model: p.modelId, fetchImpl, capabilities: p.capabilities, contextLimit: p.contextLimit, reasoningPreference: task.modelConfig?.reasoningPreference, maxRetries: Number(this.env.LLM_MAX_RETRIES ?? 2), timeoutMs: Number(this.env.LLM_TIMEOUT_MS ?? 120000) });
   }
   async test(userId: string, id: string) {
     const modelConfig = await this.snapshot(userId, id);
     const transport = await this.transport({ userId, modelConfig });
-    const result = await transport.chat({ messages: [{ role: "user", content: "仅回复OK" }] });
+    const result = await transport.chat({ messages: [{ role: "user", content: "仅回复OK" }], maxOutputTokens: 32, deadlineAt: Date.now() + 20000, reasoning: "low" });
     return { ok: true, configuredModel: modelConfig.modelId, actualModel: result.model, note: "连接成功；未据此推断工具、图片或窗口能力" };
   }
 }

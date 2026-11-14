@@ -130,6 +130,23 @@ for (const postgres of [false, true]) {
     assert.equal((await ctx.store.getTask(stale.id))?.lease.owner, "new");
     assert.equal((await ctx.store.getTask(stale.id))?.status, "running");
   });
+  test(`${mode}：工具组中途预算耗尽暂停，调整后只续跑未执行工具`, async (t) => {
+    const { ctx, post, input, session } = await fixture(t, postgres);
+    const created = await (await post("/v1/tasks", { ...input("两步检索"), budget: { toolCalls: 1 } })).json() as { taskId: string };
+    let round = 0; const calls: string[] = [];
+    const deps = { ...ctx, concurrency: 1, tools: ["web_search", "web_fetch"].map((name) => ({ type: "function" as const, function: { name, description: "fixture", parameters: { type: "object", properties: {} } } })), buildSystem: () => "规则", executeTool: async (_task: unknown, name: string) => { calls.push(name); return '{"ok":true}'; }, transport: { async chat() {
+      return round++ === 0 ? { content: "", toolCalls: ["web_search", "web_fetch"].map((name) => ({ id: name, type: "function" as const, function: { name, arguments: "{}" } })), usage: { input: 1, output: 1 }, model: "fixture" } : { content: "完成检索", toolCalls: [], usage: { input: 1, output: 1 }, model: "fixture" };
+    } } };
+    await new Worker(deps).tick();
+    assert.equal((await ctx.store.getTask(created.taskId))?.status, "paused");
+    assert.deepEqual(calls, ["web_search"]);
+    assert.equal((await post(`/v1/tasks/${created.taskId}/resume`, {})).status, 409);
+    assert.equal((await post(`/v1/tasks/${created.taskId}/resume`, { budget: { toolCalls: 4 } })).status, 200);
+    await new Worker(deps).tick();
+    assert.deepEqual(calls, ["web_search", "web_fetch"]);
+    assert.equal((await ctx.store.getTask(created.taskId))?.status, "succeeded");
+    assert.deepEqual((await ctx.sessionStore.listMessages(OWNER, session.id)).map((m) => m.role), ["user", "assistant", "tool", "tool", "assistant"]);
+  });
 
   test(`${mode}：真实API到Worker严格按轮保存身份和回答，不读取未来问题`, async (t) => {
     const { ctx, post, input } = await fixture(t, postgres);

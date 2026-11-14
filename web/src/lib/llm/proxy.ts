@@ -82,7 +82,6 @@ export interface ChatResult {
   model: string;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function parseChat(text: string, status: number): ChatResult {
   let data;
   try {
@@ -118,13 +117,12 @@ export async function llmChat(opts: {
   const headers = { "Content-Type": "application/json" };
   const edge = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_LLM_EDGE_URL;
   let lastErr: unknown = null;
-  // 本地代理瞬断/被回收时退避重试（根因修复：避免一次瞬断整轮降级 Mock）
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // The server adapter owns retries. Browser retries would multiply billable requests.
+  for (let attempt = 0; attempt < 1; attempt++) {
     try {
-      const res = await fetch("/api/llm", { method: "POST", headers, body });
+      const res = await fetch(edge || "/api/llm", { method: "POST", headers, body });
       const text = await res.text();
       if (!res.ok) {
-        if ([502, 503, 504].includes(res.status) && attempt < 2) { await sleep(800 * 2 ** attempt); continue; }
         let detail = "";
         try {
           detail = errorMessage(JSON.parse(text).error);
@@ -134,18 +132,8 @@ export async function llmChat(opts: {
       return parseChat(text, res.status);
     } catch (e) {
       lastErr = e;
-      const network = e instanceof TypeError || (e instanceof Error && e.name === "AbortError");
-      if (network && attempt < 2) { await sleep(800 * 2 ** attempt); continue; }
       break;
     }
-  }
-  // 部署态（无本地代理）回退到配置的 Supabase Edge LLM 端点（真实配置 URL，非替换）
-  if (edge) {
-    try {
-      const res = await fetch(edge, { method: "POST", headers, body });
-      const text = await res.text();
-      if (res.ok) return parseChat(text, res.status);
-    } catch { /* fall through to throw */ }
   }
   throw lastErr instanceof LlmTransportError ? lastErr : new LlmTransportError(errorMessage(lastErr), { cause: lastErr });
 }

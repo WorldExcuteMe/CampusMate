@@ -56,6 +56,10 @@ export function AgentChatPage() {
   const [providerId, setProviderId] = useState(
     () => localStorage.getItem(`campusmate.providerId:${owner}`) || "",
   );
+  const [reasoning, setReasoning] = useState<"auto" | "low" | "medium" | "high">(() => {
+    const stored = localStorage.getItem(`campusmate.reasoning:${owner}`);
+    return stored === "low" || stored === "medium" || stored === "high" ? stored : "auto";
+  });
   const { data: providers = [], error: providerError } = useQuery({ queryKey: ["providers", owner], queryFn: listProviders });
   const { data: profile } = useQuery({ queryKey: ["profile", owner], queryFn: () => repository.getProfile() });
   const endRef = useRef<HTMLDivElement>(null);
@@ -85,7 +89,7 @@ export function AgentChatPage() {
     const imgMarkers = attachments.filter((a) => a.kind === "image").map((a) => `[图片附件 ${a.name}]`).join(" ");
     const content = retry ? active.pendingTurn?.content ?? "" : (text + docText + (imgMarkers ? "\n" + imgMarkers : "")).trim();
     if (!content) return;
-    const pendingTurn = retry && active.pendingTurn ? active.pendingTurn : { turnId: crypto.randomUUID(), content, providerId: provider?.id, images: attachments.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) };
+    const pendingTurn = retry && active.pendingTurn ? active.pendingTurn : { turnId: crypto.randomUUID(), content, providerId: provider?.id, reasoning, images: attachments.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) };
     setInput("");
     setAttachments([]);
     setBusy(true);
@@ -106,7 +110,7 @@ export function AgentChatPage() {
         if (!alive.current) return;
         update(active.id, (s) => ({ ...s, backendId: id }));
         const task = await runTaskViaBackend(
-          { title: content.slice(0, 80), intent: content, sessionId: id, turnId: pendingTurn.turnId, images: pendingTurn.images, providerId: pendingTurn.providerId },
+          { title: content.slice(0, 80), intent: content, sessionId: id, turnId: pendingTurn.turnId, images: pendingTurn.images, providerId: pendingTurn.providerId, reasoning: pendingTurn.reasoning },
           (t) => {
             if (!alive.current) return;
             update(active.id, (s) => ({ ...s, contextUsed: t.promptUsage?.inputTokens ?? undefined, contextCap: t.promptUsage?.contextLimit ?? undefined, promptSource: t.promptUsage?.source ?? "unknown" }));
@@ -130,13 +134,14 @@ export function AgentChatPage() {
         }));
         if (task.status === "needs_input") toast.message("任务等待审批/补充信息，可在后端恢复。");
       } else {
-        const out = await runChat({ message: content, history, repository, profile: profile!, providerId, mode: active.mode, model: modelName, memoryScope: `${owner}:${active.id}` });
+        const out = await runChat({ message: content, history, repository, profile: profile!, providerId: provider?.id, mode: active.mode, model: modelName, memoryScope: `${owner}:${active.id}`, reasoning });
         if (!alive.current) return;
         if (out.needsSetup) setShowSetup(true);
         update(active.id, (s) => ({
           ...s,
           tokens: s.tokens + out.usage.input + out.usage.output,
           contextUsed: out.contextUsed ?? s.contextUsed ?? 0,
+          promptSource: "estimated",
           contextCap: out.contextCap ?? contextCap,
           compressed: out.compressed ?? false,
           pruned: out.pruned ?? false,
@@ -341,13 +346,19 @@ export function AgentChatPage() {
                 {providers.length === 0 && <SelectItem value="unconfigured" disabled>请配置模型</SelectItem>}
               </SelectContent>
             </Select>
+            <label className="flex items-center gap-1 text-xs text-muted-foreground">思考
+              <select aria-label="思考强度" className="h-8 rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={reasoning} onChange={(e) => { const value = e.target.value as typeof reasoning; setReasoning(value); localStorage.setItem(`campusmate.reasoning:${owner}`, value); }}>
+                <option value="auto">自动</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option>
+              </select>
+            </label>
+            {!["reasoning_effort", "enable_thinking"].includes(String(provider?.capabilities?.reasoning)) && <span className="text-xs text-muted-foreground">接口暂未提供可调思考参数</span>}
             {providerError && <span className="text-xs text-destructive">模型目录加载失败：{errorMessage(providerError)}</span>}
             {active.actualModel && <span className="text-xs text-muted-foreground" title={`最近任务配置：${active.configuredModel ?? "未知"}`}>最近返回：{active.actualModel}</span>}
             <span
               className="text-xs text-muted-foreground"
               title={`上下文组成：system+工具定义+历史摘要+近期历史+当前输入+输出预留；模型 ${modelName} 上限 ${contextCap.toLocaleString()} tok；累计用量 ${(active?.tokens ?? 0).toLocaleString()} tok`}
             >
-              窗口输入 {active?.contextUsed === undefined ? "未知" : `${active.promptSource === "estimated" ? "约 " : ""}${active.contextUsed.toLocaleString()}`} / {backendEnabled() ? active.contextCap?.toLocaleString() ?? "上限未知" : contextCap.toLocaleString()} tok · 累计 {(active?.tokens ?? 0).toLocaleString()} tok
+              窗口输入 {active?.contextUsed === undefined ? "未知" : `${active.promptSource === "estimated" ? "约 " : ""}${active.contextUsed.toLocaleString()}`} / {(backendEnabled() ? active.contextCap : provider?.contextLimit)?.toLocaleString() ?? "上限未知"} tok · 累计 {(active?.tokens ?? 0).toLocaleString()} tok
               {active?.compressed && (
                 <span className="ml-1 rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">已压缩</span>
               )}

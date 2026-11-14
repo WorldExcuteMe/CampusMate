@@ -153,22 +153,33 @@ const server = http.createServer(async (req, res) => {
     }
     if (!key) return json(res, 503, { error: "LLM_API_KEY not configured (server-side)" });
     const retryable = new Set([429, 500, 502, 503, 504]);
+    let caps = {};
+    try { caps = JSON.parse(env.LLM_CAPABILITIES || "{}"); } catch {}
+    const preference = payload.reasoning || "auto";
+    const complex = /策划|规划|核验|矛盾|推导|研究报告/.test(JSON.stringify(payload.messages?.slice(-1)));
+    const tier = preference === "auto" ? (complex ? "high" : "low") : preference;
+    const thinking = caps.reasoning === "reasoning_effort" ? { reasoning_effort: tier } : caps.reasoning === "enable_thinking" ? { enable_thinking: tier !== "low" } : {};
+    const controller = new AbortController();
+    const timeoutMs = Number(env.LLM_TIMEOUT_MS) || 120000;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     let lastErr = null;
-    for (let attempt = 0; attempt <= 3; attempt++) {
+    try {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const upstream = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+        signal: controller.signal, redirect: "error",
         body: JSON.stringify({
           model: payload.model || model,
           messages: payload.messages,
-          temperature: payload.temperature ?? 0.2,
-          ...reasoningParams(payload.model || model, payload.reasoning),
+          ...(caps.temperature === true ? { temperature: payload.temperature ?? 0.2 } : {}),
+          ...thinking,
           ...(payload.tools ? { tools: payload.tools, tool_choice: payload.tool_choice ?? "auto" } : {}),
           ...(payload.responseFormat ? { response_format: payload.responseFormat } : {}),
         }),
       });
-        if (retryable.has(upstream.status) && attempt < 3) {
+        if (retryable.has(upstream.status) && attempt < 2) {
           const ra = Number(upstream.headers.get("retry-after")) || 0;
           const delay = Math.min(10000, Math.max(ra * 1000, 500 * 2 ** attempt)) * (1 + Math.random() * 0.1);
           await new Promise((r) => setTimeout(r, delay));
@@ -183,14 +194,16 @@ const server = http.createServer(async (req, res) => {
         return json(res, upstream.status, data);
       } catch (err) {
         lastErr = err;
-        if (attempt < 3) {
+        if (err instanceof TypeError && !controller.signal.aborted && attempt < 2) {
           const delay = Math.min(10000, 500 * 2 ** attempt) * (1 + Math.random() * 0.1);
           await new Promise((r) => setTimeout(r, delay));
           continue;
         }
+        break;
       }
     }
     return json(res, 502, { error: String(lastErr) });
+    } finally { clearTimeout(timer); }
   }
   // 普适群发现：枚举本机所有群（uin/总数/信息密度/样例），供 agent 自动定位通知群
   if (req.method === "GET" && url.split("?")[0] === "/api/ingest/qq/groups") {

@@ -42,6 +42,15 @@ test("composeContext 超窗按组保留近期，配对完整", () => {
   assert.equal(r.compressed, true);
   assert.equal(validatePairing(r.messages).ok, true);
 });
+test("摘要也计入输入预算，压缩不丢当前目标", () => {
+  const history: ChatMessage[] = Array.from({ length: 30 }, () => usr("资料正文".repeat(200)));
+  const composed = composeContext({ system: "规则", history, user: "推荐竞赛", cap: 6000, reserveOutput: 1000 });
+  assert.ok(composed.usedTokens + 1000 <= 6000);
+  const current = usr("本轮目标：保留此完整要求");
+  const trimmed = trimToBudget([sys("规则"), current, ...history], 6000, 0, 1000, 3000, current);
+  assert.ok(trimmed.messages.some((m) => m.content === current.content));
+  assert.ok(messagesTokens(trimmed.messages) + 1000 <= 6000);
+});
 
 test("工具结果裁剪（spill）：较旧 tool 裁剪 head+tail，最新保留，不丢消息", () => {
   const big = "a".repeat(20000);

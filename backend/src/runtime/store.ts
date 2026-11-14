@@ -28,7 +28,7 @@ export interface CreateTaskInput {
 export interface TaskStore {
   createTask(input: CreateTaskInput): Promise<Task>;
   createSessionTask?(input: CreateTaskInput & { sessionId: string; turnId: string }, sessions: SessionStore): Promise<{ task: Task; deduped: boolean }>;
-  resumeSessionTask?(id: string, userId: string): Promise<Task>;
+  resumeSessionTask?(id: string, userId: string, budget?: Budget): Promise<Task>;
   saveTurnProgress?(input: TurnProgress, sessions: SessionStore): Promise<Task>;
   finishSessionTurn?(input: TurnProgress & { patch: Partial<Task> }, sessions: SessionStore): Promise<Task>;
   getTask(id: string): Promise<Task | null>;
@@ -94,12 +94,12 @@ export class InMemoryStore implements TaskStore {
     });
   }
 
-  async resumeSessionTask(id: string, userId: string): Promise<Task> {
+  async resumeSessionTask(id: string, userId: string, budget?: Budget): Promise<Task> {
     const task = await this.getTask(id);
     if (!task || task.userId !== userId) throw new Error("Task owner forbidden");
     return this.sessionTransaction(task.sessionId ?? id, async () => {
       if (task.turnSeq !== undefined && [...this.tasks.values()].some((t) => t.userId === userId && t.sessionId === task.sessionId && (t.turnSeq ?? 0) > task.turnSeq!)) throw new SessionConflict("后续对话已开始，请用新消息继续；原任务记录已保留。");
-      return this.updateTask(id, { status: "queued", transcriptCommitted: false });
+      return this.updateTask(id, { status: "queued", transcriptCommitted: false, ...(budget ? { budget } : {}), error: "" });
     });
   }
 

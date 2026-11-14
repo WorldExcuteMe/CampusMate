@@ -13,6 +13,7 @@ export const TOOL_RESULT_CAP = 12_000;
 export const HEADROOM_TOKENS = 65_536;
 export const SPILL_HEAD_CHARS = 4096;
 export const SPILL_TAIL_CHARS = 1024;
+export class ContextLimitError extends Error {}
 
 export function modelMaxContext(model?: string): number {
   if (!model) return DEFAULT_MAX_CONTEXT;
@@ -23,7 +24,7 @@ export function resolveContextCap(model?: string, override?: number): number {
   return Math.min(override ?? WORKING_CAP, modelMaxContext(model));
 }
 export function compactionThreshold(cap: number, reserveOutput = RESERVE_OUTPUT): number {
-  return Math.floor(Math.min(cap * 0.8, cap - reserveOutput - HEADROOM_TOKENS));
+  return Math.max(1, Math.floor(Math.min(cap * 0.8, cap - reserveOutput - Math.min(HEADROOM_TOKENS, cap * 0.1))));
 }
 export function retainTokens(cap: number, reserveOutput = RESERVE_OUTPUT): number {
   return Math.floor((cap - reserveOutput) * 0.16);
@@ -55,9 +56,11 @@ export function toolsTokens(tools?: ToolDef[]): number {
 export function truncateTool(m: ChatMessage, cap = TOOL_RESULT_CAP): ChatMessage {
   const content = typeof m.content === "string" ? m.content : contentText(m.content);
   if (m.role === "tool" && content.length > cap) {
-    const omitted = content.length - SPILL_HEAD_CHARS - SPILL_TAIL_CHARS;
+    const head = Math.min(SPILL_HEAD_CHARS, Math.floor(cap * 0.75));
+    const tail = Math.min(SPILL_TAIL_CHARS, Math.floor(cap * 0.2));
+    const omitted = content.length - head - tail;
     const notice = `\n[... 省略 ${omitted} 字符；完整输出可用 rag_search / read_file 取回 ...]\n`;
-    return { ...m, content: content.slice(0, SPILL_HEAD_CHARS) + notice + content.slice(-SPILL_TAIL_CHARS) };
+    return { ...m, content: content.slice(0, head) + notice + content.slice(-tail) };
   }
   return m;
 }
@@ -110,7 +113,7 @@ export interface TrimResult { messages: ChatMessage[]; compressed: boolean; prun
 
 // 按轮次组原子压缩：超阈值时从最旧组整组丢弃，保留 system + 尾部 retain 预算内的完整组。
 // 绝不拆散 tool_call↔result；压缩后校验配对。工具结果裁剪独立（pruned）。
-export function trimToBudget(messages: ChatMessage[], cap: number, tTools: number, reserveOutput = RESERVE_OUTPUT, trCap = TOOL_RESULT_CAP): TrimResult {
+export function trimToBudget(messages: ChatMessage[], cap: number, tTools: number, reserveOutput = RESERVE_OUTPUT, trCap = TOOL_RESULT_CAP, protectedUser?: ChatMessage): TrimResult {
   // 先裁剪较旧工具结果（保留最新 tool 完整）——pruned，不算历史压缩。
   let lastToolIdx = -1;
   for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "tool") { lastToolIdx = i; break; }
@@ -129,14 +132,18 @@ export function trimToBudget(messages: ChatMessage[], cap: number, tTools: numbe
     while (bodyStart < msgs.length && msgs[bodyStart].role === "system") { systemPrefix.push(msgs[bodyStart]); bodyStart++; }
     const groups = groupTurns(msgs.slice(bodyStart));
     // 从最旧组整组丢弃，直到落入预算（保留尾部 retain 内的完整组）。
-    let droppedCount = 0;
-    while (groups.length > 1 && messagesTokens([...systemPrefix, ...groups.flat()]) > Math.max(retain, budget)) {
-      groups.shift();
-      droppedCount++;
+    const droppedGroups: ChatMessage[][] = [];
+    const protectedKey = protectedUser ? JSON.stringify(protectedUser) : null;
+    const assemble = () => [...systemPrefix, ...(droppedGroups.length ? [{ role: "system" as const, content: summarizeDropped(droppedGroups) }] : []), ...groups.flat()];
+    while (groups.length > 1 && messagesTokens(assemble()) > Math.max(retain, budget)) {
+      const index = groups.findIndex((g, i) => i < groups.length - 1 && (!protectedKey || !g.some((m) => JSON.stringify(m) === protectedKey)));
+      if (index < 0) break;
+      droppedGroups.push(...groups.splice(index, 1));
       compressed = true;
     }
-    const droppedGroups = groupTurns(msgs.slice(bodyStart)).slice(0, droppedCount);
-    const summary = droppedCount > 0 ? summarizeDropped(droppedGroups) : "";
+    const base = [...systemPrefix, ...groups.flat()];
+    const summaryBudget = Math.max(0, budget - messagesTokens(base) - 8);
+    const summary = droppedGroups.length ? clipTokens(summarizeDropped(droppedGroups), summaryBudget) : "";
     const summaryMsg: ChatMessage = { role: "system", content: summary };
     msgs = summary
       ? [...systemPrefix, summaryMsg, ...groups.flat()]
@@ -149,19 +156,33 @@ export function trimToBudget(messages: ChatMessage[], cap: number, tTools: numbe
     msgs = msgs.map((m) => truncateTool(m, trCap));
     pruned = pruned || msgs.some((m, i) => m !== before[i]);
   }
+  if (messagesTokens(msgs) > budget) {
+    for (let limit = Math.min(trCap, Math.floor(budget / 3)); limit >= 128 && messagesTokens(msgs) > budget; limit = Math.floor(limit / 2)) msgs = msgs.map((m) => truncateTool(m, limit));
+    pruned = true;
+  }
+  if (messagesTokens(msgs) > budget) throw new ContextLimitError("必须保留的目标与工具组超过上下文窗口，请缩小输入或选择更大模型窗口");
   return { messages: msgs, compressed, pruned };
+}
+
+function clipTokens(text: string, budget: number): string {
+  if (estimateTokens(text) <= budget) return text;
+  let low = 0, high = text.length;
+  while (low < high) { const mid = Math.ceil((low + high) / 2); if (estimateTokens(text.slice(0, mid)) <= budget) low = mid; else high = mid - 1; }
+  return text.slice(0, low);
 }
 
 export interface ComposedContext { messages: ChatMessage[]; usedTokens: number; compressed: boolean; droppedTurns: number; cap: number; }
 
 // 分层组装：system + 工具 + 历史（按预算保留近期完整组）+ 当前输入。
-export function composeContext(opts: { system: string; history: ChatMessage[]; user: string; tools?: ToolDef[]; cap: number; reserveOutput?: number; toolResultCap?: number }): ComposedContext {
-  const reserve = opts.reserveOutput ?? RESERVE_OUTPUT;
+export function composeContext(opts: { system: string; dynamic?: string; history: ChatMessage[]; user: string; tools?: ToolDef[]; cap: number; reserveOutput?: number; toolResultCap?: number }): ComposedContext {
+  const reserve = opts.reserveOutput ?? Math.min(RESERVE_OUTPUT, Math.floor(opts.cap * 0.25));
   const trCap = opts.toolResultCap ?? TOOL_RESULT_CAP;
   const tTools = toolsTokens(opts.tools);
   const systemMsg: ChatMessage = { role: "system", content: opts.system };
+  const prefix: ChatMessage[] = [systemMsg, ...(opts.dynamic ? [{ role: "system" as const, content: opts.dynamic }] : [])];
   const userMsg: ChatMessage = { role: "user", content: opts.user };
-  const fixed = messagesTokens([systemMsg, userMsg]) + tTools + reserve;
+  const fixed = messagesTokens([...prefix, userMsg]) + tTools + reserve;
+  if (fixed > opts.cap) throw new ContextLimitError("身份、规则、工具和当前输入超出配置窗口，请缩小材料或选择更大窗口模型");
   const budget = Math.max(0, opts.cap - fixed);
 
   const hist = opts.history.map((m) => truncateTool(m, trCap));
@@ -174,11 +195,12 @@ export function composeContext(opts: { system: string; history: ChatMessage[]; u
     kept.unshift(groups[i]);
     used += t;
   }
-  const dropped = groups.length - kept.length;
+  let dropped = groups.length - kept.length;
+  while (dropped > 0 && kept.length && messagesTokens([...prefix, { role: "system", content: summarizeDropped(groups.slice(0, dropped)) }, ...kept.flat(), userMsg]) + tTools + reserve > opts.cap) { kept.shift(); dropped++; }
   const keptFlat = kept.flat();
-  const summaryMsg: ChatMessage = { role: "system", content: summarizeDropped(groups.slice(0, dropped)) };
+  const summaryMsg: ChatMessage = { role: "system", content: clipTokens(summarizeDropped(groups.slice(0, dropped)), Math.max(0, opts.cap - tTools - reserve - messagesTokens([...prefix, ...keptFlat, userMsg]) - 8)) };
   const messages: ChatMessage[] = dropped > 0
-    ? [systemMsg, summaryMsg, ...keptFlat, userMsg]
-    : [systemMsg, ...keptFlat, userMsg];
+    ? [...prefix, summaryMsg, ...keptFlat, userMsg]
+    : [...prefix, ...keptFlat, userMsg];
   return { messages, usedTokens: messagesTokens(messages) + tTools, compressed: dropped > 0, droppedTurns: dropped, cap: opts.cap };
 }
