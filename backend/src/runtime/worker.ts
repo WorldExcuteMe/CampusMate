@@ -31,6 +31,7 @@ import { stageForIntent } from "../core/generation-policy.ts";
 import type { CheckpointState } from "../core/types.ts";
 import { isProposalRequest } from "../core/document-plan.ts";
 import { runProposal, type ProposalResult } from "../core/proposal.ts";
+import { toolResultFailed } from "../core/tool-result.ts";
 
 export interface WorkerDeps {
   store: TaskStore;
@@ -121,7 +122,8 @@ export class Worker {
       const input = buildEvaluationInput({ reply: result.reply, evidence, citedSources: evidence.map((e) => e.sourceUrl) });
       return this.independentEvaluator.evaluate(task.id, criteria, input);
     }
-    const passed = !result.mock && !result.error && !result.truncated && !result.budgetExceeded;
+    if (criteria.some((c) => c.required)) return { taskId: task.id, evaluatedBy: "evaluator", passed: false, criteria: criteria.map((c) => ({ id: c.id, passed: false, evidenceIds: [], note: "未配置独立验收存储，无法证明此条件" })), evaluatedAt: this.now() };
+    const passed = !result.mock && !result.error && !result.truncated && !result.budgetExceeded && !result.toolErrors;
     return { taskId: task.id, evaluatedBy: "evaluator", passed, criteria: [{ id: "model_reachable", passed, evidenceIds: [], note: passed ? "模型真实答复" : "模型不可达，降级" }], evaluatedAt: this.now() };
   }
 
@@ -157,7 +159,7 @@ export class Worker {
     };
     const cancelled = async () => {
       await eventQueue;
-      const patch: Partial<Task> = { status: "cancelled", result: { summary: "任务已取消，执行记录已保留。", artifactIds: [], partial: true, completion: { state: "partial", reason: "cancelled" } } };
+      const patch: Partial<Task> = { status: "cancelled", usage: latestState?.usage ?? task.usage, result: { summary: "任务已取消，执行记录已保留。", artifactIds: [], partial: true, completion: { state: "partial", reason: "cancelled" } } };
       if (task.turnId && this.sessions && store.finishSessionTurn) await store.finishSessionTurn({ taskId: task.id, userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now(), state: latestState ?? { messages: [], transcript: [], repeat: {}, stepProgress: {}, usage: task.usage, pendingApprovals: [] }, patch }, this.sessions);
       else { await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.cancelled", payload: {} }); await store.updateTask(task.id, patch); }
     };
@@ -178,6 +180,7 @@ export class Worker {
       let identity = "";
       let priorSummary = "";
       let priorOutcomes = "";
+      if (task.sessionId && !this.sessions && !cp) history = await store.listSessionHistory({userId:task.userId,sessionId:task.sessionId,beforeTaskId:task.id});
       if (task.sessionId && this.sessions) {
         let session = await this.sessions.get(task.userId, task.sessionId);
         if (!session) throw new Error("Session owner forbidden");
@@ -206,7 +209,7 @@ export class Worker {
           await this.sessions.appendMessage({ userId: task.userId, sessionId: task.sessionId, turnId: task.turnId ?? task.id, messageKey: `${task.turnId ?? task.id}:user`, taskId: task.id, role: "user", content: task.intent });
         }
       }
-      const profile = await this.personalContext?.getProfile(task.userId);
+      const profile = await this.personalContext?.getProfile(task.userId) ?? (await this.memoryStore?.getUserMemory(task.userId))?.profile;
       const userProfile = [profile ? JSON.stringify(profile) : "", priorSummary, identity].filter(Boolean).join("\n\n");
       const saveTranscript = async (transcript: ChatMessage[]) => {
         if (!task.sessionId || !this.sessions) return;
@@ -263,8 +266,8 @@ export class Worker {
         } catch (e) {
           out = JSON.stringify({ error: errorMessage(e), class: TOOL_SPECS[name]?.idempotent === false ? "tool_result_uncertain" : "tool_transient" });
         }
-        let parsed: unknown = out; let ok = true;
-        try { parsed = JSON.parse(out); ok = !(parsed && typeof parsed === "object" && (parsed as Record<string, unknown>).error); } catch { /* non-json */ }
+        let parsed: unknown = out; const ok = !toolResultFailed(out);
+        try { parsed = JSON.parse(out); } catch { /* non-json */ }
         const inv: ToolInvocation = {
           id: invocationId(task.id, key), taskId: task.id, userId: task.userId, toolName: name,
           idempotencyKey: key, argsHash: sha256(canonicalArgs(args)), runtime: this.companion?.resolve(task.userId) ? "local-companion" : "cloud",
@@ -303,8 +306,9 @@ export class Worker {
         images: task.images,
         history,
         resumeMessages,
+        resumeToolErrors: cp?.state.toolErrors,
         resumeTranscript: cp?.state.transcript,
-        initialUsage: cp?.state.usage,
+        initialUsage: { tokens: Math.max(task.usage.tokens,cp?.state.usage.tokens??0),toolCalls:Math.max(task.usage.toolCalls,cp?.state.usage.toolCalls??0),wallMs:Math.max(task.usage.wallMs,cp?.state.usage.wallMs??0),costUsd:Math.max(task.usage.costUsd,cp?.state.usage.costUsd??0) },
         repeat,
         deps: {
           transport: this.resolveTransport ? await this.resolveTransport(task) : this.transport,
@@ -401,6 +405,8 @@ export class Worker {
       }
 
       let certificate = await this.evaluator(task, result);
+      const executionPassed = !result.error && !result.mock && !result.truncated && !result.budgetExceeded && !result.toolErrors && (!result.stopReason || result.stopReason === "completed");
+      certificate = { ...certificate, passed: certificate.passed && executionPassed, criteria: [...certificate.criteria, { id: "runtime_execution", passed: executionPassed, evidenceIds: [], note: executionPassed ? "正常结束，未观测到工具失败" : `执行未通过：${result.stopReason ?? "error"}，toolErrors=${result.toolErrors ?? 0}` }] };
       if (result.delivery) certificate = { ...certificate, passed: certificate.passed && result.delivery.passed, criteria: [...certificate.criteria, ...result.delivery.checks.map((c) => ({ id: c.id, passed: c.passed, evidenceIds: [], note: c.detail }))] };
       await store.appendEvent({ taskId: task.id, userId: task.userId, type: certificate.passed ? "eval.passed" : "eval.failed", payload: { certificate } });
 
@@ -410,7 +416,8 @@ export class Worker {
           result: { summary: result.reply, certificate, artifactIds: result.delivery?.artifactIds ?? [], partial: false, ...(result.delivery ? { completion: { state: "complete", reason: "checks_passed", checks: result.delivery.checks } as const } : {}) },
         });
       } else {
-        await finishTurn({ status: "failed", error: result.reply, result: { summary: result.reply, certificate, artifactIds: result.delivery?.artifactIds ?? [], ...(result.delivery ? { partial: true, completion: { state: "partial", reason: "document_checks_failed", checks: result.delivery.checks } as const } : {}) } });
+        const summary = result.delivery ? result.reply : `任务未通过验收（${certificate.criteria.filter(c => !c.passed).map(c => c.note).join("；")}）。\n${result.reply}`;
+        await finishTurn({ status: "failed", error: summary, result: { summary, certificate, artifactIds: result.delivery?.artifactIds ?? [], ...(result.delivery ? { partial: true, completion: { state: "partial", reason: "document_checks_failed", checks: result.delivery.checks } as const } : {}) } });
       }
     } catch (err) {
       if (err instanceof LeaseLostError) return;

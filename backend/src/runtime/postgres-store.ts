@@ -12,6 +12,7 @@ import { transactionPool } from "./sql.ts";
 import { PostgresSessionStore } from "./postgres-session-store.ts";
 import type { SessionStore } from "../core/storage-contracts.ts";
 import { assertTurnLease, turnMessages } from "../core/session-context.ts";
+import { sessionMessages, sessionTurnLimit, type SessionHistoryQuery, type SessionTurn } from "./session-history.ts";
 
 type Row = Record<string, unknown>;
 
@@ -189,6 +190,17 @@ export class PostgresStore implements TaskStore {
     return rowToTask(r.rows[0]);
   }
 
+  async listSessionHistory(query: SessionHistoryQuery): Promise<import("../core/types.ts").ChatMessage[]> {
+    if (!query.sessionId) return [];
+    const result = await this.pool.query<SessionTurn>(`with queued as (
+      select e.task_id,min(e.id) as turn_seq from agent_events e join agent_tasks scoped on scoped.id=e.task_id and scoped.user_id=e.user_id
+      where e.user_id=$1 and scoped.session_id=$2 and e.type='task.queued' group by e.task_id
+    ), anchor as (select q.turn_seq from agent_tasks t join queued q on q.task_id=t.id where t.id=$3 and t.user_id=$1 and t.session_id=$2)
+    select t.intent,t.status,t.result,t.error from agent_tasks t join queued q on q.task_id=t.id
+    where t.user_id=$1 and t.session_id=$2 and q.turn_seq < (select turn_seq from anchor) and t.status in ('succeeded','failed','cancelled')
+    order by q.turn_seq desc limit $4`,[query.userId,query.sessionId,query.beforeTaskId,sessionTurnLimit(query.maxTurns)]);
+    return sessionMessages(result.rows.reverse());
+  }
   async listTasksByUser(userId: string): Promise<Task[]> {
     const r = await this.pool.query(`select * from agent_tasks where user_id=$1 order by created_at desc`, [userId]);
     return r.rows.map(rowToTask);

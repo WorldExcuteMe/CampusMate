@@ -11,6 +11,7 @@ const stripExtension = (s: string) => s.replace(/create extension if not exists 
 
 // Supabase 专有对象桩：auth.users + auth.uid()（PGlite 无 Supabase auth schema）。
 const AUTH_STUB = `
+create role anon; create role authenticated; create role service_role bypassrls;
 create schema if not exists auth;
 create table if not exists auth.users (id uuid primary key default gen_random_uuid(), email text);
 create or replace function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;

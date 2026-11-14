@@ -49,6 +49,7 @@ export async function storageFixture(t: TestContext) {
   const pool = await PGlitePool.create();
   t.after(() => pool.end());
   await pool.exec(`
+    create role anon; create role authenticated; create role service_role bypassrls;
     create schema auth;
     create table auth.users (id uuid primary key, email text);
     create function auth.uid() returns uuid language sql stable as

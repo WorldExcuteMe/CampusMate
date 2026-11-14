@@ -15,7 +15,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { repository, llmProvider } from "@/app/config";
+import { llmProvider } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import { runInboxPipeline, type AgentRun } from "@/lib/agent/orchestrator";
 import {
   extractedNoticeSchema,
@@ -35,6 +36,7 @@ const SAMPLE = `关于举办2026年全国大学生人工智能创新大赛的通
 地点：线上初赛，决赛在校本部`;
 
 export function NewInboxPage() {
+  const repository = useRepository();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [rawText, setRawText] = useState("");
@@ -80,6 +82,7 @@ export function NewInboxPage() {
         status: "confirmed",
         createdAt: new Date().toISOString(),
         demo: repository.mode === "demo",
+        extractionMock: run.mock,
       };
       await repository.createInbox(item);
       await repository.logAgentRun(run);
@@ -115,6 +118,7 @@ export function NewInboxPage() {
         status: "confirmed",
         createdAt: new Date().toISOString(),
         demo: repository.mode === "demo",
+        extractionMock: run?.mock ?? true,
       };
       await repository.createInbox(item);
       if (run) await repository.logAgentRun(run);
@@ -189,7 +193,7 @@ export function NewInboxPage() {
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle className="text-base">2. 审核结构化结果</CardTitle>
             <div className="flex items-center gap-2">
-              <MockBadge />
+              {run?.mock ? <MockBadge /> : <span className="text-xs text-emerald-700">真实模型提取</span>}
               <ClassBadge value={classification.class} />
             </div>
           </CardHeader>

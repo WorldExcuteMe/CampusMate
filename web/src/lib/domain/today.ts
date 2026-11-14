@@ -4,9 +4,7 @@
 export interface TaskLike { id: string; title: string; dueAt: string | null; status: string; priority?: number; }
 export interface InboxLike { id: string; title: string; priority?: number; class?: string; createdAt?: string; }
 export interface OppLike { id: string; title: string; deadline?: string | null; matchScore?: number; status?: string; }
-import { activeTask, deadlineInstant, localParts } from "../../../../shared/calendar";
-
-const DAY = 86_400_000;
+import { activeTask, deadlineInstant, localParts, addDays } from "../../../../shared/calendar";
 
 export function todayTasks(tasks: TaskLike[], now = Date.now(), timezone = "Asia/Shanghai"): TaskLike[] {
   const today = localParts(now, timezone).date;
@@ -15,7 +13,7 @@ export function todayTasks(tasks: TaskLike[], now = Date.now(), timezone = "Asia
 }
 
 export function upcomingDeadlines(tasks: TaskLike[], days = 7, now = Date.now(), timezone = "Asia/Shanghai"): TaskLike[] {
-  const limit = now + days * DAY;
+  const limit = deadlineInstant(addDays(localParts(now, timezone).date, days), timezone);
   return tasks.filter((t) => activeTask(t.status) && t.dueAt && deadlineInstant(t.dueAt, timezone) >= now && deadlineInstant(t.dueAt, timezone) <= limit)
     .sort((a, b) => Date.parse(a.dueAt!) - Date.parse(b.dueAt!));
 }

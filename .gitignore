@@ -1,4 +1,8 @@
 # dependencies / build
+node_modules/
+.local/
+supabase/.temp/
+supabase/.branches/
 web/node_modules/
 web/dist/
 backend/node_modules/

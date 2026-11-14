@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, expect, it, vi } from "vitest";
-vi.mock("@/app/auth", () => ({ useAuth: () => ({ session: { user: { id: "alice" } } }) }));
+vi.mock("@/app/auth", () => ({ useRepository: () => ({getProfile:async()=>({id:"alice",major:"计算机",grade:"大二",interests:[],skills:[],goals:[]})}), useAuth: () => ({ session: { user: { id: "alice" } } }) }));
 vi.mock("@/app/config", () => ({ repository: { getProfile: async () => ({ id: "alice", major: "计算机", grade: "大二", interests: [], skills: [], goals: [] }) }, supabaseClient: { auth: { getSession: async () => ({ data: { session: { access_token: "fixture-token" } } }) } } }));
 import { SessionsProvider } from "@/lib/agent/sessions-context";
 import { AgentChatPage } from "./AgentChatPage";

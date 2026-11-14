@@ -3,6 +3,7 @@ import { classify } from "../agent/classifier";
 import { cleanGroupMessage, dedupKey, extractDailyTime, isDailyNotice, isExpired, todayBeijing } from "./clean";
 import { mergeInbox } from "./dedupe";
 import { uid, type Repository } from "../data/types";
+import { groupSeenKey, readGroupSeen } from "./group-seen";
 
 export interface GroupRecord {
   time: string;
@@ -24,7 +25,6 @@ export interface SyncSummary {
 }
 
 const OPP_KEYWORDS = ["竞赛", "比赛", "大赛", "实习", "招聘", "科研", "奖学金", "助学金", "开源", "招募"];
-const SEEN_KEY = "campusmate.group.seen";
 
 export interface GroupInfo {
   uin: number;
@@ -76,7 +76,9 @@ export async function fetchWechatNotices(name: string): Promise<GroupRecord[]> {
 
 // 信息本位：不关注发送人，只按 日期/关键词/文件 过滤后的记录同步进容器。
 export async function syncGroupRecords(records: GroupRecord[], repo: Repository): Promise<SyncSummary> {
-  const seen: string[] = JSON.parse(localStorage.getItem(SEEN_KEY) || "[]");
+  // Capture the same owner as this repository, including when another account signs in mid-sync.
+  const seenKey = groupSeenKey(repo.storageScope);
+  const seen = readGroupSeen(seenKey);
   const sum: SyncSummary = { inbox: 0, daily: 0, opportunity: 0, skipped: 0, expired: 0, merged: 0 };
   const userId = repo.mode === "demo" ? "demo-user" : "me";
   const today = todayBeijing();
@@ -124,6 +126,6 @@ export async function syncGroupRecords(records: GroupRecord[], repo: Repository)
   }
   const mg = await mergeInbox(repo);
   sum.merged = mg.merged;
-  localStorage.setItem(SEEN_KEY, JSON.stringify(seen.slice(-500)));
+  localStorage.setItem(seenKey, JSON.stringify(seen.slice(-500)));
   return sum;
 }

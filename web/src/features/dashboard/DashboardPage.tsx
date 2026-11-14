@@ -1,3 +1,7 @@
+import { useState } from "react";
+import type { Task } from "@/lib/data/types";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { opportunityTimeState } from "@/lib/time-policy";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -5,14 +9,16 @@ import { CalendarDays, Clock3, Inbox, Radar, ShieldAlert, ListTodo } from "lucid
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { repository } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import { ClassBadge, DeadlineTag, EmptyState, PageHeader } from "@/components/shared";
 import { useCampusCalendar } from "@/features/calendar/use-campus-calendar";
 import { todayTasks, overdueTasks, upcomingDeadlines } from "@/lib/domain/today";
 import { dateEntries, localParts, projectCourses } from "../../../../shared/calendar";
 
 export function DashboardPage() {
+  const repository = useRepository();
   const qc = useQueryClient();
+  const [pendingTask,setPendingTask] = useState<Task | null>(null);
   const inbox = useQuery({ queryKey: ["inbox"], queryFn: () => repository.listInbox() });
   const calendar = useCampusCalendar();
   const { tasks, opps, term, today, timezone, knowledge, schedules } = calendar;
@@ -21,8 +27,9 @@ export function DashboardPage() {
     mutationFn: (id: string) => repository.updateTask(id, { status: "done" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tasks"] });
-      toast.success("任务已完成");
+      setPendingTask(null); toast.success("任务已完成");
     },
+    onError: () => toast.error("完成任务失败，请重试"),
   });
 
   const allTasks = tasks.data ?? [];
@@ -36,16 +43,17 @@ export function DashboardPage() {
 
   const stats = [
     { label: "待办任务", value: openTasks.length, icon: ListTodo, to: "/app/growth" },
-    { label: "7 天内截止", value: urgent, icon: ShieldAlert, to: "/app/growth" },
+    { label: "7 天内截止", value: urgent, icon: ShieldAlert, to: "/app/growth?view=soon" },
+    { label: "已逾期待处理", value: overdue.length, icon: ShieldAlert, to: "/app/growth?view=overdue" },
     { label: "风险条目", value: riskCount, icon: ShieldAlert, to: "/app/inbox" },
-    { label: "机会总数", value: (opps.data ?? []).length, icon: Radar, to: "/app/radar" },
+    { label: "有效机会", value: (opps.data ?? []).filter(o=>opportunityTimeState(o,today)==="active").length, icon: Radar, to: "/app/radar" },
   ];
 
   return (
     <div className="mx-auto max-w-5xl">
       <PageHeader title="今天，先做好这几件事。" description={`${today} · 课程、待办与临近截止。`} />
 
-      <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {stats.map((s) => (
           <Link key={s.label} to={s.to}>
             <Card className="transition-shadow hover:shadow-md">
@@ -68,6 +76,7 @@ export function DashboardPage() {
         <section className="rounded-2xl border bg-primary/5 p-5"><h2 className="flex items-center gap-2 font-semibold"><Clock3 className="size-4 text-primary" />接下来</h2><p className="mt-3 text-lg font-semibold">{next?.title ?? "暂无后续已记录安排"}</p>{next && <p className="mt-1 text-sm text-muted-foreground">{next.allDay ? "当天截止" : `${next.startTime}–${next.endTime}`}</p>}<p className="mt-4 text-xs text-muted-foreground">今日待办 {todayTodo.length} · 逾期待处理 {overdue.length}</p></section>
       </div>
 
+      {overdue.length > 0 && <section className="mb-4 rounded-xl border border-amber-300/40 p-4"><h2 className="font-semibold">逾期待办（{overdue.length}）</h2>{overdue.slice(0,3).map(t=><p key={t.id} className="mt-2 text-sm"><span>{t.title}</span> · {t.dueAt}</p>)}</section>}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader className="flex-row items-center justify-between">
@@ -78,11 +87,11 @@ export function DashboardPage() {
             {openTasks.length === 0 ? (
               <EmptyState title="暂无待办" hint="从 Inbox 确认通知后可生成待办。" />
             ) : (
-              openTasks.slice(0, 6).map((t) => (
+              openTasks.filter(t => !overdue.some(o=>o.id===t.id)).slice(0, 6).map((t) => (
                 <div key={t.id} className="flex items-center gap-3 rounded-md border border-border p-3">
                   <Checkbox
                     checked={false}
-                    onCheckedChange={() => complete.mutate(t.id)}
+                    disabled={complete.isPending} onCheckedChange={(checked) => { if (checked === true) setPendingTask(t); }}
                     aria-label={`完成 ${t.title}`}
                   />
                   <div className="min-w-0 flex-1">
@@ -122,6 +131,7 @@ export function DashboardPage() {
         <Inbox className="size-3" />
         演示数据与 Mock 结果均明确标识；配置 Supabase 与模型后启用真实模式。
       </p>
+      <AlertDialog open={pendingTask !== null} onOpenChange={(open)=>{if(!open && !complete.isPending)setPendingTask(null);}}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>确认完成任务？</AlertDialogTitle><AlertDialogDescription>将「{pendingTask?.title}」标记为已完成？确认后将从待办列表移除，可在成长中心查看。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={complete.isPending}>取消</AlertDialogCancel><AlertDialogAction disabled={complete.isPending} onClick={event=>{event.preventDefault();if(pendingTask&&!complete.isPending)complete.mutate(pendingTask.id);}}>{complete.isPending?"正在保存…":"确认完成"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     </div>
   );
 }

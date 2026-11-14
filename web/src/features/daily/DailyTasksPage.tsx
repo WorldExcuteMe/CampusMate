@@ -6,17 +6,25 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
-import { repository } from "@/app/config";
+import { useAuth, useRepository } from "@/app/auth";
 import { uid } from "@/lib/data/types";
 import { cleanGroupMessage, dedupKey, extractDailyTime, isDailyNotice } from "@/lib/ingest/clean";
 import { DeadlineTag, EmptyState, PageHeader } from "@/components/shared";
+import { isOpenTask, isTaskOverdue } from "@/lib/time-policy";
+import { useBeijingDay } from "@/lib/use-beijing-day";
 
 const SEEN_KEY = "campusmate.daily.seen";
 
 export function DailyTasksPage() {
+  const repository = useRepository();
+  const { session } = useAuth();
+  const seenKey = `${SEEN_KEY}.${session?.user.id ?? "demo"}`;
   const qc = useQueryClient();
   const { data: tasks = [] } = useQuery({ queryKey: ["tasks"], queryFn: () => repository.listTasks() });
   const daily = tasks.filter((t) => t.kind === "daily");
+  const today = useBeijingDay();
+  const overdue = daily.filter((t) => isTaskOverdue(t, today));
+  const current = daily.filter((t) => !isTaskOverdue(t, today));
   const [raw, setRaw] = useState("");
 
   const preview = useMemo(() => {
@@ -24,18 +32,20 @@ export function DailyTasksPage() {
     const cleaned = cleanGroupMessage(raw);
     const t = extractDailyTime(cleaned);
     return { cleaned, ...t, daily: isDailyNotice(cleaned) };
-  }, [raw]);
+  }, [raw, today]);
 
   const complete = useMutation({
-    mutationFn: (id: string) => repository.updateTask(id, { status: "done" }),
+    mutationFn: ({ id, checked }: { id: string; checked: boolean }) =>
+      repository.updateTask(id, { status: checked ? "done" : "todo" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["tasks"] }),
+    onError: () => toast.error("更新任务状态失败，请重试"),
   });
 
   const importMutation = useMutation({
     mutationFn: async () => {
       if (!preview) throw new Error("无内容");
       const key = dedupKey(raw);
-      const seen: string[] = JSON.parse(localStorage.getItem(SEEN_KEY) || "[]");
+      const seen: string[] = JSON.parse(localStorage.getItem(seenKey) || "[]");
       if (seen.includes(key)) throw new Error("该通知已导入（去重）");
       const firstLine = preview.cleaned.split("\n")[0].slice(0, 40);
       await repository.createTask({
@@ -52,7 +62,7 @@ export function DailyTasksPage() {
         createdAt: new Date().toISOString(),
         demo: repository.mode === "demo",
       });
-      localStorage.setItem(SEEN_KEY, JSON.stringify([...seen, key]));
+      localStorage.setItem(seenKey, JSON.stringify([...seen, key]));
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tasks"] });
@@ -90,18 +100,29 @@ export function DailyTasksPage() {
           {daily.length === 0 ? (
             <EmptyState title="暂无日常任务" hint="导入群通知或在 Agent 对话中创建。" />
           ) : (
-            daily.map((t) => (
-              <div key={t.id} className="flex items-center gap-3 rounded-md border border-border p-3">
-                <Checkbox checked={t.status === "done"} onCheckedChange={() => complete.mutate(t.id)} aria-label={`完成 ${t.title}`} />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{t.title}</p>
-                  <div className="flex items-center gap-2">
-                    <DeadlineTag deadline={t.dueAt} />
-                    {t.timeText && <span className="text-xs text-muted-foreground">{t.timeText}</span>}
+            [{ title: "日常记录", tasks: current }, { title: `逾期待处理（${overdue.length}）`, tasks: overdue }].filter((section) => section.tasks.length > 0).map((section) => (
+              <section key={section.title} className="flex flex-col gap-2" aria-label={section.title}>
+                {overdue.length > 0 && <h2 className="mt-2 text-sm font-medium">{section.title}</h2>}
+                {section.tasks === overdue && <p className="text-xs text-muted-foreground">未自动完成或删除；核实后仍可勾选完成。</p>}
+                {section.tasks.map((t) => (
+                  <div key={t.id} className="flex items-center gap-3 rounded-md border border-border p-3">
+                    <Checkbox
+                      checked={t.status === "done"}
+                      disabled={complete.isPending}
+                      onCheckedChange={(checked) => complete.mutate({ id: t.id, checked: checked === true })}
+                      aria-label={`${t.status === "done" ? "撤销完成" : "完成"} ${t.title}`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{t.title}</p>
+                      <div className="flex items-center gap-2">
+                        <DeadlineTag deadline={t.dueAt} pastLabel={isOpenTask(t) ? "已逾期" : "截止已过"} />
+                        {t.timeText && <span className="text-xs text-muted-foreground">{t.timeText}</span>}
+                      </div>
+                    </div>
+                    {t.status === "done" && <Check className="size-4 text-emerald-600" />}
                   </div>
-                </div>
-                {t.status === "done" && <Check className="size-4 text-emerald-600" />}
-              </div>
+                ))}
+              </section>
             ))
           )}
         </CardContent>

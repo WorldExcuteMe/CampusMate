@@ -1,3 +1,4 @@
+vi.mock("@/app/auth",()=>({useAuth:()=>({session:null}),useRepository:()=>({listInbox:async()=>[],listTasks:async()=>[{id:"late",title:"逾期任务",dueAt:"2026-11-10",status:"todo"},{id:"future",title:"未来任务",dueAt:"2026-11-18",status:"todo"}],listOpportunities:async()=>[]})}));
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";

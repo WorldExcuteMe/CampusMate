@@ -30,6 +30,7 @@ export interface ApiDeps {
   jwtSecret: string;
   corsOrigin?: string;
   storeKind?: string;
+  maxBodyBytes?: number;
   approvals?: ApprovalStore;
   capabilityRegistry?: CapabilityRegistry;
   companion?: CompanionRegistry;
@@ -52,14 +53,22 @@ function json(res: http.ServerResponse, code: number, obj: unknown): void {
   res.end(JSON.stringify(obj));
 }
 
-function readBody(req: http.IncomingMessage): Promise<string> {
-  return new Promise((resolve) => {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", () => resolve(body));
+class ApiInputError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status=status; } }
+async function readObject(req: http.IncomingMessage, maxBytes: number): Promise<Record<string, any>> {
+  const raw = await new Promise<string>((resolve,reject)=>{
+    let size=0,failed=false;const chunks:Buffer[]=[];
+    req.on("data",(chunk:Buffer)=>{if(failed)return;size+=chunk.length;if(size>maxBytes){failed=true;chunks.length=0;reject(new ApiInputError(413,"request_too_large"));return;}chunks.push(chunk);});
+    req.on("end",()=>{if(!failed)resolve(Buffer.concat(chunks).toString("utf8"));});req.on("error",reject);req.on("aborted",()=>reject(new ApiInputError(400,"request_aborted")));
   });
+  let value:unknown;try{value=JSON.parse(raw||"{}");}catch{throw new ApiInputError(400,"invalid_json");}
+  if(!value||typeof value!=="object"||Array.isArray(value))throw new ApiInputError(400,"invalid_request");return value as Record<string,any>;
 }
-
+function boundedInitialBudget(value: unknown): Budget {
+  if(!value || typeof value !== "object" || Array.isArray(value)) throw new ApiInputError(400,"invalid_budget");
+  const normalized:Record<string,number>={};
+  for(const key of Object.keys(DEFAULT_BUDGET) as (keyof Budget)[]){const n=(value as Record<string,unknown>)[key];if(n===undefined)continue;if(typeof n!=="number"||!Number.isFinite(n)||n<=0)throw new ApiInputError(400,"invalid_budget");normalized[key]=Math.min(n,DEFAULT_BUDGET[key]);}
+  return parseBudget(normalized,DEFAULT_BUDGET);
+}
 export function createApiServer(deps: ApiDeps): http.Server {
   const { store, jwtSecret } = deps;
   const documents = deps.documents ?? (deps.artifactStore ? new DocumentService(deps.artifactStore) : undefined);
@@ -79,14 +88,14 @@ export function createApiServer(deps: ApiDeps): http.Server {
       }
 
       // 以下端点需 JWT（SSE EventSource 无法设 header，支持 ?token= query）。
-      const token = bearerToken(req.headers.authorization) ?? url.searchParams.get("token") ?? "";
+      const token = bearerToken(req.headers.authorization) ?? (req.method === "GET" && /^\/v1\/tasks\/[^/]+\/stream$/.test(path) ? url.searchParams.get("token") ?? "" : "");
       const claims = verifySupabaseJwt(token, jwtSecret);
       if (!claims) return json(res, 401, { error: "unauthorized" });
       const uid = claims.sub;
 
       if (deps.providers) {
         if (path === "/v1/providers" && req.method === "GET") return json(res, 200, { providers: await deps.providers.list(uid) });
-        if (path === "/v1/providers" && req.method === "POST") return json(res, 200, { provider: await deps.providers.save(uid, JSON.parse((await readBody(req)) || "{}")) });
+        if (path === "/v1/providers" && req.method === "POST") return json(res, 200, { provider: await deps.providers.save(uid, await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024)) });
         const providerMatch = path.match(/^\/v1\/providers\/([a-z0-9_-]+)(\/(test|default))?$/i);
         if (providerMatch) {
           const id = providerMatch[1];
@@ -99,7 +108,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
       if (deps.sessionStore) {
         const sessions = deps.sessionStore;
         if (req.method === "POST" && path === "/v1/sessions") {
-          const body = JSON.parse((await readBody(req)) || "{}");
+          const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           if (body.id !== undefined) requireUuid(body.id);
           const session = await sessions.create({ userId: uid, id: body.id, title: typeof body.title === "string" ? body.title.slice(0, 160) : undefined, mode: body.mode === "daily" ? "daily" : "auto" });
           return json(res, 201, { session });
@@ -117,11 +126,12 @@ export function createApiServer(deps: ApiDeps): http.Server {
       }
 
       if (req.method === "POST" && path === "/v1/tasks") {
-        const body = JSON.parse((await readBody(req)) || "{}");
+        const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
         if (!body.title || typeof body.title !== "string") return json(res, 400, { error: "title required" });
+        if (body.intent !== undefined && typeof body.intent !== "string") return json(res, 400, { error: "invalid_intent" });
         if (body.sessionId !== undefined) {
           requireUuid(body.sessionId);
-          if (!deps.sessionStore || !await deps.sessionStore.get(uid, body.sessionId)) return json(res, 404, { error: "session not found" });
+          if (deps.sessionStore && !await deps.sessionStore.get(uid, body.sessionId)) return json(res, 404, { error: "session not found" });
         }
         if (body.turnId !== undefined) requireUuid(body.turnId);
         if (body.providerId !== undefined && typeof body.providerId !== "string") return json(res, 400, { error: "providerId must be a string" });
@@ -135,7 +145,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         const images = Array.isArray(body.images) ? body.images.filter((x: unknown) => typeof x === "string").slice(0, 4) : undefined;
         const input = {
           userId: uid, title: body.title, intent: body.intent, sessionId: body.sessionId,
-          images, priority: body.priority, budget: body.budget === undefined ? undefined : parseBudget(body.budget, DEFAULT_BUDGET),
+          images, priority: body.priority, budget: body.budget === undefined ? undefined : boundedInitialBudget(body.budget),
           modelConfig,
         };
         const accepted = body.sessionId && deps.sessionStore && store.createSessionTask
@@ -206,7 +216,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         }
         if (req.method === "POST" && sub === "/resume") {
           if (!["needs_input", "paused", "failed"].includes(task.status)) return json(res, 409, { error: `cannot resume from ${task.status}` });
-          const body = JSON.parse((await readBody(req)) || "{}");
+          const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           if (task.result?.completion?.reason === "budget_exceeded" && !body.budget) return json(res, 409, { error: "请先调整任务预算，再恢复继续" });
           const budget = body.budget ? parseBudget(body.budget, task.budget) : undefined;
           const t = store.resumeSessionTask ? await store.resumeSessionTask(id, uid, budget) : await store.updateTask(id, { status: "queued", ...(budget ? { budget } : {}) });
@@ -219,7 +229,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         const pc = deps.personalContext;
         if (req.method === "GET" && path === "/v1/terms") return json(res, 200, { terms: await pc.listTerms(uid) });
         if (req.method === "POST" && path === "/v1/terms") {
-          const b = JSON.parse((await readBody(req)) || "{}");
+          const b: any = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           const input = { userId: uid, institutionId: String(b.institutionId ?? ""), name: String(b.name ?? "学期"), startDate: b.startDate, endDate: b.endDate, totalWeeks: b.totalWeeks ?? 20, timezone: b.timezone ?? "Asia/Shanghai", weekAnchor: b.weekAnchor || undefined };
           try { validateTerm(input); } catch (e) { return json(res, 400, { error: errorMessage(e) }); }
           const term = await pc.createTerm(input);
@@ -231,7 +241,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
           return json(res, 200, { schedules: await pc.listSchedules(uid, termId), exceptions: await pc.listExceptions(uid, termId), schemes: await pc.listTimeSchemes(uid, termId) });
         }
         if (req.method === "POST" && path === "/v1/schedules/exceptions") {
-          const b = JSON.parse((await readBody(req)) || "{}");
+          const b: any = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           const term = (await pc.listTerms(uid)).find((t) => t.id === b.termId);
           if (!term) return json(res, 404, { error: "学期不存在" });
           if (!validDate(b.date) || b.date < term.startDate || b.date > term.endDate || !["reschedule", "makeup", "cancel", "holiday", "room_change"].includes(b.kind)) return json(res, 400, { error: "例外类型或日期无效" });
@@ -243,7 +253,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
           return json(res, 201, { exception });
         }
         if (req.method === "POST" && path === "/v1/timetable-schemes") {
-          const b = JSON.parse((await readBody(req)) || "{}");
+          const b: any = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           const term = (await pc.listTerms(uid)).find((t) => t.id === b.termId);
           if (!term) return json(res, 404, { error: "学期不存在" });
           const input = { userId: uid, termId: term.id, institutionId: term.institutionId, campus: String(b.campus ?? ""), name: String(b.name ?? ""), effectiveFrom: b.effectiveFrom, effectiveTo: b.effectiveTo, periods: b.periods };
@@ -251,7 +261,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
           return json(res, 201, { scheme: await pc.saveTimeScheme(input) });
         }
         if (req.method === "POST" && path === "/v1/schedules/import") {
-          const b = JSON.parse((await readBody(req)) || "{}");
+          const b: any = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           if (b.confirm === true) {
             if (typeof b.jobId !== "string") return json(res, 400, { error: "请先上传并预览，再确认jobId" });
             const job = await pc.getImportJob(uid, b.jobId);
@@ -281,7 +291,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         const os = deps.opportunityStore;
         if (req.method === "GET" && path === "/v1/opportunities") return json(res, 200, { opportunities: await os.listByUser(uid) });
         if (req.method === "POST" && path === "/v1/opportunities") {
-          const b = JSON.parse((await readBody(req)) || "{}");
+          const b: any = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           if (!b.title) return json(res, 400, { error: "title required" });
           const rec = await os.create({ userId: uid, title: String(b.title), type: b.type, organizer: b.organizer, description: b.description, conditions: b.conditions, deadline: b.deadline ?? null, sourceUrl: b.sourceUrl, sourceType: b.sourceType });
           return json(res, 201, { opportunity: rec });
@@ -295,7 +305,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
 
       // 个性化工作流（owner 隔离）
       if (deps.personalContext && req.method === "POST" && path.startsWith("/v1/workflows/")) {
-        const b = JSON.parse((await readBody(req)) || "{}");
+        const b: any = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
         const wf = path.slice("/v1/workflows/".length);
         if (wf === "onboarding") return json(res, 200, await onboarding(deps.personalContext, { ...b, userId: uid }));
         if (wf === "inbox") return json(res, 200, intelligentInbox({ ...b, userId: uid }));
@@ -317,7 +327,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         }
         const apMatch = path.match(/^\/v1\/approvals\/([^/]+)$/);
         if (req.method === "POST" && apMatch) {
-          const body = JSON.parse((await readBody(req)) || "{}");
+          const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           if (body.decision !== "approved" && body.decision !== "rejected") return json(res, 400, { error: "decision must be approved|rejected" });
           const a = await deps.approvals.decide(apMatch[1], uid, body.decision);
           if (!a) return json(res, 404, { error: "approval not found or forbidden" });
@@ -329,6 +339,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
     } catch (err) {
       if (err instanceof DocumentRenderUnavailable) return json(res, 503, { error: err.message });
       if (err instanceof ProviderError) return json(res, err.status, { error: err.message });
+      if (err instanceof ApiInputError) return json(res, err.status, { error: err.message });
       if (err instanceof SessionConflict) return json(res, 409, { error: err.message });
       if (err instanceof SyntaxError || (err instanceof Error && err.message === "Invalid UUID")) return json(res, 400, { error: "invalid input" });
       if (err instanceof Error && /预算.*(范围|对象)/.test(err.message)) return json(res, 400, { error: err.message });

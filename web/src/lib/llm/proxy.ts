@@ -1,5 +1,6 @@
+import { aiFetch } from "./transport";
 import { extractedNoticeSchema } from "../schemas";
-import { errorMessage, LlmTransportError } from "./errors";
+import { errorMessage, LlmTransportError, LlmRequestError } from "./errors";
 import type { LlmProvider, LlmRequest, LlmResult } from "./types";
 import { backendEnabled, req } from "../agent/api-client";
 
@@ -22,7 +23,7 @@ export async function listProviders(): Promise<ProviderPublic[]> {
     const data = await req<{ providers: (ProviderPublic & { displayName: string; modelId: string })[] }>("/v1/providers");
     return data.providers.map((p) => ({ ...p, name: p.displayName, model: p.modelId }));
   }
-  const res = await fetch("/api/providers");
+  const res = await aiFetch("/providers");
   if (!res.ok) return [];
   const data = await res.json();
   return data.providers ?? [];
@@ -121,13 +122,14 @@ export async function llmChat(opts: {
   // The server adapter owns retries. Browser retries would multiply billable requests.
   for (let attempt = 0; attempt < 1; attempt++) {
     try {
-      const res = await fetch(edge || "/api/llm", { method: "POST", headers, body, signal: opts.signal });
+      const res = await aiFetch(edge || "/llm", { method: "POST", headers, body, signal: opts.signal });
       const text = await res.text();
       if (!res.ok) {
         let detail = "";
         try {
           detail = errorMessage(JSON.parse(text).error);
         } catch { /* 非 JSON 错误体，走下方 HTTP 兜底 */ }
+        if ([400,413,415,422].includes(res.status)) throw new LlmRequestError(detail || `LLM HTTP ${res.status}`);
         throw new LlmTransportError(detail || `LLM HTTP ${res.status}（${text.slice(0, 120) || "空响应"}）`);
       }
       return parseChat(text, res.status);
@@ -136,7 +138,7 @@ export async function llmChat(opts: {
       break;
     }
   }
-  throw lastErr instanceof LlmTransportError ? lastErr : new LlmTransportError(errorMessage(lastErr), { cause: lastErr });
+  throw lastErr instanceof LlmTransportError || lastErr instanceof LlmRequestError ? lastErr : new LlmTransportError(errorMessage(lastErr), { cause: lastErr });
 }
 
 const EXTRACT_SYSTEM =
@@ -166,6 +168,7 @@ export class ProxyProvider implements LlmProvider {
       // 结构化校验失败 → 回退到确定性规则提取（保证闭环不中断）
       const { ruleExtract } = await import("./mock");
       extracted = ruleExtract(req.input.rawText, req.input.sourceUrl);
+      return { extracted, provider: "mock-fallback", model: "rule-based-mock", tokenUsage: result.usage, mock: true };
     }
     return {
       extracted,

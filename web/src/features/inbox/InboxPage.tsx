@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { Plus, Search, Inbox, ArrowUpRight, Clock3, ShieldAlert, Sparkles, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { repository } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import { useAuth } from "@/app/auth";
 import { ClassBadge, CategoryBadge, DeadlineTag } from "@/components/shared";
 import { deadlineInstant } from "../../../../shared/calendar";
@@ -12,6 +12,7 @@ import { InboxPreview, INBOX_STATUS } from "./InboxPreview";
 
 const FILTERS = [{ id: "active", label: "全部信息" }, { id: "pending", label: "待确认" }, { id: "opportunity", label: "机会" }, { id: "risk", label: "风险提醒" }, { id: "archived", label: "归档" }];
 export function InboxPage() {
+  const repository = useRepository();
   const owner = useAuth().session?.user.id ?? "demo";
   const query = useQuery({ queryKey: ["inbox", owner], queryFn: () => repository.listInbox() });
   const [search, setSearch] = useState(""), [filter, setFilter] = useState("active"), [sort, setSort] = useState("priority"), [selectedId, setSelectedId] = useState<string>(), [previewOpen, setPreviewOpen] = useState(false);

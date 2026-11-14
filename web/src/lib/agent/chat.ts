@@ -1,5 +1,5 @@
 import { llmChat, type ChatMessage } from "../llm/proxy";
-import { errorMessage, isTransportError } from "../llm/errors";
+import { errorMessage, isTransportError, LlmRequestError } from "../llm/errors";
 import { AGENT_TOOLS } from "./tools";
 import { ruleExtract } from "../llm/mock";
 import { classify } from "./classifier";
@@ -9,8 +9,22 @@ import { mergeInbox } from "../ingest/dedupe";
 import { uid, type Repository, type Profile, type Opportunity, type VerificationReport } from "../data/types";
 import { guardUrl } from "../security/urlGuard";
 import { composeContext, trimToBudget, resolveContextCap, messagesTokens, toolsTokens } from "./context";
+
 import { detectScope, allowedTools, checkToolScope, type TaskScope } from "./scope";
 import { setPlan, memoryPrompt, appendMemory } from "./memory";
+import type { AgentProgress } from "./progress";
+import { opportunityTimeState, OPPORTUNITY_TIME_LABELS } from "../time-policy";
+
+import { z } from "zod";
+
+const dailyToolSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  timeText: z.string().max(200).optional(),
+  dueAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  }).nullish(),
+});
 
 export interface ChatOutcome {
   reply: string;
@@ -18,6 +32,7 @@ export interface ChatOutcome {
   usage: { input: number; output: number };
   model: string;
   mock: boolean;
+  failed?: boolean;
   needsSetup?: boolean;
   contextUsed?: number;
   contextCap?: number;
@@ -33,6 +48,7 @@ export function detectIngestIntent(message: string): boolean {
 
 const SYSTEM = (profile: Profile, mode: "auto" | "daily") =>
   `你是 CampusMate 校园机会管家，面向大学生的信息与机会管理 Agent。` +
+  `当前北京时间=${nowBeijingText()}（据此判断过期：截止/日期早于今天=已过期）。` +
   `用户画像：专业=${profile.major}，年级=${profile.grade}，兴趣=${profile.interests.join("、")}，技能=${profile.skills.join("、")}，目标=${profile.goals.join("、")}。` +
   `当前模式=${mode === "auto" ? "自动（全工具+群摄取+完全访问）" : "日常（聚焦日常事务）"}。` +
   `规则：1) 需要结构化信息/创建任务/检索机会/同步群通知时调用对应工具；2) 回答简洁中文、重点突出；` +
@@ -43,8 +59,7 @@ const SYSTEM = (profile: Profile, mode: "auto" | "daily") =>
   `10) 时间本位：一切截止/日期与当前北京时间比较。已过期（早于今天）的通知/机会不得作为当前可行动项呈现；总结群通知或 RAG 历史时只呈现未过期项，过期项仅在用户明确要历史回顾时列出并标注"已过期"。无明确截止的旧消息须结合消息时间判断时效，不得把陈旧信息当新通知。` +
   `11) 工具调用协议：优先使用原生 tool_calls；若你的接口不支持原生工具调用，则单独输出一个 JSON 对象 {"tool":"工具名","args":{...}} 作为工具指令，等待返回后再继续。` +
   `12) 对话体感：回复只给面向用户的结论与必要来源/截止/匹配建议，不提及工具名、调用过程、内部机制、"已同步/RAG/合并/归一"等噪声；不反问确认除非缺关键信息；落库动作静默完成只在结尾一句告知已写入几条。` +
-  (mode === "daily" ? `日常模式优先处理调课/班会/讲座等含时间信息，谨慎创建机会。` : `自动模式可主动调用 list_groups + sync_group_notices 摄取目标群通知。`) +
-  `当前北京时间=${nowBeijingText()}（据此判断过期：截止/日期早于今天=已过期）。`;
+  (mode === "daily" ? `日常模式优先处理调课/班会/讲座等含时间信息，谨慎创建机会。` : `自动模式可主动调用 list_groups + sync_group_notices 摄取目标群通知。`);
 
 // 工具端点安全调用：非 OK/空体/非 JSON 一律返回可读 error，绝不抛异常冒泡成「未连接模型」降级。
 async function toolPost(url: string, body: unknown): Promise<Record<string, unknown>> {
@@ -69,9 +84,11 @@ async function toolPost(url: string, body: unknown): Promise<Record<string, unkn
   }
 }
 
-// 工具执行安全边界：任何工具/DB/网络异常都转成可读 error 观测回传给模型，绝不冒泡中断模型循环。
+class VerificationPersistenceError extends Error {}
+
+// 普通工具异常转成可读 error 观测；核验保存失败必须终止本轮，不能让后续模型声称已落库。
 // 根因修复：Supabase `throw error` 抛的是普通对象，曾冒泡到 runChat 被 String() 成 [object Object]
-// 并误判为「真实模型调用中断」整体降级 Mock。现在工具失败只是一条观测，模型据此重试/如实说明。
+// 并误判为「真实模型调用中断」整体降级 Mock。普通工具失败仍为观测；核验落库失败是必须阻断的例外。
 async function executeTool(
   name: string,
   args: Record<string, unknown>,
@@ -79,11 +96,19 @@ async function executeTool(
   profile: Profile,
   actions: string[],
   scope: TaskScope,
-  memoryScope = "demo",
+  memoryScope: string,
+  activity?: (type: string, payload: Record<string, unknown>) => void,
 ): Promise<string> {
+  const started = Date.now(), callInstanceId = uid();
+  const notify = (type: string, payload: Record<string, unknown>) => { try { activity?.(type,payload); } catch { /* observer only */ } };
+  notify("tool.called", { name, toolCallId: callInstanceId, callInstanceId });
   try {
-    return await dispatchTool(name, args, repo, profile, actions, scope, memoryScope);
+    const out = await dispatchTool(name, args, repo, profile, actions, scope, memoryScope);
+    let ok=true;try { const value=JSON.parse(out);ok=!(value?.error || value?.ok===false || value?.success===false); } catch { /* text output */ }
+    notify("tool.result", { name, callInstanceId, durationMs: Date.now() - started, ok, summary: ok ? "已返回工具数据" : "工具执行失败" }); return out;
   } catch (e) {
+    notify("tool.result", { name, callInstanceId, durationMs: Date.now()-started, ok:false, summary:"工具执行失败" });
+    if (e instanceof VerificationPersistenceError) throw e;
     return JSON.stringify({ error: `工具 ${name} 执行失败：${errorMessage(e)}` });
   }
 }
@@ -95,7 +120,8 @@ async function dispatchTool(
   profile: Profile,
   actions: string[],
   scope: TaskScope,
-  memoryScope = "demo",
+  memoryScope: string,
+  activity?: (type: string, payload: Record<string, unknown>) => void,
 ): Promise<string> {
   // 执行期门控：越界工具拒绝；源内检索/同步强制限定用户指定群（确定性，不依赖模型自觉）
   const gate = checkToolScope(scope, name, args);
@@ -180,6 +206,9 @@ async function dispatchTool(
     return JSON.stringify(r.error ? { error: r.error } : { results: r.results ?? [] });
   }
   if (name === "create_daily_task") {
+    const parsed = dailyToolSchema.safeParse(args);
+    if (!parsed.success) return JSON.stringify({ error: "invalid_task_arguments", note: "需要非空标题与有效日期，请向用户确认后重试" });
+    args = parsed.data;
     const t = extractDailyTime(String(args.timeText ?? "") + " " + String(args.title ?? ""));
     await repo.createTask({
       id: uid(),
@@ -201,17 +230,21 @@ async function dispatchTool(
   if (name === "search_opportunities") {
     const q = String(args.query ?? "").toLowerCase();
     const cat = String(args.category ?? "");
+    const requested = String(args.timeState ?? "active");
+    const timeState = ["active", "expired", "unknown", "archived", "all"].includes(requested) ? requested : "active";
     const opps = await repo.listOpportunities();
     const hit = opps
+      .filter((o) => timeState === "all" || opportunityTimeState(o) === timeState)
       .filter((o) => (!cat || o.type === cat) && (!q || o.title.toLowerCase().includes(q) || o.description.toLowerCase().includes(q)))
       .slice(0, 6)
-      .map((o) => ({ title: o.title, type: o.type, deadline: o.deadline, source: o.sourceUrl }));
+      .map((o) => ({ title: o.title, type: o.type, deadline: o.deadline, source: o.sourceUrl, timeState: opportunityTimeState(o), timeLabel: OPPORTUNITY_TIME_LABELS[opportunityTimeState(o)] }));
     actions.push(`检索机会：${args.query}`);
-    return JSON.stringify({ results: hit, note: "来源为官方白名单/公开渠道目录；实时全网搜索适配器见 docs/AGENT_RESEARCH_AND_TUNING.md" });
+    return JSON.stringify({ results: hit, timeState, note: "检索的是已存目录，并非实时全网搜索。有效仅表示未到已知截止日期，来源/资格仍需核实；历史及日期待核实项不得作为当前可报名项推荐。" });
   }
   if (name === "match_opportunities") {
     const opps = await repo.listOpportunities();
     const scored = opps
+      .filter((o) => opportunityTimeState(o) === "active")
       .map((o) => {
         let s = 0;
         const reasons: string[] = [];
@@ -219,7 +252,7 @@ async function dispatchTool(
         if (profile.interests.some((i) => text.includes(i.toLowerCase()))) { s += 25; reasons.push("兴趣相关"); }
         if (profile.skills.some((k) => text.includes(k.toLowerCase()))) { s += 25; reasons.push("技能匹配"); }
         if (profile.goals.some((g) => text.includes(g.slice(0, 2)))) { s += 20; reasons.push("契合目标"); }
-        return { title: o.title, score: s, reasons };
+        return { title: o.title, deadline: o.deadline, source: o.sourceUrl, timeState: "active", score: s, reasons };
       })
       .sort((a, b) => b.score - a.score)
       .slice(0, Number(args.limit ?? 5));
@@ -281,7 +314,7 @@ async function dispatchTool(
     const report = {
       id: uid(),
       opportunityId: String(args.opportunityId ?? ""),
-      status: (statuses.includes(st) ? st : "UNVERIFIED") as VerificationReport["status"],
+      status: (statuses.includes(st) && st !== "VERIFIED" ? st : "UNVERIFIED") as VerificationReport["status"],
       summary: String(args.summary ?? ""),
       findings: [],
       evidence: ((args.evidence as Array<Record<string, unknown>>) ?? []).map((e) => ({
@@ -294,7 +327,11 @@ async function dispatchTool(
       })),
       createdAt: new Date().toISOString(),
     };
-    await repo.createReport(report);
+    try {
+      await repo.createReport(report);
+    } catch (e) {
+      throw new VerificationPersistenceError(`核验报告保存失败：${errorMessage(e)}`);
+    }
     actions.push(`写入可信核验：${report.status}`);
     return JSON.stringify({ ok: true, id: report.id, status: report.status });
   }
@@ -371,6 +408,7 @@ const MAX_TOOL_ROUNDS = 20;
 
 export async function runChat(opts: {
   message: string;
+  sessionId?: string; memoryScope?: string;
   history: ChatMessage[];
   repository: Repository;
   profile: Profile;
@@ -378,21 +416,26 @@ export async function runChat(opts: {
   mode?: "auto" | "daily";
   model?: string;
   contextCap?: number;
-  memoryScope?: string;
-  reasoning?: "auto" | "low" | "medium" | "high";
-  onActivity?: (type: string, payload: Record<string, unknown>) => void;
-  signal?: AbortSignal;
+  onProgress?: (progress: AgentProgress) => void;
+  reasoning?: string; signal?: AbortSignal; onActivity?: (type: string, payload: Record<string, unknown>) => void;
 }): Promise<ChatOutcome> {
   const actions: string[] = [];
+  const memoryScope = opts.memoryScope ?? (opts.sessionId ? `${opts.profile.id}/${opts.sessionId}` : opts.profile.id);
   const mode = opts.mode ?? "auto";
   const ingestIntent = detectIngestIntent(opts.message);
+  // Observers may not change execution or turn a successful result into failure.
+  const report = (progress: AgentProgress) => { try { opts.onProgress?.(progress); if (progress.phase === "model") opts.onActivity?.("llm.request", { round: (progress.round ?? 1)-1 }); } catch { /* UI observer only */ } };
+  report({ phase: "preparing" });
   let needsSetup = false;
   if (ingestIntent && mode === "auto") {
+    report({ phase: "environment" });
     try {
       let env = await (await fetch("/api/env/check")).json();
       if (!(env.qqKey || env.wechatKey)) {
+        report({ phase: "bootstrap" });
         // 短提示词全新环境：自主取钥+解密，无需人工；失败才引导配置
         try { await fetch("/api/ingest/bootstrap", { method: "POST" }); } catch {}
+        report({ phase: "environment" });
         env = await (await fetch("/api/env/check")).json();
         if (!(env.qqKey || env.wechatKey)) needsSetup = true;
       }
@@ -420,7 +463,7 @@ export async function runChat(opts: {
   const cap = resolveContextCap(opts.model, opts.contextCap);
   const tTools = toolsTokens(tools);
   const composed = composeContext({
-    system: SYSTEM(opts.profile, mode) + "\n" + scope.contract + "\n" + memoryPrompt(opts.memoryScope),
+    system: SYSTEM(opts.profile, mode) + "\n" + scope.contract + "\n" + memoryPrompt(memoryScope),
     history: opts.history,
     user: opts.message,
     tools,
@@ -433,25 +476,21 @@ export async function runChat(opts: {
   let contextUsed = composed.usedTokens;
   let usage = { input: 0, output: 0 };
   let model = "unknown";
+  let completedTools = 0;
   try {
     for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
-      if (opts.signal?.aborted) throw new DOMException("浏览器执行已中断", "AbortError");
-      opts.onActivity?.("llm.request", { round: i });
+      report({ phase: "model", round: i + 1, completedTools });
       const res = await llmChat({ providerId: opts.providerId, messages, tools, reasoning: opts.reasoning ?? "auto", signal: opts.signal });
-      opts.onActivity?.("llm.response", { round: i, model: res.model, toolCalls: res.toolCalls.length });
       usage = { input: usage.input + res.usage.input, output: usage.output + res.usage.output };
       model = res.model;
       if (res.toolCalls.length > 0) {
         messages.push({ role: "assistant", content: res.content, tool_calls: res.toolCalls });
-        for (const call of res.toolCalls) {
-          if (opts.signal?.aborted) throw new DOMException("浏览器执行已中断", "AbortError");
+        for (const [index, call] of res.toolCalls.entries()) {
           let args: Record<string, unknown> = {};
           try { args = JSON.parse(call.function.arguments || "{}"); } catch {}
-          const callInstanceId = `local:${i}:${call.id}`, started = Date.now();
-          opts.onActivity?.("tool.called", { name: call.function.name, toolCallId: call.id, callInstanceId });
-          const out = await executeTool(call.function.name, args, opts.repository, opts.profile, actions, scope, opts.memoryScope);
-          let ok = true; try { ok = !JSON.parse(out)?.error; } catch { /* text observation */ }
-          opts.onActivity?.("tool.result", { name: call.function.name, callInstanceId, durationMs: Date.now() - started, ok, summary: ok ? "已返回工具数据" : "工具未完成，请查看回复" });
+          report({ phase: "tool", tool: call.function.name, round: i + 1, toolIndex: index + 1, toolTotal: res.toolCalls.length, completedTools });
+          const out = await executeTool(call.function.name, args, opts.repository, opts.profile, actions, scope, memoryScope, opts.onActivity);
+          completedTools++;
           messages.push({ role: "tool", content: out, tool_call_id: call.id });
           noteRepeat(repeat, call.function.name, args, messages);
         }
@@ -469,13 +508,10 @@ export async function runChat(opts: {
       }
       const jt = parseJsonTool(res.content);
       if (jt) {
-        if (opts.signal?.aborted) throw new DOMException("浏览器执行已中断", "AbortError");
         messages.push({ role: "assistant", content: res.content });
-        const callInstanceId = `local:${i}:json`, started = Date.now();
-        opts.onActivity?.("tool.called", { name: jt.name, toolCallId: callInstanceId, callInstanceId });
-        const out = await executeTool(jt.name, jt.args, opts.repository, opts.profile, actions, scope, opts.memoryScope);
-        let ok = true; try { ok = !JSON.parse(out)?.error; } catch { /* text observation */ }
-        opts.onActivity?.("tool.result", { name: jt.name, callInstanceId, durationMs: Date.now() - started, ok, summary: ok ? "已返回工具数据" : "工具未完成，请查看回复" });
+        report({ phase: "tool", tool: jt.name, round: i + 1, toolIndex: 1, toolTotal: 1, completedTools });
+        const out = await executeTool(jt.name, jt.args, opts.repository, opts.profile, actions, scope, memoryScope, opts.onActivity);
+        completedTools++;
         messages.push({ role: "user", content: `工具 ${jt.name} 返回：${out}` });
         noteRepeat(repeat, jt.name, jt.args, messages);
         const trimmed = trimToBudget(messages, cap, tTools);
@@ -484,7 +520,7 @@ export async function runChat(opts: {
         contextUsed = messagesTokens(messages) + tTools;
         continue;
       }
-      appendMemory(`${nowBeijingText()} 用户「${opts.message.slice(0, 40)}」→ ${actions.join("；").slice(0, 160) || "直接答复"}`, opts.memoryScope);
+      appendMemory(`${nowBeijingText()} 用户「${opts.message.slice(0, 40)}」→ ${actions.join("；").slice(0, 160) || "直接答复"}`, memoryScope);
       return { reply: res.content, actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed, pruned };
     }
     // 工具预算用尽：强制一次无工具最终总结，保证有可用产出（不再返回"请细化问题"）
@@ -492,7 +528,8 @@ export async function runChat(opts: {
     const trimmedFin = trimToBudget(messages, cap, tTools);
     messages = trimmedFin.messages;
     compressed = compressed || trimmedFin.compressed; pruned = pruned || trimmedFin.pruned;
-    const fin = await llmChat({ providerId: opts.providerId, messages, reasoning: "low", signal: opts.signal });
+    report({ phase: "summary", completedTools });
+    const fin = await llmChat({ providerId: opts.providerId, messages, reasoning: opts.reasoning ?? "auto", signal: opts.signal });
     usage = { input: usage.input + fin.usage.input, output: usage.output + fin.usage.output };
     const actionsSummary = actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}` : "（未获取到有效结果）";
     const finalText = fin.content && !parseJsonTool(fin.content) ? fin.content : actionsSummary;
@@ -502,16 +539,22 @@ export async function runChat(opts: {
     // 不会冒泡到这里。errorMessage 保证任何被抛值（含 Supabase 普通对象）都可读，绝不出现 [object Object]。
     const reason = errorMessage(err);
     const done = actions.length ? `本轮已完成 ${actions.length} 步操作：${actions.join("；")}。` : "";
+    if (err instanceof LlmRequestError) {
+      return {
+        reply: `${done}模型请求被拒绝（${reason}）。这是请求格式或参数校验问题，不代表 API 密钥未配置；修复后重发本条即可。`,
+        actions, usage, model, mock: false, failed: true, contextUsed, contextCap: cap, compressed, pruned,
+      };
+    }
     if (isTransportError(err)) {
       return {
         reply: `${done}模型连接失败（${reason}）。已按退避重试并尝试备用端点仍未连通。请确认本地 llm-proxy(8787) 已启动、vite 代理含 /api、模型供应商密钥已在服务端配置；恢复后重发本条即可继续。`,
-        actions, usage, model: "unreachable", mock: true, contextUsed, contextCap: cap, compressed, pruned,
+        actions, usage, model: "unreachable", mock: true, failed: true, contextUsed, contextCap: cap, compressed, pruned,
       };
     }
     // 非传输异常（理论上已被工具/记忆边界兜底）：如实报告，不误判为模型中断、不伪造数据。
     return {
       reply: `${done}处理过程中出现异常（${reason}），这不是模型连接问题。请重发本条重试；若反复出现请反馈该错误信息。`,
-      actions, usage, model, mock: false, contextUsed, contextCap: cap, compressed, pruned,
+      actions, usage, model, mock: false, failed: true, contextUsed, contextCap: cap, compressed, pruned,
     };
   }
 }

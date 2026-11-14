@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { NoticeClass, NoticeCategory, VerificationStatus } from "@/lib/schemas";
 import { deadlineInstant, localParts } from "../../../shared/calendar";
+import { useBeijingDay } from "@/lib/use-beijing-day";
 
 const CLASS_META: Record<NoticeClass, { label: string; className: string }> = {
   must_act: { label: "必须处理", className: "bg-red-100 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-200 dark:border-red-800" },
@@ -39,11 +40,11 @@ export function MockBadge() {
   );
 }
 
-export function DeadlineTag({ deadline }: { deadline: string | null }) {
+export function DeadlineTag({ deadline, pastLabel = "已过期" }: { deadline: string | null; pastLabel?: string }) {
+  const today = useBeijingDay();
   if (!deadline) return <span className="text-xs text-muted-foreground">无截止日期</span>;
   const instant = deadlineInstant(deadline, "Asia/Shanghai");
   if (!Number.isFinite(instant)) return <span className="text-xs text-muted-foreground">截止日期待核对：{deadline}</span>;
-  const today = localParts(Date.now(), "Asia/Shanghai").date;
   const date = localParts(instant, "Asia/Shanghai").date;
   const days = Math.round((Date.parse(date) - Date.parse(today)) / 86_400_000);
   const expired = instant < Date.now();
@@ -59,7 +60,7 @@ export function DeadlineTag({ deadline }: { deadline: string | null }) {
       截止 {deadline}
       {!expired && days > 0 && ` · 剩 ${days} 天`}
       {!expired && days === 0 && " · 今天截止"}
-      {expired && " · 已过期"}
+      {expired && ` · ${pastLabel}`}
     </span>
   );
 }

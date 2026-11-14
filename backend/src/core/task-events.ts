@@ -1,3 +1,4 @@
+import { toolResultFailed } from "./tool-result.ts";
 export function toolResultView(raw: string): { ok: boolean; summary: string; sourceUrls: string[] } {
   let value: any;
   try { value = JSON.parse(raw); } catch { return { ok: true, summary: "已返回工具数据", sourceUrls: [] }; }
@@ -11,5 +12,6 @@ export function toolResultView(raw: string): { ok: boolean; summary: string; sou
     }
   };
   visit(value);
-  return { ok: !value?.error, summary: value?.__approval_pending__ ? "等待人工审批，尚未执行" : value?.error ? "工具未完成，请查看任务说明" : Array.isArray(value?.results) ? `返回${value.results.length}条结果` : "已返回工具数据", sourceUrls: [...sourceUrls] };
+  const failed=toolResultFailed(raw);
+  return { ok: !failed, summary: value?.__approval_pending__ ? "等待人工审批，尚未执行" : failed ? "工具未完成，请查看任务说明" : Array.isArray(value?.results) ? `返回${value.results.length}条结果` : "已返回工具数据", sourceUrls: [...sourceUrls] };
 }

@@ -1,11 +1,14 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { repository } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import { useAuth } from "@/app/auth";
 import { backendEnabled, listSchedules, listTerms } from "@/lib/agent/api-client";
 import { localParts, type ScheduleKnowledge } from "../../../../shared/calendar";
+import { useBeijingDay } from "@/lib/use-beijing-day";
 
 export function useCampusCalendar() {
+  const repository = useRepository();
+  const defaultToday = useBeijingDay();
   const owner = useAuth().session?.user.id ?? "demo";
   const [termId, setTermId] = useState<string>();
   const terms = useQuery({ queryKey: ["terms", owner], queryFn: listTerms, enabled: backendEnabled() });
@@ -16,5 +19,5 @@ export function useCampusCalendar() {
   const opps = useQuery({ queryKey: ["opps", owner], queryFn: () => repository.listOpportunities() });
   const knowledge: ScheduleKnowledge = !backendEnabled() ? "unknown" : terms.isError || schedules.isError ? "error" : terms.isLoading || (Boolean(term) && schedules.isLoading) ? "loading" : !term ? "unknown" : schedules.data?.schedules.length ? "ready" : "empty";
   const timezone = term?.timezone ?? "Asia/Shanghai";
-  return { terms, term, setTermId, schedules, tasks, opps, knowledge, timezone, today: localParts(Date.now(), timezone).date };
+  return { terms, term, setTermId, schedules, tasks, opps, knowledge, timezone, today: term ? localParts(Date.now(), timezone).date : defaultToday };
 }

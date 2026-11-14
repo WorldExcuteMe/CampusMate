@@ -1,5 +1,7 @@
 # CampusMate Backend（Agent Core 2.0 · Phase 0–3 基础）
 
+> 2026-11-15 集成状态：下方 Phase 0–8 章节保留历史设计说明；当前还包含 T1–T10 的持久会话、加密 BYOK、事件恢复、课表及文档生成。验证见 `../docs/PR5_INTEGRATION_REVIEW.md`。迁移以完整九份清单 `src/runtime/migrations.ts` 为唯一来源；不要仅应用旧的 `0002_agent_runtime.sql` 后就假定当前所有接口可用。真实外部数据库、Supabase Auth/REST/RLS 的联调仍需单独验收。
+
 当前新增课表API：`POST /v1/terms`创建学期，`GET /v1/schedules?termId=...`返回课程/例外/作息，`POST /v1/schedules/import`上传预览并返回jobId，再以`{confirm:true,jobId}`确认（可选allowPartial）。XLSX的data需base64并指定encoding。确认只追加去重，不覆盖旧课程。`POST /v1/schedules/exceptions`写例外，调课sourceDate是源日期、date是目标。`POST /v1/timetable-schemes`保存学校/校区/学期生效作息。全部需要owner身份。
 
 分发后端时需保留仓库同级`shared/`纯逻辑模块及其package.json。完整迁移顺序以`src/runtime/migrations.ts`为准，新增DDL尚未应用远程库。本地执行与生产应用是不同验收层。
@@ -86,7 +88,7 @@ DDL 已在真实 Postgres 引擎（PGlite WASM）验证：`node scripts/validate
 ```bash
 # 有直连权限的环境：
 DATABASE_URL=postgresql://postgres:PWD@db.REF.supabase.co:5432/postgres node scripts/apply-migration.ts
-# 或 dashboard：Supabase Dashboard → SQL Editor → 粘贴 backend/migrations/0002_agent_runtime.sql → Run
+# 或 dashboard：按 src/runtime/migrations.ts 的完整顺序核对并应用尚未执行的迁移。
 ```
 应用后设 `DATABASE_URL` 启动 main.ts 即用 PostgresStore；`postgres-integration.test.ts` 不再 skip。
 

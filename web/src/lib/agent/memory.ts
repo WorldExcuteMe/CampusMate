@@ -9,57 +9,56 @@ export interface Plan {
 }
 const PLAN_KEY = "campusmate.plan.v1";
 const MEM_KEY = "campusmate.memory.v1";
-const scoped = (key: string, scope: string) => scope === "demo" ? key : `${key}:${encodeURIComponent(scope)}`;
 
-export function getPlan(scope = "demo"): Plan | null {
+export function getPlan(scope = "demo-user"): Plan | null {
   try {
-    return JSON.parse(localStorage.getItem(scoped(PLAN_KEY, scope)) || "null");
+    return JSON.parse(localStorage.getItem(`${PLAN_KEY}.${encodeURIComponent(scope)}`) || "null");
   } catch {
     return null;
   }
 }
-export function setPlan(p: Plan, scope = "demo"): void {
+export function setPlan(p: Plan, scope = "demo-user"): void {
   // best-effort：localStorage 配额满/不可用时静默跳过，绝不因记忆写入失败中断模型回合。
   try {
-    localStorage.setItem(scoped(PLAN_KEY, scope), JSON.stringify(p));
+    localStorage.setItem(`${PLAN_KEY}.${encodeURIComponent(scope)}`, JSON.stringify(p));
   } catch {
     /* quota / unavailable */
   }
 }
-export function advancePlan(stepIndex: number, scope = "demo"): void {
+export function advancePlan(stepIndex: number, scope = "demo-user"): void {
   const p = getPlan(scope);
   if (p && !p.done.includes(stepIndex)) {
     p.done.push(stepIndex);
     setPlan(p, scope);
   }
 }
-export function clearPlan(scope = "demo"): void {
-  localStorage.removeItem(scoped(PLAN_KEY, scope));
+export function clearPlan(scope = "demo-user"): void {
+  localStorage.removeItem(`${PLAN_KEY}.${encodeURIComponent(scope)}`);
 }
 
 // 滚动记忆：每轮结束追加一条「已核实事实+来源」摘要，上限保留最近 N 条。
-export function getMemory(scope = "demo"): string[] {
+export function getMemory(scope = "demo-user"): string[] {
   try {
-    return JSON.parse(localStorage.getItem(scoped(MEM_KEY, scope)) || "[]");
+    return JSON.parse(localStorage.getItem(`${MEM_KEY}.${encodeURIComponent(scope)}`) || "[]");
   } catch {
     return [];
   }
 }
-export function appendMemory(entry: string, scope = "demo"): void {
+export function appendMemory(entry: string, scope = "demo-user"): void {
   // best-effort：记忆是缓存而非关键路径，写入失败不得把已成功的模型答复误降级为中断。
   try {
     const mem = getMemory(scope);
     mem.push(entry);
-    localStorage.setItem(scoped(MEM_KEY, scope), JSON.stringify(mem.slice(-12)));
+    localStorage.setItem(`${MEM_KEY}.${encodeURIComponent(scope)}`, JSON.stringify(mem.slice(-12)));
   } catch {
     /* quota / unavailable */
   }
 }
-export function clearMemory(scope = "demo"): void {
-  localStorage.removeItem(scoped(MEM_KEY, scope));
+export function clearMemory(scope = "demo-user"): void {
+  localStorage.removeItem(`${MEM_KEY}.${encodeURIComponent(scope)}`);
 }
 
-export function memoryPrompt(scope = "demo"): string {
+export function memoryPrompt(scope = "demo-user"): string {
   const plan = getPlan(scope);
   const mem = getMemory(scope);
   const parts: string[] = [];

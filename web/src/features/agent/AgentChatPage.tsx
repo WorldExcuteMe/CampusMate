@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { repository } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import { runChat } from "@/lib/agent/chat";
 import { backendEnabled, runTaskViaBackend, ensureSession } from "@/lib/agent/api-client";
 import { errorMessage } from "@/lib/llm/errors";
@@ -29,20 +29,25 @@ import { parseFile, type Attachment } from "@/lib/ingest/files";
 import { mergeTask, mergeEvent } from "@/lib/agent/task-state";
 import { useTaskMonitor } from "./use-task-monitor";
 import { TaskWorkspace } from "./TaskWorkspace";
+import { AssistantMessage } from "./AssistantMessage";
+import { AgentActivityCard } from "./AgentActivityCard";
+import type { AgentActivity } from "@/lib/agent/progress";
 
 // 统一控件鼠标反馈：悬停边框+阴影+图标放大、聚焦环、按压缩放
 const CONTROL_FEEDBACK =
   "group cursor-pointer rounded-md border border-transparent bg-muted transition-all duration-150 hover:border-ring/40 hover:bg-accent hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.97]";
 
 export function AgentChatPage() {
+  const repository = useRepository();
   const { session } = useAuth();
   const owner = session?.user.id ?? "demo";
   const alive = useRef(true);
   const requestController = useRef<AbortController | null>(null);
   useEffect(() => { alive.current = true; return () => { alive.current = false; requestController.current?.abort(); }; }, []);
-  const { active, update, rename, storageError } = useSessions();
+  const { active, update, rename, storageError, setActiveId } = useSessions();
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [activity,setActivity] = useState<AgentActivity | null>(null);
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -92,6 +97,7 @@ export function AgentChatPage() {
     setInput("");
     setAttachments([]);
     setBusy(true);
+    setActivity({sessionId:active.id,startedAt:Date.now(),stageAt:Date.now(),progress:{phase:"preparing"}});
     const history: ChatMessage[] = active.messages.map((m) => ({ role: m.role, content: m.content }));
     update(active.id, (s) => ({
       ...s,
@@ -134,12 +140,12 @@ export function AgentChatPage() {
         let eventSeq = 0;
         const localTask = { id: localId, userId: owner, title: content.slice(0, 80), turnId: pendingTurn.turnId, status: "running" as const, usage: { tokens: 0, toolCalls: 0, wallMs: 0, costUsd: 0 }, createdAt: Date.now() };
         update(active.id, (s) => mergeTask({ ...s, currentTaskId: localId }, localTask));
-        const out = await runChat({ message: content, history, repository, profile: profile!, providerId: provider?.id, mode: active.mode, model: modelName, memoryScope: `${owner}:${active.id}`, reasoning, signal: controller.signal, onActivity: (type, payload) => { if (alive.current) update(active.id, (s) => mergeEvent(s, { id: ++eventSeq, taskId: localTask.id, seq: eventSeq, type, payload, createdAt: Date.now() })); } });
+        const out = await runChat({ message: content, history, repository, profile: profile!, providerId: provider?.id, mode: active.mode, model: modelName, memoryScope: `${owner}:${active.id}`, reasoning, signal: controller.signal, onProgress: progress => { if(alive.current) setActivity(current=>current?.sessionId===active.id ? {...current,progress,stageAt:Date.now()}:current); }, onActivity: (type, payload) => { if (alive.current) update(active.id, (s) => mergeEvent(s, { id: ++eventSeq, taskId: localTask.id, seq: eventSeq, type, payload, createdAt: Date.now() })); } });
         if (!alive.current) return;
         if (out.needsSetup) setShowSetup(true);
         update(active.id, (s) => {
-          const merged = mergeTask(s, { ...localTask, status: out.needsSetup ? "needs_input" : out.mock ? "failed" : "succeeded", usage: { ...localTask.usage, tokens: out.usage.input + out.usage.output, wallMs: Date.now() - localTask.createdAt }, result: { summary: out.reply, artifactIds: [], partial: out.mock || out.needsSetup, completion: { state: out.mock || out.needsSetup ? "partial" : "complete", reason: out.needsSetup ? "missing_information" : "local_development_reply" } }, modelRuntime: { actualModel: out.model }, promptUsage: { inputTokens: out.contextUsed ?? null, contextLimit: provider?.contextLimit ?? null, outputReserve: 8000, source: "estimated" } });
-          return { ...merged, compressed: out.compressed ?? false, pruned: out.pruned ?? false, messages: merged.messages.map((m) => m.taskId === localTask.id ? { ...m, mock: out.mock, actions: out.actions } : m) };
+          const merged = mergeTask(s, { ...localTask, status: out.needsSetup ? "needs_input" : out.mock || out.failed ? "failed" : "succeeded", usage: { ...localTask.usage, tokens: out.usage.input + out.usage.output, wallMs: Date.now() - localTask.createdAt }, result: { summary: out.reply, artifactIds: [], partial: out.mock || out.failed || out.needsSetup, completion: { state: out.mock || out.failed || out.needsSetup ? "partial" : "complete", reason: out.needsSetup ? "missing_information" : "local_development_reply" } }, modelRuntime: { actualModel: out.model }, promptUsage: { inputTokens: out.contextUsed ?? null, contextLimit: provider?.contextLimit ?? null, outputReserve: 8000, source: "estimated" } });
+          return { ...merged, compressed: out.compressed ?? false, pruned: out.pruned ?? false, messages: merged.messages.map((m) => m.taskId === localTask.id ? { ...m, mock: out.mock, failed: out.failed, actions: out.actions } : m) };
         });
       }
     } catch (e) {
@@ -154,7 +160,7 @@ export function AgentChatPage() {
       }));
       toast.error(`处理失败：${reason}`);
     } finally {
-      if (alive.current) setBusy(false);
+      if (alive.current) { setBusy(false); setActivity(null); }
     }
   }
 
@@ -251,6 +257,8 @@ export function AgentChatPage() {
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6">
+          {busy && activity && activity.sessionId !== active.id && <button onClick={()=>setActiveId(activity.sessionId)} className="text-sm text-primary underline">查看处理进度</button>}
+          {!backendEnabled() && busy && activity?.sessionId === active.id && <AgentActivityCard activity={activity} />}
           {active?.messages.length === 0 && (
             <div className="mt-16 text-center text-sm text-muted-foreground">
               <Bot className="mx-auto mb-3 size-8 text-primary" />
@@ -261,7 +269,7 @@ export function AgentChatPage() {
             <div key={i} className={cn("flex gap-3", m.role === "user" ? "justify-end" : "justify-start")}>
               {m.role === "assistant" && <Bot className="mt-1 size-5 shrink-0 text-primary" />}
               <div className={cn("max-w-[85%] whitespace-pre-wrap text-sm leading-relaxed", m.role === "user" ? "rounded-2xl rounded-br-sm bg-secondary px-4 py-2.5 text-secondary-foreground" : "")}>
-                {m.content}
+                {m.role === "assistant" ? <AssistantMessage content={m.content} /> : m.content}
                 {m.mock && <div className="mt-2"><MockBadge /></div>}
                 {m.failed && <div className="mt-2"><span className="inline-flex items-center rounded-md border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600">执行失败 · 可重发重试</span></div>}
               </div>
@@ -339,7 +347,7 @@ export function AgentChatPage() {
               <Paperclip className="size-4 text-primary transition-transform group-hover:scale-110" />
             </button>
             <Select value={provider?.id ?? ""} onValueChange={chooseProvider}>
-              <SelectTrigger className={cn("h-8 w-40 text-xs", CONTROL_FEEDBACK)}><SelectValue placeholder="模型" /></SelectTrigger>
+              <SelectTrigger aria-label="模型连接" className={cn("h-8 w-40 text-xs", CONTROL_FEEDBACK)}><SelectValue placeholder="模型" /></SelectTrigger>
               <SelectContent>
                 {providers.map((p: ProviderPublic) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
                 {providers.length === 0 && <SelectItem value="unconfigured" disabled>请配置模型</SelectItem>}
@@ -367,7 +375,7 @@ export function AgentChatPage() {
             </span>
             <Button size="sm" className="ml-auto" disabled={busyUI || (!input.trim() && attachments.length === 0)} onClick={() => send()}>
               {busyUI ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-              发送
+              {busyUI ? "处理中" : "发送"}
             </Button>
           </div>
         </div>

@@ -1,3 +1,4 @@
+vi.mock("@/app/auth",()=>({useAuth:()=>({session:null}),useRepository:()=>({listTasks:mocks.tasks,listOpportunities:mocks.opps})}));
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";

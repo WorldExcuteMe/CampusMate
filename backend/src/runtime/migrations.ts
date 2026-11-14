@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 // Explicit cross-directory history. This loader never applies SQL or reads credentials.
 export const MIGRATION_PATHS = [
   "supabase/migrations/0001_init.sql",
+  "supabase/migrations/0002_profiles_and_provenance.sql",
+  "supabase/migrations/0003_atomic_verification_reports.sql",
   "backend/migrations/0002_agent_runtime.sql",
   "backend/migrations/0003_personal_context.sql",
   "supabase/migrations/20261114061420_campusmate_shared_storage.sql",

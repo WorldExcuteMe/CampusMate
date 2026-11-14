@@ -11,6 +11,7 @@ import type { GenerationStage } from "./generation-policy.ts";
 import { argumentError } from "./tool-arguments.ts";
 import { toolResultView } from "./task-events.ts";
 import { LeaseLostError } from "./session-context.ts";
+import { toolResultFailed } from "./tool-result.ts";
 
 export class CheckpointWriteError extends Error {
   constructor(cause: unknown) { super("任务历史保存失败，请恢复重试", { cause }); }
@@ -40,6 +41,7 @@ export interface AgentLoopDeps {
   reasoning?: string;
   stage?: GenerationStage;
   signal?: AbortSignal;
+  isCancelled?: () => boolean | Promise<boolean>;
 }
 
 export interface AgentLoopResult {
@@ -56,6 +58,8 @@ export interface AgentLoopResult {
   truncated?: boolean;
   error?: string;
   telemetry?: import("./types.ts").LlmTelemetry;
+  stopReason?: "completed" | "budget" | "cancelled" | "approval" | "round_limit" | "invalid_output" | "error";
+  toolErrors?: number;
 }
 
 const MAX_TOOL_ROUNDS = 20;
@@ -99,7 +103,13 @@ function noteRepeat(repeat: Map<string, number>, name: string, args: Record<stri
   }
 }
 
-export async function runAgentLoop(opts: {
+export async function runAgentLoop(opts: Parameters<typeof runAgentLoopInternal>[0]): Promise<AgentLoopResult> {
+  const result = await runAgentLoopInternal(opts);
+  result.toolErrors = Math.max(opts.resumeToolErrors ?? 0, result.transcript.filter((m) => m.role === "tool" ? toolResultFailed(String(m.content)) : m.role === "user" && typeof m.content === "string" && m.content.startsWith("[工具观测：") && toolResultFailed(m.content.replace(/^\[工具观测：[^\]]+\]\s*/, ""))).length);
+  result.stopReason ??= result.budgetExceeded ? "budget" : result.paused ? "approval" : result.mock || result.error || result.truncated ? "error" : "completed";
+  return result;
+}
+async function runAgentLoopInternal(opts: {
   system: string;
   systemMessages?: ChatMessage[];
   user: string;
@@ -108,12 +118,14 @@ export async function runAgentLoop(opts: {
   resumeMessages?: ChatMessage[];
   resumeTranscript?: ChatMessage[];
   initialUsage?: Usage;
+  resumeUsage?: Usage;
+  resumeToolErrors?: number;
   deps: AgentLoopDeps;
   repeat?: Map<string, number>;
   model?: string;
 }): Promise<AgentLoopResult> {
   const { deps } = opts;
-  const hooks = deps.hooks ?? {};
+  const hooks = { ...deps.hooks, beforeRequest: async () => { if (await deps.isCancelled?.()) throw new TaskCancelledError(); await deps.hooks?.beforeRequest?.(); } };
   const now = hooks.now ?? Date.now;
   const price = hooks.pricePerToken;
   const maxRounds = deps.maxRounds ?? MAX_TOOL_ROUNDS;
@@ -132,7 +144,7 @@ export async function runAgentLoop(opts: {
   const actions: string[] = [];
   const repeat = opts.repeat ?? new Map<string, number>();
   const start = now();
-  const usage: Usage = { ...(opts.initialUsage ?? EMPTY_USAGE) };
+  const usage: Usage = { ...(opts.initialUsage ?? opts.resumeUsage ?? EMPTY_USAGE) };
   const priorWallMs = usage.wallMs;
   const transcript: ChatMessage[] = structuredClone(opts.resumeTranscript ?? []);
   let model = "unknown";
@@ -218,6 +230,7 @@ export async function runAgentLoop(opts: {
       telemetry = res.telemetry;
       if (!res.telemetry || res.telemetry.usage.inputTotal !== null) await hooks.onPromptUsage?.({ inputTokens: res.telemetry?.usage.inputTotal ?? res.usage.input, contextLimit: deps.contextLimit ?? null, outputReserve: reserve, source: "reported" });
       addUsage(res.usage);
+      await hooks.beforeRequest?.();
       model = res.model;
       await emit("llm.response", { round: i, toolCalls: res.toolCalls.length, telemetry });
       if (res.truncated) {
@@ -253,7 +266,7 @@ export async function runAgentLoop(opts: {
       }
 
       if (/<tool_result/i.test(res.content)) {
-        return { reply: "已拦截虚构的工具结果：模型未真实调用工具。", actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript };
+        return { reply: "已拦截虚构的工具结果：模型未真实调用工具。", actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, stopReason: "invalid_output", error: "fabricated_tool_result" };
       }
       const jt = parseJsonTool(res.content, known);
       if (jt) {
@@ -284,15 +297,11 @@ export async function runAgentLoop(opts: {
       transcript.push({ role: "assistant", content: reply }); messages.push({ role: "assistant", content: reply }); await checkpoint();
       return { reply, actions, usage, model, mock: false, rounds: maxRounds, budgetExceeded: true, paused: false, messages, transcript, telemetry };
     }
-    messages.push({ role: "user", content: "工具调用预算已用尽。请基于以上已获取的工具结果，直接给出最终中文总结（含来源/截止/过期说明），不要再调用任何工具。" });
-    const fin = await deps.transport.chat({ messages, deadlineAt: start + deps.budget.wallMs - priorWallMs, maxOutputTokens: Math.min(reserve, deps.budget.tokens - usage.tokens), reasoning: deps.reasoning, stage: "write" });
-    addUsage(fin.usage);
-    const actionsSummary = actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}` : "（未获取到有效结果）";
-    const finalText = fin.content && !parseJsonTool(fin.content, known) ? fin.content : actionsSummary;
-    transcript.push({ role: "assistant", content: finalText });
-    return { reply: finalText, actions, usage, model: fin.model || model, mock: false, rounds: maxRounds, budgetExceeded, paused: false, messages, transcript, truncated: fin.truncated, telemetry: fin.telemetry };
+    const reply = "执行已达到轮次上限，保留已完成步骤，请用新消息继续。";
+    transcript.push({ role: "assistant", content: reply }); await checkpoint();
+    return { reply, actions, usage, model, mock: false, rounds: maxRounds, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: "round_limit", error: "round_limit" };
   } catch (err) {
-    if (err instanceof TaskCancelledError) { await checkpoint(); throw err; }
+    if (err instanceof TaskCancelledError) { await checkpoint(); if (!deps.isCancelled) throw err; return { reply: "任务已取消", actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, stopReason: "cancelled" }; }
     if (err instanceof CheckpointWriteError || err instanceof LeaseLostError) throw err;
     if (err instanceof BudgetPauseError) {
       const last = messages[messages.length - 1];

@@ -9,7 +9,7 @@ export const INBOX_STATUS: Record<string, string> = { pending_review: "待确认
 export function InboxPreview({ item }: { item: InboxItem }) {
   const e = item.extracted, source = publicSourceUrl(item.sourceUrl ?? e.sourceUrl);
   return <div className="space-y-5">
-    <div className="flex flex-wrap items-center gap-2"><ClassBadge value={item.classification.class} /><CategoryBadge value={e.category} />{item.demo && <MockBadge />}</div>
+    <div className="flex flex-wrap items-center gap-2"><ClassBadge value={item.classification.class} /><CategoryBadge value={e.category} />{(item.extractionMock ?? item.demo) && <MockBadge />}</div>
     <div><h2 className="text-xl font-semibold leading-relaxed tracking-tight">{e.title}</h2><p className="mt-3 text-sm leading-7 text-muted-foreground">{e.summary || "尚无结构化摘要，可先查看原文。"}</p></div>
     <div className="space-y-3 rounded-xl bg-muted/40 p-4"><div className="flex items-start gap-2"><CalendarClock className="mt-0.5 size-4 shrink-0 text-primary" /><DeadlineTag deadline={e.deadline} /></div><dl className="grid grid-cols-[4rem_1fr] gap-x-3 gap-y-2 text-xs leading-5"><dt className="text-muted-foreground">发布方</dt><dd className="break-words">{e.org || "待核对"}</dd><dt className="text-muted-foreground">地点</dt><dd>{e.location || "未注明"}</dd><dt className="text-muted-foreground">当前状态</dt><dd>{INBOX_STATUS[item.status] ?? "待处理"}</dd>{e.cost && <><dt className="text-muted-foreground">参与成本</dt><dd>{e.cost}</dd></>}</dl></div>
     {item.classification.priorityReason && <div><h3 className="mb-2 text-xs font-semibold text-muted-foreground">为什么值得看</h3><p className="text-sm leading-6">{item.classification.priorityReason}</p></div>}
