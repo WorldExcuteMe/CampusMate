@@ -69,6 +69,18 @@ export interface TaskApproval { id: string; taskId: string; toolName: string; ri
 export async function listApprovals(): Promise<TaskApproval[]> { return (await req<{ approvals: TaskApproval[] }>("/v1/approvals")).approvals; }
 export async function decideApproval(id: string, decision: "approved" | "rejected"): Promise<void> { await req(`/v1/approvals/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ decision }) }); }
 
+export interface DocumentArtifact { id: string; taskId: string; documentId: string; revision: number; sha256: string; kind: string; inline: unknown; }
+export async function getArtifact(id: string): Promise<{ artifact: DocumentArtifact; availableFormats: string[] }> { return req(`/v1/artifacts/${encodeURIComponent(id)}`); }
+export async function downloadArtifact(id: string, format: "md" | "docx" | "pdf"): Promise<{ blob: Blob; filename: string; sha256: string | null }> {
+  const base = backendUrl(); if (!base) throw new Error("尚未配置文档后端");
+  const response = await fetch(`${base}/v1/artifacts/${encodeURIComponent(id)}/download?format=${format}`, { headers: await authHeader() });
+  if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error ?? `下载失败（${response.status}）`); }
+  const blob = await response.blob(), digest = response.headers.get("X-File-Sha256");
+  if (digest && crypto.subtle) { const hash = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()); if ([...new Uint8Array(hash)].map((n) => n.toString(16).padStart(2, "0")).join("") !== digest) throw new Error("下载内容校验不一致，请重试"); }
+  const disposition = response.headers.get("Content-Disposition") ?? "", encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  return { blob, filename: encoded ? decodeURIComponent(encoded) : `campusmate-document.${format}`, sha256: digest };
+}
+
 // ── 个人上下文：学期 / 课表 ──
 export interface Term { id: string; institutionId?: string; name: string; startDate: string; endDate: string; totalWeeks: number; timezone: string; weekAnchor?: string; }
 export interface ScheduleRow { id: string; courseId?: string; courseName: string; weekday: number; startTime: string; endTime: string; startWeek: number; endWeek: number; weekPattern: "every" | "odd" | "even"; classroom?: string; campus?: string; }

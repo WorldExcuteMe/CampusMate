@@ -29,6 +29,8 @@ import { assertTurnLease, LeaseLostError, sessionHistory, identityContext, commi
 import { ProviderError } from "../core/providers.ts";
 import { stageForIntent } from "../core/generation-policy.ts";
 import type { CheckpointState } from "../core/types.ts";
+import { isProposalRequest } from "../core/document-plan.ts";
+import { runProposal, type ProposalResult } from "../core/proposal.ts";
 
 export interface WorkerDeps {
   store: TaskStore;
@@ -294,7 +296,7 @@ export class Worker {
         history = composed.messages.filter((m) => m.role !== "system").slice(0, -1);
       }
 
-      const result = await runAgentLoop({
+      const loopOptions: Parameters<typeof runAgentLoop>[0] = {
         system,
         systemMessages,
         user: task.intent,
@@ -331,7 +333,9 @@ export class Worker {
             },
             onPromptUsage: async (promptUsage) => { await checkCurrent(); await store.updateTask(task.id, { promptUsage: { ...promptUsage, contextLimit: task.modelConfig?.contextLimit ?? null } }); },
             onEvent: (type, payload) => {
-              eventQueue = eventQueue.then(async () => { await store.appendEvent({ taskId: task.id, userId: task.userId, type, payload }); });
+              const documentStep = latestState?.documentRun?.plan.steps[latestState.documentRun.index];
+              const data = documentStep ? { ...payload, stepId: documentStep.id, stageTitle: documentStep.title } : payload;
+              eventQueue = eventQueue.then(async () => { await store.appendEvent({ taskId: task.id, userId: task.userId, type, payload: data }); });
               void eventQueue.catch(() => {});
               return eventQueue;
             },
@@ -348,10 +352,21 @@ export class Worker {
             },
           },
         },
-      });
+      };
+      const result: ProposalResult = isProposalRequest(task.intent) || cp?.state.documentRun
+        ? await runProposal({ task, checkpointState: cp?.state, artifacts: this.artifacts, before: checkCurrent, now: this.now,
+          checkpoint: async (state) => { await loopOptions.deps.hooks!.onCheckpoint!(state); },
+          event: async (type, payload) => { await loopOptions.deps.hooks!.onEvent!(type, payload); },
+          run: async (stage) => runAgentLoop({ ...loopOptions, user: stage.user, images: undefined,
+            resumeMessages: stage.resume && stage.state.messages.length ? resumeDocumentMessages(stage.state) : undefined,
+            resumeTranscript: stage.state.transcript, initialUsage: stage.state.usage, repeat: new Map(Object.entries(stage.state.repeat)),
+            deps: { ...loopOptions.deps, stage: stage.stage, tools: stage.tools === "research" ? taskTools.filter((t) => ["web_search", "web_fetch", "read_artifact"].includes(t.function.name)) : [],
+              hooks: { ...loopOptions.deps.hooks, onCheckpoint: stage.onCheckpoint } },
+          }),
+        }) : await runAgentLoop(loopOptions);
       await eventQueue;
       await checkCurrent();
-      latestState = { messages: result.messages, transcript: result.transcript, stepProgress: latestState?.stepProgress ?? {}, repeat: latestState?.repeat ?? {}, usage: result.usage, pendingApprovals: [] };
+      latestState = { messages: result.messages, transcript: result.transcript, documentRun: latestState?.documentRun, stepProgress: latestState?.stepProgress ?? {}, repeat: latestState?.repeat ?? {}, usage: result.usage, pendingApprovals: [] };
       if (!task.turnId) await saveTranscript(result.transcript);
 
       // 协作式取消：执行后检查标志。
@@ -363,7 +378,7 @@ export class Worker {
       if (result.truncated || result.budgetExceeded) {
         if (task.turnId && this.sessions && store.saveTurnProgress) await store.saveTurnProgress({ taskId: task.id, userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now(), state: latestState }, this.sessions);
         const reason = result.truncated ? "output_incomplete" : "budget_exceeded";
-        await store.updateTask(task.id, { status: "paused", error: reason === "output_incomplete" ? "模型输出未完成，保留草稿后可继续" : "预算不足，请调整预算后继续", result: { summary: result.reply, artifactIds: [], partial: true, completion: { state: "partial", reason } } });
+        await store.updateTask(task.id, { status: "paused", error: reason === "output_incomplete" ? "模型输出未完成，保留草稿后可继续" : "预算不足，请调整预算后继续", result: { summary: result.reply, artifactIds: result.delivery?.artifactIds ?? [], partial: true, completion: { state: "partial", reason, checks: result.delivery?.checks } } });
         await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.needs_input", payload: { reason, message: result.reply } });
         return;
       }
@@ -375,16 +390,17 @@ export class Worker {
         return;
       }
 
-      const certificate = await this.evaluator(task, result);
+      let certificate = await this.evaluator(task, result);
+      if (result.delivery) certificate = { ...certificate, passed: certificate.passed && result.delivery.passed, criteria: [...certificate.criteria, ...result.delivery.checks.map((c) => ({ id: c.id, passed: c.passed, evidenceIds: [], note: c.detail }))] };
       await store.appendEvent({ taskId: task.id, userId: task.userId, type: certificate.passed ? "eval.passed" : "eval.failed", payload: { certificate } });
 
       if (canMarkSucceeded(certificate.passed)) {
         await finishTurn({
           status: "succeeded",
-          result: { summary: result.reply, certificate, artifactIds: [], partial: result.budgetExceeded },
+          result: { summary: result.reply, certificate, artifactIds: result.delivery?.artifactIds ?? [], partial: false, ...(result.delivery ? { completion: { state: "complete", reason: "checks_passed", checks: result.delivery.checks } as const } : {}) },
         });
       } else {
-        await finishTurn({ status: "failed", error: result.reply, result: { summary: result.reply, certificate, artifactIds: [] } });
+        await finishTurn({ status: "failed", error: result.reply, result: { summary: result.reply, certificate, artifactIds: result.delivery?.artifactIds ?? [], ...(result.delivery ? { partial: true, completion: { state: "partial", reason: "document_checks_failed", checks: result.delivery.checks } as const } : {}) } });
       }
     } catch (err) {
       if (err instanceof LeaseLostError) return;
@@ -434,6 +450,13 @@ export class Worker {
 function invocationId(taskId: string, key: string): string {
   const hash = sha256(taskId + key);
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+}
+
+function resumeDocumentMessages(state: CheckpointState): ChatMessage[] {
+  const last = state.transcript?.at(-1);
+  return last?.role === "assistant" && String(last.content).startsWith("[未完成草稿]")
+    ? [...state.messages, { role: "user", content: "[系统恢复说明] 上次本阶段输出被截断。请重新输出本阶段完整的JSON/资料摘要，不要只追加后半段；已完成章节保持不变。" }]
+    : state.messages;
 }
 
 // Per-tool Timeout：Runtime 强制，超时抛错（转 tool_transient 观测）。

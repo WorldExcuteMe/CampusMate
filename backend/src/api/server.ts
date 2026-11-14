@@ -15,9 +15,10 @@ import { DEFAULT_BUDGET } from "../core/types.ts";
 import { verifySupabaseJwt, bearerToken } from "./jwt.ts";
 import { errorMessage } from "../core/errors.ts";
 import type { Budget } from "../core/types.ts";
-import type { SessionStore } from "../core/storage-contracts.ts";
+import type { SessionStore, ArtifactStore } from "../core/storage-contracts.ts";
 import { SessionConflict } from "../runtime/store.ts";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
+import { documentErrors, documentMarkdown, type DocumentAst } from "../../../shared/document.ts";
 import { requireUuid } from "../runtime/postgres-shared.ts";
 import { ProviderService, ProviderError } from "../core/providers.ts";
 import { parseBudget } from "../core/budget.ts";
@@ -34,6 +35,7 @@ export interface ApiDeps {
   opportunityStore?: OpportunityStore;
   sessionStore?: SessionStore;
   providers?: ProviderService;
+  artifactStore?: ArtifactStore;
 }
 
 
@@ -137,6 +139,20 @@ export function createApiServer(deps: ApiDeps): http.Server {
           : { task: await store.createTask(input), deduped: false };
         return json(res, 201, { taskId: accepted.task.id, sessionId: accepted.task.sessionId, turnId: accepted.task.turnId, status: accepted.task.status, deduped: accepted.deduped });
       }
+
+      const artifactMatch = path.match(/^\/v1\/artifacts\/([^/]+)(\/download)?$/);
+      if (req.method === "GET" && artifactMatch && deps.artifactStore) {
+        const artifact = await deps.artifactStore.get(uid, artifactMatch[1]);
+        if (!artifact) return json(res, 404, { error: "产物不存在" });
+        if (!artifactMatch[2]) return json(res, 200, { artifact, availableFormats: artifact.kind === "document" ? ["md"] : [] });
+        if (artifact.kind !== "document" || documentErrors(artifact.inline).length) return json(res, 422, { error: "文档格式无效，无法导出" });
+        if ((url.searchParams.get("format") ?? "md") !== "md") return json(res, 400, { error: "目前该入口支持Markdown格式" });
+        const content = Buffer.from(documentMarkdown(artifact.inline as DocumentAst), "utf8");
+        res.writeHead(200, { "Content-Type": "text/markdown; charset=utf-8", "Content-Disposition": `attachment; filename="campusmate-document.md"; filename*=UTF-8''${encodeURIComponent((artifact.inline as DocumentAst).title + ".md")}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store", "X-Artifact-Sha256": artifact.sha256, "X-File-Sha256": createHash("sha256").update(content).digest("hex"), "X-Document-Revision": String(artifact.revision), "Access-Control-Expose-Headers": "Content-Disposition, X-Artifact-Sha256, X-File-Sha256, X-Document-Revision" });
+        res.end(content); return;
+      }
+      const artifactList = path.match(/^\/v1\/tasks\/([^/]+)\/artifacts$/);
+      if (req.method === "GET" && artifactList && deps.artifactStore) { const task = await store.getTask(artifactList[1]); if (!task || task.userId !== uid) return json(res, 404, { error: "任务不存在" }); return json(res, 200, { artifacts: (await deps.artifactStore.listByTask(uid, task.id)).map(({ inline: _inline, ...metadata }) => metadata) }); }
 
       const taskMatch = path.match(/^\/v1\/tasks\/([^/]+)(\/events|\/cancel|\/resume|\/stream)?$/);
       if (taskMatch) {

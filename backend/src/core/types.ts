@@ -127,6 +127,7 @@ export interface AgentEvent {
 }
 
 export interface CheckpointState {
+  documentRun?: import("./proposal.ts").DocumentRun;
   messages: ChatMessage[];
   transcript?: ChatMessage[];
   stepProgress: Record<string, StepStatus>;

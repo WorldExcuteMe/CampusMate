@@ -61,7 +61,7 @@ export interface AgentLoopResult {
 const MAX_TOOL_ROUNDS = 20;
 const APPROVAL_PAUSE = "__approval_pending__";
 
-function parseJsonTool(content: string, known: Set<string>): { name: string; args: Record<string, unknown> } | null {
+export function parseJsonTool(content: string, known: Set<string>): { name: string; args: Record<string, unknown> } | null {
   const candidates: string[] = [];
   const fence = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fence) candidates.push(fence[1]);
