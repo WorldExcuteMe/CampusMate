@@ -23,7 +23,8 @@ export function CalendarPage() {
   const activeWeek = term ? teachingWeek(term, date) : null;
   const campuses = [...new Set((schedules.data?.schedules ?? []).map((s) => s.campus).filter(Boolean))];
   const hour = localParts(Date.now(), timezone).time;
-  const next = entries.filter((e) => e.date === today && (e.allDay || e.endTime >= hour)).sort((a, b) => a.startTime.localeCompare(b.startTime))[0];
+  const todayEntries = [...(term && knowledge === "ready" ? projectCourses(term, rules, schedules.data?.exceptions ?? [], today, today).entries : []), ...dateEntries({ from: today, to: today, timezone, tasks: tasks.data ?? [], opps: opps.data ?? [] })];
+  const next = todayEntries.filter((e) => (e.kind !== "course" || !campus || e.campus === campus) && (e.allDay || e.endTime >= hour)).sort((a, b) => a.startTime.localeCompare(b.startTime))[0];
   return <div className="mx-auto max-w-7xl space-y-5">
     <header className="flex flex-wrap items-start justify-between gap-4"><div><p className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-primary"><CalendarDays className="size-4" />CAMPUS / CALENDAR</p><h1 className="text-3xl font-semibold tracking-tight">把这一周，安排得从容一点。</h1><p className="mt-2 text-sm text-muted-foreground">课程、待办与机会截止，在一张真实时间表里。</p></div><div className="rounded-2xl border bg-card px-4 py-3 text-right"><p className="text-xs text-muted-foreground">下一项已记录安排</p><p className="mt-1 max-w-64 truncate text-sm font-semibold">{next ? `${next.allDay ? "当天截止" : next.startTime} · ${next.title}` : "今天暂无后续安排"}</p><p className="mt-1 text-[10px] text-muted-foreground">{timezone}</p></div></header>
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-card p-3">

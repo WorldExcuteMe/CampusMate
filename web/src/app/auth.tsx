@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
+import { useQueryClient } from "@tanstack/react-query";
 import { GraduationCap, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,26 +20,31 @@ export const useAuth = () => useContext(AuthContext);
 
 // 默认公开 Demo（无需注册）；登录后切换为真实模式（RLS 按用户隔离）。
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
   const [session, setSession] = useState<Session | null>(null);
   const [ready, setReady] = useState(!supabaseClient);
 
   useEffect(() => {
-    if (!supabaseClient) return;
-    supabaseClient.auth.getSession().then(({ data }) => {
-      setSession(data.session);
+    const db = supabaseClient;
+    if (!db) return;
+    let disposed = false, revision = 0, owner: string | undefined;
+    const apply = (next: Session | null) => {
+      if (disposed) return;
+      const nextOwner = next?.user.id ?? "demo";
+      if (nextOwner !== owner) {
+        // Switch before children can query under the new identity, including reload.
+        setRepository(next ? new SupabaseRepository(db, next.user.id) : new DemoRepository());
+        queryClient.clear();
+        owner = nextOwner;
+      }
+      setSession(next);
       setReady(true);
-    });
-    const { data: sub } = supabaseClient.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (supabaseClient && session) {
-      setRepository(new SupabaseRepository(supabaseClient, session.user.id));
-    } else {
-      setRepository(new DemoRepository());
-    }
-  }, [session, ready]);
+    };
+    const initialRevision = revision;
+    void db.auth.getSession().then(({ data }) => { if (revision === initialRevision) apply(data.session); }).catch(() => { if (revision === initialRevision) apply(null); });
+    const { data: sub } = db.auth.onAuthStateChange((_e, next) => { revision++; apply(next); });
+    return () => { disposed = true; sub.subscription.unsubscribe(); };
+  }, [queryClient]);
 
   if (!ready) {
     return (

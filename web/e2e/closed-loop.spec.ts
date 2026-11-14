@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
 
-const EVIDENCE = "C:/Users/Asus/CodeBuddy/campusmate-evidence";
+const EVIDENCE = process.env.CAMPUSMATE_E2E_OUTPUT ?? path.join(os.tmpdir(), "campusmate-demo-e2e", "screenshots");
+test.beforeAll(async()=>{await fs.mkdir(EVIDENCE,{recursive:true});});
 
 const NOTICE = `关于举办2026年校园程序设计大赛的通知
 主办单位：教务处
@@ -31,7 +35,7 @@ test("第一条业务闭环：导入→提取→确认→待办→Dashboard→�
   await expect(page.getByText(/处理：.*程序设计大赛/)).toBeVisible();
 });
 
-test("URL 抓取防护与风险分类可见", async ({ page }) => {
+test("风险通知提取与分类可见", async ({ page }) => {
   await page.goto("/app/inbox/new");
   await page.getByPlaceholder("粘贴校园通知文本…").fill("兼职刷单，先交保证金200元，稳赚高额回报");
   await page.getByRole("button", { name: "AI 提取" }).click();
@@ -61,7 +65,7 @@ test("日常任务专区：群通知清洗+时间提取+导入", async ({ page }
 test("会话页与供应商设置页可达", async ({ page }) => {
   await page.goto("/app/agent");
   await expect(page.getByPlaceholder(/输入消息/)).toBeVisible();
-  await expect(page.getByText("上下文", { exact: false })).toBeVisible();
+  await expect(page.getByText("窗口输入", { exact: false })).toBeVisible();
   await page.screenshot({ path: `${EVIDENCE}/11-agent-chat.png`, fullPage: true });
   await page.goto("/app/settings");
   await expect(page.getByText("模型供应商", { exact: true })).toBeVisible();

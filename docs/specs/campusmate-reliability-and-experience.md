@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 4 — in progress. 用户已批准 Spec v2、实施计划及范围内子任务阶段委托。
+Phase 4 — completed locally. 用户已批准Spec v2；T1–T10均完成本地代码/夹具验收，真实模型、生产数据库及实际高校环境仍未验证，详见`docs/ACCEPTANCE_20261115.md`。
 
 执行方式更新：用户随后明确“将子智能体召回，你来进行全权任务吧”。所有运行子代理已中断，后续由主代理单独实施、测试、自检与提交，采用 spec-tdd-workflow；下文历史的子代理分工不再作为调度指令。
 
@@ -14,7 +14,7 @@ Phase 4 — in progress. 用户已批准 Spec v2、实施计划及范围内子�
 - v2 修改前/后备份：`.agent_versions/v2_CAMPUSMATE_PLAN_20261114-132925/`，保留 v1 文档原件。
 - 用户在总审批问题后回复“确认”；本文件 v2 的契约、实施范围和技术方案获准实施，新增范围/不可逆动作仍单独确认。
 - 实施分支：`codex/campusmate-reliability-experience`；实施补充备份：`.agent_versions/v3_CAMPUSMATE_IMPLEMENT_20261114-135858/`。
-- T1 已提交并本地验收（e9d83d4）；T2 会话/画像/原子轮次/恢复/UUID映射已完成本地验证，后端218项与前端104项通过，详见子规格。后续继续T3/T4/T5/T9及文档闭环；尚未声称整体交付。
+- 本地收口：后端256项、前端131项、七份迁移16项、Demo/Runtime共10项浏览器用例和类型/构建通过。所有子任务证据见下方accepted表及子规格；不把本地通过当作上线验收。
 
 ## Problem and goal
 
@@ -365,7 +365,7 @@ Phase 4 — in progress. 用户已批准 Spec v2、实施计划及范围内子�
 | T5 | accepted | 本人 | T1 accepted | 后端244+最终定向15，前端122+最终日期5，类型/迁移/构建通过；UI跨尺寸T7/T8继续 |
 | T6 | accepted | 本人 | T2/T3/T4/T9 accepted | 后端253+最终相关8、前端124，类型/构建通过；分章恢复/受限AST/授权MD，DOCX/PDF在T10 |
 | T7 | accepted | 本人 | T4/T5/T6 accepted | 前端129、类型/构建；1440/768/390浏览器明暗夹具Preview，详见tasks/t7-visual.md |
-| T8 | pending | 本人 | 其余实施任务 accepted | — |
+| T8 | accepted | 本人 | 其余实施任务 accepted | 后端256、前端131、迁移16、浏览器10，类型/构建通过；外部PG明确skip；ACCEPTANCE_20261115.md |
 | T9 | accepted | 本人 | T2/T3 accepted | 完整后端236+最终相关14，前端107，类型/迁移/构建通过；真实KV收益未实测 |
 | T10 | accepted | 本人 | T6 accepted | 后端255、前端125，类型/构建；真实DOCX/PDF复读与Word/Chromium各5页检查；LO未配，计算仅评估 |
 

@@ -25,6 +25,21 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+        env:
+          CAMPUSMATE_E2E_OUTPUT: ${{ runner.temp }}/campusmate-e2e-demo
+      - name: Install runtime integration dependencies
+        run: npm --prefix ../backend ci
+      - name: Runtime browser integration (scripted model, no remote credentials)
+        run: npx playwright test -c playwright.integration.config.ts
+        env:
+          CAMPUSMATE_E2E_OUTPUT: ${{ runner.temp }}/campusmate-e2e-runtime
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-fixture-evidence
+          path: |
+            ${{ runner.temp }}/campusmate-e2e-demo
+            ${{ runner.temp }}/campusmate-e2e-runtime
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -32,6 +47,7 @@ jobs:
           path: web/dist
 
   backend:
+    needs: build-test
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -49,7 +65,7 @@ jobs:
       - name: Install document renderer Chromium
         run: npx playwright install --with-deps chromium
       - name: Backend Tests (unit/integration/security/recovery)
-        run: npm test
+        run: npm test -- --test-concurrency=1
       - name: Migration Validation (PGlite real engine)
         run: node scripts/validate-migration.ts
       - name: Benchmark Smoke (30 tasks)

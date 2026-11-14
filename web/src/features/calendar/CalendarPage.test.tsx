@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 const mocks = vi.hoisted(() => ({ schedules: vi.fn(), terms: vi.fn(), tasks: vi.fn(), opps: vi.fn() }));
 vi.mock("@/app/config", () => ({ repository: { listTasks: mocks.tasks, listOpportunities: mocks.opps } }));
@@ -25,4 +25,12 @@ it("课表读取失败明确报错，不推断全天空闲", async () => {
   render(<QueryClientProvider client={client}><CalendarPage /></QueryClientProvider>);
   expect(await screen.findByText(/课表.*失败/)).toBeVisible();
   expect(screen.queryByText(/08:00-22:00（840分钟）/)).toBeNull();
+});
+it("查看其他周不清空今天已知的下一项安排",async()=>{
+  const client=setup();mocks.tasks.mockResolvedValue([{id:"today",title:"今日重要截止",dueAt:"2026-11-16",status:"todo"}]);
+  mocks.schedules.mockResolvedValue({schedules:[],exceptions:[],schemes:[]});
+  render(<QueryClientProvider client={client}><CalendarPage/></QueryClientProvider>);
+  await screen.findAllByText(/今日重要截止/);
+  fireEvent.change(screen.getByLabelText("查看日期"),{target:{value:"2026-11-23"}});
+  expect(screen.getByText(/当天截止 · 截止：今日重要截止/)).toBeVisible();
 });
