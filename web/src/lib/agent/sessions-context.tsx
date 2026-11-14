@@ -6,6 +6,8 @@ import {
   type ChatSession,
 } from "./sessions";
 
+import { useAuth } from "@/app/auth";
+
 interface SessionsState {
   sessions: ChatSession[];
   activeId: string;
@@ -13,6 +15,8 @@ interface SessionsState {
   create: () => ChatSession;
   rename: (id: string, name: string) => void;
   remove: (id: string) => void;
+  archive: (id: string) => void;
+  restore: (id: string) => void;
   update: (id: string, fn: (s: ChatSession) => ChatSession) => void;
   active: ChatSession;
 }
@@ -20,13 +24,15 @@ interface SessionsState {
 const Ctx = createContext<SessionsState | null>(null);
 
 export function SessionsProvider({ children }: { children: ReactNode }) {
+  const { session } = useAuth();
+  const scope = session?.user.id ?? "demo";
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const s = loadSessions();
+    const s = loadSessions(scope);
     return s.length ? s : [newSession()];
   });
   const [activeId, setActiveId] = useState(() => sessions[0]?.id);
 
-  useEffect(() => saveSessions(sessions), [sessions]);
+  useEffect(() => saveSessions(sessions, scope), [sessions, scope]);
 
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0];
 
@@ -36,7 +42,9 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     setActiveId,
     active,
     create: () => {
-      const s = newSession(active?.mode ?? "auto");
+      const preset = localStorage.getItem("campusmate.defaultMode");
+      const mode = preset === "daily" || preset === "auto" ? preset : (active?.mode ?? "auto");
+      const s = newSession(mode);
       setSessions((l) => [s, ...l]);
       setActiveId(s.id);
       return s;
@@ -49,6 +57,16 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         if (id === activeId) setActiveId(fin[0].id);
         return fin;
       }),
+    archive: (id) =>
+      setSessions((l) => {
+        const next = l.map((s) => (s.id === id ? { ...s, archived: true } : s));
+        if (id === activeId) {
+          const vis = next.find((s) => !s.archived);
+          if (vis) setActiveId(vis.id);
+        }
+        return next;
+      }),
+    restore: (id) => setSessions((l) => l.map((s) => (s.id === id ? { ...s, archived: false } : s))),
     update: (id, fn) => setSessions((l) => l.map((s) => (s.id === id ? fn(s) : s))),
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

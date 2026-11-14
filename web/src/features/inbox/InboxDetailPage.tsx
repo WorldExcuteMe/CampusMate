@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { repository } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import { uid } from "@/lib/data/types";
 import {
   CategoryBadge,
@@ -19,6 +19,7 @@ import {
 } from "@/components/shared";
 
 export function InboxDetailPage() {
+  const repository = useRepository();
   const { id = "" } = useParams();
   const qc = useQueryClient();
   const { data: item, isLoading } = useQuery({
@@ -75,7 +76,7 @@ export function InboxDetailPage() {
         title={e.title}
         actions={
           <div className="flex items-center gap-2">
-            <MockBadge />
+            {(item.extractionMock ?? true) && <MockBadge />}
             <ClassBadge value={item.classification.class} />
             <CategoryBadge value={e.category} />
           </div>

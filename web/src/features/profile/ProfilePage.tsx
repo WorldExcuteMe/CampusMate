@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { repository } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import { PageHeader } from "@/components/shared";
 
 const formSchema = z.object({
@@ -27,6 +27,7 @@ type FormValues = z.infer<typeof formSchema>;
 const split = (s: string) => s.split(/[,，、\n]/).map((x) => x.trim()).filter(Boolean);
 
 export function ProfilePage() {
+  const repository = useRepository();
   const qc = useQueryClient();
   const { data: profile } = useQuery({ queryKey: ["profile"], queryFn: () => repository.getProfile() });
   const form = useForm<FormValues>({

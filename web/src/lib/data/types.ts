@@ -32,6 +32,9 @@ export interface InboxItem {
   status: InboxStatus;
   createdAt: string;
   demo: boolean;
+  mergedFrom?: string[];
+  /** Extraction provenance is independent of the data storage mode. */
+  extractionMock?: boolean;
 }
 
 export interface Task {
@@ -91,6 +94,8 @@ export interface ActivityEvent {
 
 export interface Repository {
   readonly mode: "demo" | "supabase";
+  /** Stable local cache namespace for this repository's owner, not a permission grant. */
+  readonly storageScope: string;
   getProfile(): Promise<Profile>;
   updateProfile(p: Profile): Promise<Profile>;
   listInbox(): Promise<InboxItem[]>;
@@ -105,6 +110,7 @@ export interface Repository {
   createOpportunity(o: Opportunity): Promise<Opportunity>;
   listReports(): Promise<VerificationReport[]>;
   getReport(id: string): Promise<VerificationReport | null>;
+  createReport(r: VerificationReport): Promise<VerificationReport>;
   logActivity(e: ActivityEvent): Promise<void>;
   listActivity(): Promise<ActivityEvent[]>;
   logAgentRun(run: AgentRun): Promise<void>;
@@ -112,5 +118,5 @@ export interface Repository {
 }
 
 export function uid(): string {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+  return crypto.randomUUID();
 }

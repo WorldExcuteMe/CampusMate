@@ -1,5 +1,6 @@
 // QQ/微信群通知导入清洗管线：去噪 → 归一 → 去重 → 日常时间提取。
 // 仅处理用户主动转发/粘贴/截图导入的自有群消息（授权个人使用）。
+import { beijingDay, daysUntil } from "@/lib/time-policy";
 
 export function cleanGroupMessage(raw: string): string {
   let text = raw;
@@ -26,6 +27,22 @@ export function dedupKey(text: string): string {
   return `dq-${h}`;
 }
 
+// 北京时间（Asia/Shanghai）墙钟时间，用本地 Date 字段承载，供过期判断与日期解析。
+export function beijingNow(): Date {
+  return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+}
+export function todayBeijing(): string {
+  return beijingDay();
+}
+export function nowBeijingText(): string {
+  return new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+}
+// 截止日期是否已过期（早于今天，北京时间）。null 视为未知，不判过期。
+export function isExpired(deadline: string | null | undefined): boolean {
+  const days = daysUntil(deadline);
+  return days !== null && days < 0;
+}
+
 const WEEKDAY: Record<string, number> = {
   一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 0, 天: 0,
 };
@@ -35,8 +52,9 @@ export interface DailyTime {
   timeText: string;
 }
 
-export function extractDailyTime(text: string): DailyTime {
-  const now = new Date();
+export function extractDailyTime(text: string, ref?: Date): DailyTime {
+  // ref=消息发送时间：旧消息的相对日期（今天/明天/周X）相对消息时间解析，而非现在。
+  const now = ref ?? beijingNow();
   const iso = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 

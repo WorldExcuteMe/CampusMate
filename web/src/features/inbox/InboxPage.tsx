@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { repository } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import {
   CategoryBadge,
   ClassBadge,
@@ -13,6 +13,7 @@ import {
 } from "@/components/shared";
 
 export function InboxPage() {
+  const repository = useRepository();
   const { data: items = [], isLoading } = useQuery({
     queryKey: ["inbox"],
     queryFn: () => repository.listInbox(),

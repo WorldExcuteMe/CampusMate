@@ -8,21 +8,12 @@ export interface DataConfig {
   userId?: string;
 }
 
-let cached: Repository | null = null;
-
 export function getRepository(cfg: DataConfig): Repository {
-  if (cached) return cached;
   if (cfg.supabaseUrl && cfg.supabaseAnonKey && cfg.userId) {
     const client = createSupabaseClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
-    cached = new SupabaseRepository(client, cfg.userId);
-  } else {
-    cached = new DemoRepository();
+    return new SupabaseRepository(client, cfg.userId);
   }
-  return cached;
-}
-
-export function resetRepository(): void {
-  cached = null;
+  return new DemoRepository();
 }
 
 export * from "./types";

@@ -1,0 +1,28 @@
+{
+  "name": "campusmate-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "api": "node src/main-api.ts",
+    "worker": "node src/main-worker.ts",
+    "test": "node --test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
+    "@types/node": "^22.19.19",
+    "@types/pg": "^8.23.1",
+    "@types/ws": "^8.18.2",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "pg": "^8.23.1",
+    "ws": "^8.23.0",
+    "xlsx": "^0.18.5"
+  }
+}

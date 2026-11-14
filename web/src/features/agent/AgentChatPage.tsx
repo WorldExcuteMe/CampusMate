@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   Send, Bot, User, Pencil, Loader2, FolderOpen, Paperclip, X,
@@ -14,16 +14,20 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { repository } from "@/app/config";
+import { useAuth, useRepository } from "@/app/auth";
 import { runChat } from "@/lib/agent/chat";
+import { backendEnabled, runTaskViaBackend } from "@/lib/agent/api-client";
+import { errorMessage } from "@/lib/llm/errors";
 import { listProviders, type ProviderPublic, type ChatMessage } from "@/lib/llm/proxy";
 import { useSessions } from "@/lib/agent/sessions-context";
 import { autoName } from "@/lib/agent/sessions";
+import { resolveContextCap } from "@/lib/agent/context";
 import { MockBadge } from "@/components/shared";
 import { SetupWizard } from "./SetupWizard";
+import { AgentActivityCard } from "./AgentActivityCard";
+import { AssistantMessage } from "./AssistantMessage";
+import { progressFromEvent, type AgentActivity, type AgentProgress } from "@/lib/agent/progress";
 import { parseFile, type Attachment } from "@/lib/ingest/files";
-
-const CONTEXT_CAP = 16000;
 
 // 统一控件鼠标反馈：悬停边框+阴影+图标放大、聚焦环、按压缩放
 const CONTROL_FEEDBACK =
@@ -34,9 +38,13 @@ const WORKSPACES = [
 ];
 
 export function AgentChatPage() {
-  const { active, update, rename } = useSessions();
+  const repository = useRepository();
+  const { session } = useAuth();
+  const qc = useQueryClient();
+  const { active, update, rename, setActiveId } = useSessions();
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [activity, setActivity] = useState<AgentActivity | null>(null);
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [ws] = useState("local");
@@ -50,9 +58,13 @@ export function AgentChatPage() {
     () => localStorage.getItem("campusmate.providerId") || "builtin-deepseek",
   );
   const { data: providers = [] } = useQuery({ queryKey: ["providers"], queryFn: listProviders });
+  const activeProviderId = providers.some((p) => p.id === providerId) ? providerId : providers[0]?.id;
   const { data: profile } = useQuery({ queryKey: ["profile"], queryFn: () => repository.getProfile() });
   const endRef = useRef<HTMLDivElement>(null);
   const workspace = WORKSPACES.find((w) => w.id === ws) ?? WORKSPACES[0];
+  const provider = providers.find((p: ProviderPublic) => p.id === activeProviderId);
+  const modelName = provider?.model || "deepseek-chat";
+  const contextCap = resolveContextCap(modelName);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -77,20 +89,70 @@ export function AgentChatPage() {
     setInput("");
     setAttachments([]);
     setBusy(true);
+    const startedAt = Date.now();
+    setActivity({ sessionId: active.id, startedAt, stageAt: startedAt, progress: { phase: "preparing" } });
+    const report = (progress: AgentProgress) => setActivity(current => {
+      if (!current || current.sessionId !== active.id || JSON.stringify(current.progress) === JSON.stringify(progress)) return current;
+      return { ...current, progress, stageAt: Date.now() };
+    });
     const history: ChatMessage[] = active.messages.map((m) => ({ role: m.role, content: m.content }));
     update(active.id, (s) => ({
       ...s,
       name: s.name === "新会话" ? autoName(content) : s.name,
       messages: [...s.messages, { role: "user", content }],
     }));
-    const out = await runChat({ message: content, history, repository, profile, providerId, mode: active.mode });
-    if (out.needsSetup) setShowSetup(true);
-    update(active.id, (s) => ({
-      ...s,
-      tokens: s.tokens + out.usage.input + out.usage.output,
-      messages: [...s.messages, { role: "assistant", content: out.reply, actions: out.actions, mock: out.mock }],
-    }));
-    setBusy(false);
+    try {
+      // AC01：配置 VITE_BACKEND_URL 时默认走服务端 Task Runtime（浏览器关闭不影响后台任务）；
+      // 未配置时保留浏览器 runChat 作为开发/兼容 fallback。
+      if (backendEnabled() && session) {
+        const task = await runTaskViaBackend(
+          { title: content.slice(0, 80), intent: content, sessionId: active.id, images: attachments.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) },
+          (t) => {
+            update(active.id, (s) => ({ ...s, contextUsed: t.usage?.tokens ?? s.contextUsed ?? 0 }));
+            if (t.status === "queued") report({ phase: "queued" });
+            if (t.status === "running") setActivity(current => current && ["queued", "preparing"].includes(current.progress.phase)
+              ? { ...current, progress: { phase: "running" }, stageAt: Date.now() } : current);
+            if (t.status === "needs_input" || t.status === "paused") report({ phase: "approval" });
+          },
+          (event) => { const next = progressFromEvent(event); if (next) report(next); },
+        );
+        const reply = (task.status === "needs_input" || task.status === "paused")
+          ? "该任务触发了高危操作审批门控，已暂停等待人工批准（如 propose_verification 写入全局核验）。批准后任务可继续；这是安全设计，不是故障。"
+          : (task.result?.summary ?? task.error ?? `任务${task.status}`);
+        update(active.id, (s) => ({
+          ...s,
+          tokens: s.tokens + (task.usage?.tokens ?? 0),
+          messages: [...s.messages, { role: "assistant", content: reply, actions: [], failed: task.status === "failed" }],
+        }));
+        if (task.status === "needs_input") toast.message("任务等待审批/补充信息，可在后端恢复。");
+      } else {
+        const out = await runChat({ message: content, sessionId: active.id, history, repository, profile, providerId: activeProviderId, mode: active.mode, model: modelName, onProgress: report });
+        if (out.needsSetup) setShowSetup(true);
+        update(active.id, (s) => ({
+          ...s,
+          tokens: s.tokens + out.usage.input + out.usage.output,
+          contextUsed: out.contextUsed ?? s.contextUsed ?? 0,
+          contextCap: out.contextCap ?? contextCap,
+          compressed: out.compressed ?? false,
+          pruned: out.pruned ?? false,
+          messages: [...s.messages, { role: "assistant", content: out.reply, actions: out.actions, mock: out.mock, failed: out.failed }],
+        }));
+      }
+    } catch (e) {
+      // 兜底：runChat 理论上自兜底，此处再防一层，保证 busy 复位且错误可读（绝不 [object Object]）。
+      const reason = errorMessage(e);
+      update(active.id, (s) => ({
+        ...s,
+        messages: [...s.messages, { role: "assistant", content: `处理失败（${reason}）。请重发本条重试。`, failed: true }],
+      }));
+      toast.error(`处理失败：${reason}`);
+    } finally {
+      void qc.invalidateQueries({ queryKey: ["tasks"] });
+      void qc.invalidateQueries({ queryKey: ["inbox"] });
+      void qc.invalidateQueries({ queryKey: ["opps"] });
+      setBusy(false);
+      setActivity(null);
+    }
   }
 
   async function pickWorkspace() {
@@ -128,7 +190,7 @@ export function AgentChatPage() {
 
   return (
     <div
-      className="flex h-[calc(100dvh-7rem)] flex-col"
+      className="flex h-full min-h-0 flex-col"
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); }}
     >
@@ -194,17 +256,21 @@ export function AgentChatPage() {
           {active?.messages.map((m, i) => (
             <div key={i} className={cn("flex gap-3", m.role === "user" ? "justify-end" : "justify-start")}>
               {m.role === "assistant" && <Bot className="mt-1 size-5 shrink-0 text-primary" />}
-              <div className={cn("max-w-[85%] whitespace-pre-wrap text-sm leading-relaxed", m.role === "user" ? "rounded-2xl rounded-br-sm bg-secondary px-4 py-2.5 text-secondary-foreground" : "")}>
-                {m.content}
-                {m.mock && <div className="mt-2"><MockBadge /></div>}
-                {m.actions && m.actions.length > 0 && (
-                  <div className="mt-2 text-xs text-muted-foreground">已同步：{m.actions.join("；")}</div>
-                )}
+              <div className={cn("min-w-0 max-w-[85%] text-sm leading-relaxed", m.role === "user" ? "whitespace-pre-wrap break-words rounded-2xl rounded-br-sm bg-secondary px-4 py-2.5 text-secondary-foreground" : "flex-1")}>
+                {m.role === "assistant" ? <AssistantMessage content={m.content} /> : m.content}
+                {m.mock && !m.failed && <div className="mt-2"><MockBadge /></div>}
+                {m.failed && <div className="mt-2"><span className="inline-flex items-center rounded-md border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600">执行失败 · 可重发重试</span></div>}
               </div>
               {m.role === "user" && <User className="mt-1 size-5 shrink-0 text-muted-foreground" />}
             </div>
           ))}
-          {busy && <Loader2 className="size-5 animate-spin text-muted-foreground" />}
+          {busy && activity?.sessionId === active.id && <AgentActivityCard activity={activity} />}
+          {busy && activity && activity.sessionId !== active.id && (
+            <div role="status" className="rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+              另一会话正在处理，当前暂不能发送新请求。
+              <button className="ml-2 cursor-pointer text-primary underline underline-offset-4" onClick={() => setActiveId(activity.sessionId)}>查看处理进度</button>
+            </div>
+          )}
           <div ref={endRef} />
         </div>
       </div>
@@ -271,19 +337,28 @@ export function AgentChatPage() {
             >
               <Paperclip className="size-4 text-primary transition-transform group-hover:scale-110" />
             </button>
-            <Select value={providerId} onValueChange={chooseProvider}>
+            <Select value={activeProviderId ?? "builtin-deepseek"} onValueChange={chooseProvider}>
               <SelectTrigger className={cn("h-8 w-40 text-xs", CONTROL_FEEDBACK)}><SelectValue placeholder="模型" /></SelectTrigger>
               <SelectContent>
                 {providers.map((p: ProviderPublic) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
                 {providers.length === 0 && <SelectItem value="builtin-deepseek">DeepSeek（内置）</SelectItem>}
               </SelectContent>
             </Select>
-            <span className="text-xs text-muted-foreground">
-              上下文 {(active?.tokens ?? 0).toLocaleString()} / {CONTEXT_CAP.toLocaleString()} tok
+            <span
+              className="text-xs text-muted-foreground"
+              title={`上下文组成：system+工具定义+历史摘要+近期历史+当前输入+输出预留；模型 ${modelName} 上限 ${contextCap.toLocaleString()} tok；累计用量 ${(active?.tokens ?? 0).toLocaleString()} tok`}
+            >
+              上下文 {(active?.contextUsed ?? 0).toLocaleString()} / {contextCap.toLocaleString()} tok
+              {active?.compressed && (
+                <span className="ml-1 rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">已压缩</span>
+              )}
+              {active?.pruned && !active?.compressed && (
+                <span className="ml-1 rounded bg-info/15 px-1 py-0.5 text-info">工具截断</span>
+              )}
             </span>
             <Button size="sm" className="ml-auto" disabled={busy || (!input.trim() && attachments.length === 0)} onClick={send}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-              发送
+              {busy ? "处理中" : "发送"}
             </Button>
           </div>
         </div>

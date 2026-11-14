@@ -11,7 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { repository } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import { PageHeader, VerifyBadge } from "@/components/shared";
 
 const RESULT_LABEL: Record<string, string> = {
@@ -22,6 +22,7 @@ const RESULT_LABEL: Record<string, string> = {
 };
 
 export function TrustReportPage() {
+  const repository = useRepository();
   const { id = "" } = useParams();
   const { data: report } = useQuery({ queryKey: ["report", id], queryFn: () => repository.getReport(id) });
 
