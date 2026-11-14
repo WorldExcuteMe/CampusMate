@@ -16,7 +16,7 @@ const tools: ToolDef[] = [{ type: "function", function: { name: "run_terminal", 
 class TermTransport implements LlmTransport {
   async chat(opts: { messages: ChatMessage[] }): Promise<ChatResult> {
     const last = opts.messages.filter((m) => m.role === "tool").pop();
-    if (last && !last.content.includes("__approval_pending__")) return { content: "done", toolCalls: [], usage: { input: 1, output: 1 }, model: "fake" };
+    if (last && !String(last.content).includes("__approval_pending__")) return { content: "done", toolCalls: [], usage: { input: 1, output: 1 }, model: "fake" };
     return { content: "", toolCalls: [{ id: `c${opts.messages.length}`, type: "function", function: { name: "run_terminal", arguments: JSON.stringify({ command: "ls" }) } }], usage: { input: 1, output: 1 }, model: "fake" };
   }
 }

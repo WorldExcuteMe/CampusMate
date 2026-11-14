@@ -10,6 +10,7 @@ import { InMemoryEvidenceStore, type EvidenceStore } from "./core/evidence.ts";
 import { CapabilityRegistry, registerCloudDefaults } from "./core/capability.ts";
 import { InMemoryMemoryStore, type MemoryStore } from "./core/memory.ts";
 import { InMemoryPersonalContextStore, type PersonalContextStore } from "./core/personal-context.ts";
+import { InMemoryOpportunityStore, type OpportunityStore } from "./core/opportunity-store.ts";
 
 export interface AppContext {
   store: TaskStore;
@@ -19,6 +20,7 @@ export interface AppContext {
   capabilityRegistry: CapabilityRegistry;
   memoryStore: MemoryStore;
   personalContext: PersonalContextStore;
+  opportunityStore: OpportunityStore;
   storeKind: "postgres" | "memory";
 }
 
@@ -41,6 +43,7 @@ export function buildContext(env: Record<string, string | undefined>): AppContex
     capabilityRegistry,
     memoryStore: new InMemoryMemoryStore(),
     personalContext: new InMemoryPersonalContextStore(),
+    opportunityStore: new InMemoryOpportunityStore(),
     storeKind: conn ? "postgres" : "memory",
   };
 }

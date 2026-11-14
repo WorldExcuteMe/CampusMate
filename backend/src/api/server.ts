@@ -6,6 +6,7 @@ import type { ApprovalStore } from "../runtime/approval.ts";
 import type { CapabilityRegistry } from "../core/capability.ts";
 import type { CompanionRegistry } from "../core/companion.ts";
 import type { PersonalContextStore } from "../core/personal-context.ts";
+import type { OpportunityStore } from "../core/opportunity-store.ts";
 import { previewImport } from "../core/schedule-import.ts";
 import { onboarding, intelligentInbox, opportunityDiscovery, weeklyPlanning } from "../core/workflows.ts";
 import { buildManifest } from "../core/manifest.ts";
@@ -23,6 +24,7 @@ export interface ApiDeps {
   capabilityRegistry?: CapabilityRegistry;
   companion?: CompanionRegistry;
   personalContext?: PersonalContextStore;
+  opportunityStore?: OpportunityStore;
 }
 
 function json(res: http.ServerResponse, code: number, obj: unknown): void {
@@ -64,9 +66,10 @@ export function createApiServer(deps: ApiDeps): http.Server {
       if (req.method === "POST" && path === "/v1/tasks") {
         const body = JSON.parse((await readBody(req)) || "{}");
         if (!body.title || typeof body.title !== "string") return json(res, 400, { error: "title required" });
+        const images = Array.isArray(body.images) ? body.images.filter((x: unknown) => typeof x === "string").slice(0, 4) : undefined;
         const task = await store.createTask({
           userId: uid, title: body.title, intent: body.intent, sessionId: body.sessionId,
-          priority: body.priority, budget: body.budget as Budget | undefined,
+          images, priority: body.priority, budget: body.budget as Budget | undefined,
         });
         return json(res, 201, { taskId: task.id, status: task.status });
       }
@@ -96,7 +99,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
             for (const e of evs) { send("task_event", e); seq = e.seq; }
             const t = await store.getTask(id);
             if (t) send("task_status", { status: t.status, usage: t.usage, result: t.result });
-            if (t && ["succeeded", "failed", "cancelled"].includes(t.status)) { send("close", { status: t.status }); closed = true; res.end(); return; }
+            if (t && ["succeeded", "failed", "cancelled", "needs_input", "paused"].includes(t.status)) { send("close", { status: t.status }); closed = true; res.end(); return; }
           };
           await tick();
           const timer = setInterval(() => { void tick(); }, 1000);
@@ -135,6 +138,23 @@ export function createApiServer(deps: ApiDeps): http.Server {
             return json(res, 200, { confirmed: true, saved: saved.length, preview });
           }
           return json(res, 200, { confirmed: false, preview });
+        }
+      }
+
+      // 机会雷达（owner 隔离）：Agent 经 save_opportunity 写入，前端 Radar 读取。
+      if (deps.opportunityStore) {
+        const os = deps.opportunityStore;
+        if (req.method === "GET" && path === "/v1/opportunities") return json(res, 200, { opportunities: await os.listByUser(uid) });
+        if (req.method === "POST" && path === "/v1/opportunities") {
+          const b = JSON.parse((await readBody(req)) || "{}");
+          if (!b.title) return json(res, 400, { error: "title required" });
+          const rec = await os.create({ userId: uid, title: String(b.title), type: b.type, organizer: b.organizer, description: b.description, conditions: b.conditions, deadline: b.deadline ?? null, sourceUrl: b.sourceUrl, sourceType: b.sourceType });
+          return json(res, 201, { opportunity: rec });
+        }
+        const oppMatch = path.match(/^\/v1\/opportunities\/([^/]+)$/);
+        if (req.method === "GET" && oppMatch) {
+          const rec = await os.get(uid, oppMatch[1]);
+          return rec ? json(res, 200, { opportunity: rec }) : json(res, 404, { error: "not found" });
         }
       }
 

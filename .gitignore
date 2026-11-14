@@ -33,3 +33,6 @@ web/playwright-report/
 tools/qq-ingest/data/
 tools/qq-ingest/out/
 __pycache__/
+
+# generated test images (local only)
+vibe_images/

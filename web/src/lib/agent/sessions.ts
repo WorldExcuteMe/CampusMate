@@ -3,6 +3,7 @@ export interface SessionMsg {
   content: string;
   actions?: string[];
   mock?: boolean;
+  failed?: boolean;
 }
 
 export interface ChatSession {

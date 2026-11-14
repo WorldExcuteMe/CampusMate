@@ -92,16 +92,18 @@ export function AgentChatPage() {
       // 未配置时保留浏览器 runChat 作为开发/兼容 fallback。
       if (backendEnabled()) {
         const task = await runTaskViaBackend(
-          { title: content.slice(0, 80), intent: content, sessionId: active.id },
+          { title: content.slice(0, 80), intent: content, sessionId: active.id, images: attachments.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) },
           (t) => {
             update(active.id, (s) => ({ ...s, contextUsed: t.usage?.tokens ?? s.contextUsed ?? 0 }));
           },
         );
-        const reply = task.result?.summary ?? task.error ?? `任务${task.status}`;
+        const reply = (task.status === "needs_input" || task.status === "paused")
+          ? "该任务触发了高危操作审批门控，已暂停等待人工批准（如 propose_verification 写入全局核验）。批准后任务可继续；这是安全设计，不是故障。"
+          : (task.result?.summary ?? task.error ?? `任务${task.status}`);
         update(active.id, (s) => ({
           ...s,
           tokens: s.tokens + (task.usage?.tokens ?? 0),
-          messages: [...s.messages, { role: "assistant", content: reply, actions: [], mock: task.status === "failed" }],
+          messages: [...s.messages, { role: "assistant", content: reply, actions: [], failed: task.status === "failed" }],
         }));
         if (task.status === "needs_input") toast.message("任务等待审批/补充信息，可在后端恢复。");
       } else {
@@ -122,7 +124,7 @@ export function AgentChatPage() {
       const reason = errorMessage(e);
       update(active.id, (s) => ({
         ...s,
-        messages: [...s.messages, { role: "assistant", content: `处理失败（${reason}）。请重发本条重试。`, mock: true }],
+        messages: [...s.messages, { role: "assistant", content: `处理失败（${reason}）。请重发本条重试。`, failed: true }],
       }));
       toast.error(`处理失败：${reason}`);
     } finally {
@@ -234,6 +236,7 @@ export function AgentChatPage() {
               <div className={cn("max-w-[85%] whitespace-pre-wrap text-sm leading-relaxed", m.role === "user" ? "rounded-2xl rounded-br-sm bg-secondary px-4 py-2.5 text-secondary-foreground" : "")}>
                 {m.content}
                 {m.mock && <div className="mt-2"><MockBadge /></div>}
+                {m.failed && <div className="mt-2"><span className="inline-flex items-center rounded-md border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600">执行失败 · 可重发重试</span></div>}
               </div>
               {m.role === "user" && <User className="mt-1 size-5 shrink-0 text-muted-foreground" />}
             </div>

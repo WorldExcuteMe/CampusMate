@@ -51,7 +51,7 @@ test("工具结果裁剪（spill）：较旧 tool 裁剪 head+tail，最新保�
   assert.equal(validatePairing(r.messages).ok, true);
   const tools = r.messages.filter((m) => m.role === "tool");
   assert.ok(tools[0].content.length < big.length); // 较旧被裁剪
-  assert.match(tools[0].content, /省略/);
+  assert.match(String(tools[0].content), /省略/);
   assert.equal(tools[1].content.length, big.length); // 最新保留完整
 });
 

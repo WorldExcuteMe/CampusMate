@@ -9,6 +9,7 @@ export interface CreateTaskInput {
   userId: string;
   title: string;
   intent?: string;
+  images?: string[];
   goalId?: string;
   sessionId?: string;
   priority?: number;
@@ -50,6 +51,7 @@ export class InMemoryStore implements TaskStore {
       sessionId: input.sessionId,
       title: input.title,
       intent: input.intent ?? input.title,
+      images: input.images,
       status: "queued",
       priority: input.priority ?? 50,
       lease: { owner: null, expiresAt: null, heartbeatAt: null },

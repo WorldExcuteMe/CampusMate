@@ -26,7 +26,7 @@ class StepTransport implements LlmTransport {
   async chat(opts: { messages: ChatMessage[] }): Promise<ChatResult> {
     const results = opts.messages.filter((m) => m.role === "tool");
     const last = results[results.length - 1];
-    if (last && !last.content.includes("__approval_pending__")) return { content: "done", toolCalls: [], usage: { input: 1, output: 1 }, model: "fake" };
+    if (last && !String(last.content).includes("__approval_pending__")) return { content: "done", toolCalls: [], usage: { input: 1, output: 1 }, model: "fake" };
     return { content: "", toolCalls: [tc(this.tool, this.args, `c${opts.messages.length}`)], usage: { input: 1, output: 1 }, model: "fake" };
   }
 }

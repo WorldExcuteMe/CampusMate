@@ -104,12 +104,14 @@ function isRetryableStatus(err: unknown): boolean {
   return err instanceof LlmTransportError && /HTTP (429|500|502|503|504)/.test(err.message);
 }
 
-// 从环境变量构造（仅服务端调用）。
+// 从环境变量构造（仅服务端调用）。慢端点（如 AMD Gemma 单次可达 160s+）用 LLM_TIMEOUT_MS 调高超时，避免误判连接失败。
 export function transportFromEnv(env: Record<string, string | undefined>, fetchImpl?: typeof fetch): LlmTransport {
   return new DeepSeekTransport({
     apiKey: env.LLM_API_KEY ?? "",
     baseUrl: env.LLM_BASE_URL,
     model: env.LLM_MODEL,
     fetchImpl,
+    timeoutMs: env.LLM_TIMEOUT_MS ? Number(env.LLM_TIMEOUT_MS) : undefined,
+    maxRetries: env.LLM_MAX_RETRIES ? Number(env.LLM_MAX_RETRIES) : undefined,
   });
 }

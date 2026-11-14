@@ -21,6 +21,8 @@ export const TOOL_SPECS: Record<string, ToolSpec> = {
   web_fetch: { name: "web_fetch", capability: "web.fetch", runtime: ["cloud"], permission: "read", requiresApproval: false, idempotent: true, timeoutMs: 15000, sideEffects: "network" },
   rag_search: { name: "rag_search", capability: "rag.search", runtime: ["cloud", "local-companion"], permission: "read", requiresApproval: false, idempotent: true, timeoutMs: 15000, sideEffects: "none" },
   search_opportunities: { name: "search_opportunities", capability: "db.read", runtime: ["cloud"], permission: "read", requiresApproval: false, idempotent: true, timeoutMs: 10000, sideEffects: "none" },
+  list_opportunities: { name: "list_opportunities", capability: "db.read", runtime: ["cloud"], permission: "read", requiresApproval: false, idempotent: true, timeoutMs: 10000, sideEffects: "none" },
+  save_opportunity: { name: "save_opportunity", capability: "db.write_user", runtime: ["cloud"], permission: "write_user", requiresApproval: false, idempotent: false, timeoutMs: 10000, sideEffects: "db" },
   match_opportunities: { name: "match_opportunities", capability: "db.read", runtime: ["cloud"], permission: "read", requiresApproval: false, idempotent: true, timeoutMs: 10000, sideEffects: "none" },
   save_to_inbox: { name: "save_to_inbox", capability: "db.write_user", runtime: ["cloud"], permission: "write_user", requiresApproval: false, idempotent: true, timeoutMs: 10000, sideEffects: "db" },
   create_daily_task: { name: "create_daily_task", capability: "db.write_user", runtime: ["cloud"], permission: "write_user", requiresApproval: false, idempotent: true, timeoutMs: 10000, sideEffects: "db" },

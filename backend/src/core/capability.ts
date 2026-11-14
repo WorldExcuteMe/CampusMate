@@ -56,8 +56,8 @@ export function cloudProviders(): CapabilityProvider[] {
     mk("web.fetch", ["web_fetch"], ["read"]),
     mk("web.search", ["web_search"], ["read"]),
     mk("rag.search", ["rag_search"], ["read"]),
-    mk("db.read", ["search_opportunities", "match_opportunities"], ["read"]),
-    mk("db.write_user", ["save_to_inbox", "create_daily_task", "set_growth_goal", "merge_inbox"], ["write_user"]),
+    mk("db.read", ["search_opportunities", "match_opportunities", "list_opportunities"], ["read"]),
+    mk("db.write_user", ["save_to_inbox", "create_daily_task", "set_growth_goal", "merge_inbox", "save_opportunity"], ["write_user"]),
     mk("db.write_global", ["create_opportunity", "propose_verification"], ["write_global"]),
   ];
 }

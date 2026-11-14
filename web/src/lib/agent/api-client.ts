@@ -1,6 +1,7 @@
 // Agent Task API 客户端：前端默认走后端 Task Runtime（AC01）。
 // JWT 取自 Supabase session；VITE_BACKEND_URL 配置后端地址。SSE 实时进度 + 轮询回退。
 import { supabaseClient } from "@/app/config";
+import type { Opportunity } from "@/lib/data/types";
 
 export interface AgentTask {
   id: string; userId: string; title: string; intent: string;
@@ -38,7 +39,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return JSON.parse(text) as T;
 }
 
-export async function createTask(input: { title: string; intent?: string; sessionId?: string }): Promise<{ taskId: string; status: string }> {
+export async function createTask(input: { title: string; intent?: string; sessionId?: string; images?: string[] }): Promise<{ taskId: string; status: string }> {
   return req("/v1/tasks", { method: "POST", body: JSON.stringify(input) });
 }
 export async function getTask(id: string): Promise<AgentTask> {
@@ -68,6 +69,18 @@ export async function importSchedule(input: { format: string; data: string; term
   return req("/v1/schedules/import", { method: "POST", body: JSON.stringify(input) });
 }
 
+// ── 机会雷达（后端真相源；Agent 经 save_opportunity 写入）──
+export async function listBackendOpportunities(): Promise<Opportunity[]> {
+  return (await req<{ opportunities: Opportunity[] }>("/v1/opportunities")).opportunities;
+}
+export async function getBackendOpportunity(id: string): Promise<Opportunity | null> {
+  try { return (await req<{ opportunity: Opportunity }>(`/v1/opportunities/${id}`)).opportunity; }
+  catch { return null; }
+}
+export async function createBackendOpportunity(o: Partial<Opportunity> & { title: string }): Promise<Opportunity> {
+  return (await req<{ opportunity: Opportunity }>("/v1/opportunities", { method: "POST", body: JSON.stringify(o) })).opportunity;
+}
+
 export interface TaskSubscription { stop: () => void; }
 
 // 订阅任务进度：优先 SSE，失败回退轮询。终态自动停止。
@@ -82,7 +95,7 @@ export function subscribeTask(id: string, handlers: { onEvent?: (e: AgentEvent) 
     try {
       const t = await getTask(id);
       handlers.onStatus?.(t);
-      if (["succeeded", "failed", "cancelled"].includes(t.status)) { handlers.onClose?.(t.status); stopped = true; return; }
+      if (["succeeded", "failed", "cancelled", "needs_input", "paused"].includes(t.status)) { handlers.onClose?.(t.status); stopped = true; return; }
     } catch { /* 瞬断继续轮询 */ }
     timer = setTimeout(poll, 1500);
   };
@@ -107,7 +120,7 @@ export function subscribeTask(id: string, handlers: { onEvent?: (e: AgentEvent) 
 }
 
 // 提交任务并等待终态（聊天式一次性调用）。返回最终任务。
-export async function runTaskViaBackend(input: { title: string; intent?: string; sessionId?: string }, onProgress?: (t: AgentTask) => void): Promise<AgentTask> {
+export async function runTaskViaBackend(input: { title: string; intent?: string; sessionId?: string; images?: string[] }, onProgress?: (t: AgentTask) => void): Promise<AgentTask> {
   const { taskId } = await createTask(input);
   return await new Promise<AgentTask>((resolve, reject) => {
     const sub = subscribeTask(taskId, {

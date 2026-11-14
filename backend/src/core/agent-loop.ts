@@ -79,6 +79,7 @@ function noteRepeat(repeat: Map<string, number>, name: string, args: Record<stri
 export async function runAgentLoop(opts: {
   system: string;
   user: string;
+  images?: string[];
   history?: ChatMessage[];
   resumeMessages?: ChatMessage[];
   deps: AgentLoopDeps;
@@ -99,9 +100,12 @@ export async function runAgentLoop(opts: {
   const cap = resolveContextCap(opts.model);
   const tTools = toolsTokens(deps.tools);
 
+  const userContent: ChatMessage["content"] = opts.images?.length
+    ? [{ type: "text", text: opts.user }, ...opts.images.map((url) => ({ type: "image_url" as const, image_url: { url } }))]
+    : opts.user;
   let messages: ChatMessage[] = opts.resumeMessages
     ? [...opts.resumeMessages]
-    : [{ role: "system", content: opts.system }, ...(opts.history ?? []), { role: "user", content: opts.user }];
+    : [{ role: "system", content: opts.system }, ...(opts.history ?? []), { role: "user", content: userContent }];
 
   const emit = (type: EventType, payload: Record<string, unknown>) => hooks.onEvent?.(type, payload);
   const snapshot = (): CheckpointState => ({
@@ -162,7 +166,8 @@ export async function runAgentLoop(opts: {
         if (out.includes(APPROVAL_PAUSE)) return { reply: "等待人工审批", actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: true, messages };
         continue;
       }
-      return { reply: res.content, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages };
+      const finalReply = res.content.trim() ? res.content : (actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}。` : "（模型未返回内容，请重试或换一种问法）");
+      return { reply: finalReply, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages };
     }
 
     // 预算/轮次用尽：强制一次无工具最终总结，保证有可用产出。

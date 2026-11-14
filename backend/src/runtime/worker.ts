@@ -15,6 +15,7 @@ import { manifestTools } from "../core/tool-registry.ts";
 import { TOOL_SPECS } from "../core/tool-registry.ts";
 import type { MemoryStore } from "../core/memory.ts";
 import { buildContext, retrieveRelevantMemory, taskContextSummary } from "../core/context-builder.ts";
+import { contentText } from "../core/context.ts";
 import type { CompanionServer } from "../core/companion-server.ts";
 import type { TaskStore } from "./store.ts";
 import type { ApprovalStore } from "./approval.ts";
@@ -132,7 +133,7 @@ export class Worker {
       // 恢复：从最新 checkpoint 还原 messages/repeat/usage。
       const cp = await store.latestCheckpoint(task.id);
       // 清理审批暂停哨兵：resume 后让模型重新发起工具调用（审批已决），不重放旧 pending 结果。
-      const resumeMessages = cp?.state.messages.filter((m) => !(m.role === "tool" && m.content.includes("__approval_pending__")));
+      const resumeMessages = cp?.state.messages.filter((m) => !(m.role === "tool" && contentText(m.content).includes("__approval_pending__")));
       const repeat = cp ? new Map(Object.entries(cp.state.repeat)) : undefined;
 
       // 幂等 + 授权 + 审批包装：已成功的调用直接返回缓存；本机工具需 Companion 授权；高危需审批。
@@ -204,6 +205,7 @@ export class Worker {
       const result = await runAgentLoop({
         system,
         user: task.intent,
+        images: task.images,
         resumeMessages,
         repeat,
         deps: {

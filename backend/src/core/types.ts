@@ -47,6 +47,7 @@ export interface Task {
   sessionId?: string;
   title: string;
   intent: string;
+  images?: string[];
   status: TaskStatus;
   priority: number;
   lease: Lease;
@@ -149,9 +150,10 @@ export interface ToolInvocation {
 // LLM 对话契约（与 web/src/lib/llm/proxy.ts 对齐）
 export interface ToolCall { id: string; type: "function"; function: { name: string; arguments: string }; }
 export interface ToolDef { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> }; }
+export type MessageContent = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string;
+  content: string | MessageContent[];
   tool_call_id?: string;
   tool_calls?: ToolCall[];
 }

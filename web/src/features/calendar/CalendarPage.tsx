@@ -58,7 +58,7 @@ export function CalendarPage() {
       </div>
 
       {entries.length === 0 ? (
-        <EmptyState title="本周暂无安排" description="导入课表或创建任务后，这里会显示你的校园安排。" />
+        <EmptyState title="本周暂无安排" hint="导入课表或创建任务后，这里会显示你的校园安排。" />
       ) : (
         <div className="grid grid-cols-7 gap-2">
           {grid.map((day, i) => (

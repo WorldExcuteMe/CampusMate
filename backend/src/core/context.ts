@@ -1,6 +1,6 @@
 // 上下文窗口管理：模型感知上限 + 预算 + 按轮次组原子压缩（修复 tool_call↔result 配对）。
 // 工具结果裁剪（spill）与历史压缩（compaction）分离；压缩摘要不取代任务状态与原始证据。
-import type { ChatMessage, ToolDef } from "./types.ts";
+import type { ChatMessage, ToolDef, MessageContent } from "./types.ts";
 
 const MODEL_MAX: Array<[RegExp, number]> = [
   [/deepseek/i, 1_000_000], [/kimi|moonshot/i, 256_000], [/claude/i, 200_000],
@@ -39,8 +39,13 @@ export function estimateTokens(text: string): number {
   }
   return cjk + Math.ceil(other / 4);
 }
+export function contentText(content: string | MessageContent[] | undefined): string {
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  return content.map((p) => (p.type === "text" ? p.text : "[图片]")).join(" ");
+}
 export function messagesTokens(msgs: ChatMessage[]): number {
-  return msgs.reduce((s, m) => s + estimateTokens(m.content ?? "") + (m.tool_calls ? 64 : 0) + 8, 0);
+  return msgs.reduce((s, m) => s + estimateTokens(contentText(m.content)) + (m.tool_calls ? 64 : 0) + 8, 0);
 }
 export function toolsTokens(tools?: ToolDef[]): number {
   return tools ? estimateTokens(JSON.stringify(tools)) : 0;
@@ -48,7 +53,7 @@ export function toolsTokens(tools?: ToolDef[]): number {
 
 // 工具结果裁剪（spill）：保留 head+tail + 取回提示。仅裁剪 tool 消息内容，不丢消息。
 export function truncateTool(m: ChatMessage, cap = TOOL_RESULT_CAP): ChatMessage {
-  const content = m.content ?? "";
+  const content = typeof m.content === "string" ? m.content : contentText(m.content);
   if (m.role === "tool" && content.length > cap) {
     const omitted = content.length - SPILL_HEAD_CHARS - SPILL_TAIL_CHARS;
     const notice = `\n[... 省略 ${omitted} 字符；完整输出可用 rag_search / read_file 取回 ...]\n`;
@@ -95,7 +100,7 @@ export function validatePairing(msgs: ChatMessage[]): { ok: boolean; orphans: nu
 function summarizeDropped(groups: ChatMessage[][]): string {
   const lines: string[] = [];
   for (const g of groups) for (const m of g) {
-    const c = (m.content ?? "").replace(/\s+/g, " ").trim();
+    const c = contentText(m.content).replace(/\s+/g, " ").trim();
     if (c) lines.push(`[${m.role}] ${c.slice(0, 160)}`);
   }
   return `【历史摘要：已压缩 ${groups.length} 组早期轮次，保留要点】\n${lines.join("\n").slice(0, 4000)}`;
