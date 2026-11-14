@@ -1,7 +1,7 @@
 # T1 共享状态与存储契约
 ## Status
 
-Phase 4 — ready_to_commit; final review corrections verified, primary commit pending.
+Phase 4 — accepted; primary commit e9d83d4, final local regression 194/194.
 Standard；总 Spec v2 的 T1，覆盖 AC03/04/06 的底座，不替代 T2/T3/T6/T10 的端到端验收。
 基线 HEAD：060c09b028ed0750269a8e2e9905d35663346b05；分支 codex/campusmate-reliability-experience。
 恢复记录：主代理管理 v3_CAMPUSMATE_IMPLEMENT_20261114-135858；本文件 before 已获主代理成功确认。

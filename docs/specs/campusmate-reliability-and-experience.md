@@ -358,8 +358,8 @@ Phase 4 — in progress. 用户已批准 Spec v2、实施计划及范围内子�
 
 | 任务 | 当前状态 | 所有者 | 依赖 | 提交/证据 |
 |---|---|---|---|---|
-| T1 | ready_to_commit | 本人 | v2 授权有效；各阶段已审 | 边界修复及最终回归194/194；待主要提交 |
-| T2 | ready | 本人 | 已有细化计划；实施等 T1 accepted | 恢复规则已获用户答复 |
+| T1 | accepted | 本人 | v2 授权有效；各阶段已审 | e9d83d4；最终回归194/194 |
+| T2 | implementing | 本人 | T1已提交并验收；细化计划已审 | 恢复规则已获用户答复 |
 | T3 | pending | 本人 | T1 accepted | — |
 | T4 | pending | 本人 | T2/T3 accepted | — |
 | T5 | pending | 本人 | T1 accepted | — |
