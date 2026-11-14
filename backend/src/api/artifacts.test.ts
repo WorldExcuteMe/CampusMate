@@ -20,6 +20,8 @@ test("文档授权预览/MD下载内容与哈希对应，他人不可读，原�
     const response = await fetch(`${base}/v1/artifacts/${artifact.id}/download?format=md`, { headers: headers(OWNER) }); const bytes = Buffer.from(await response.arrayBuffer());
     assert.equal(response.status, 200); assert.equal(bytes.toString("utf8"), documentMarkdown(inline));
     assert.equal(response.headers.get("X-Artifact-Sha256"), artifact.sha256); assert.equal(response.headers.get("X-File-Sha256"), createHash("sha256").update(bytes).digest("hex"));
+    const word = await fetch(`${base}/v1/artifacts/${artifact.id}/download?format=docx`, { headers: headers(OWNER) });
+    assert.equal(word.status, 200); assert.ok(word.headers.get("Content-Type")?.includes("wordprocessingml"));
     assert.equal((await fetch(`${base}/v1/artifacts/${artifact.id}`, { headers: headers(OTHER) })).status, 404);
     assert.equal((await fetch(`${base}/v1/artifacts/${artifact.id}/download`, { headers: headers(OTHER) })).status, 404);
     assert.equal((await fetch(`${base}/v1/tasks/${task.id}/artifacts`, { headers: headers(OTHER) })).status, 404);

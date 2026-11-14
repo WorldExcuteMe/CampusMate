@@ -34,9 +34,9 @@ export function blockErrors(block: unknown, sourceIds?: Set<string>): string[] {
   return errors;
 }
 export function documentErrors(value: unknown): string[] {
-  if (!isRecord(value) || value.schemaVersion !== 1 || !text(value.title, 300) || !["document", "proposal"].includes(String(value.kind)) || !Array.isArray(value.blocks) || value.blocks.length > 2000 || !Array.isArray(value.sources) || value.sources.length > 50) return ["文档结构无效或超出大小限制"];
+  if (!isRecord(value) || value.schemaVersion !== 1 || !text(value.title, 300) || !value.title.trim() || !["document", "proposal"].includes(String(value.kind)) || !Array.isArray(value.blocks) || value.blocks.length > 2000 || !Array.isArray(value.sources) || value.sources.length > 50) return ["文档结构无效或超出大小限制"];
   const ids = new Set<string>();
-  for (const source of value.sources) { if (!isRecord(source) || !text(source.id, 64) || !/^[A-Za-z][A-Za-z0-9_-]*$/.test(source.id) || publicSourceUrl(source.url) !== source.url || !text(source.title, 300) || !text(source.excerpt, 2000) || typeof source.retrievedAt !== "number" || !Number.isFinite(source.retrievedAt) || source.status !== "retrieved" || ids.has(source.id)) return ["来源格式无效或ID重复"]; ids.add(source.id); }
+  for (const source of value.sources) { if (!isRecord(source) || !text(source.id, 64) || !/^[A-Za-z][A-Za-z0-9_-]*$/.test(source.id) || typeof source.url !== "string" || publicSourceUrl(source.url) !== source.url || !text(source.title, 300) || !text(source.excerpt, 2000) || typeof source.retrievedAt !== "number" || !Number.isFinite(new Date(source.retrievedAt).getTime()) || source.status !== "retrieved" || ids.has(source.id)) return ["来源格式无效或ID重复"]; ids.add(source.id); }
   return value.blocks.flatMap((b, i) => blockErrors(b, ids).map((e) => `块${i + 1}：${e}`));
 }
 export function blockText(b: DocumentBlock): string {

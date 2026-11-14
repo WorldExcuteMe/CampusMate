@@ -366,6 +366,16 @@ export class Worker {
         }) : await runAgentLoop(loopOptions);
       await eventQueue;
       await checkCurrent();
+      if (!result.delivery && this.artifacts) {
+        const events = (await store.listEvents(task.id)).filter((e) => e.type === "tool.result" && String(e.payload.name).startsWith("document_"));
+        if (events.length) {
+          const latest = new Map(events.map((e) => [String(e.payload.invocationId ?? e.payload.callInstanceId), e]));
+          const documents = (await this.artifacts.listByTask(task.userId, task.id)).filter((a) => a.kind === "document");
+          const byDocument = new Map<string, typeof documents[number]>(); for (const a of documents) if ((byDocument.get(a.documentId)?.revision ?? 0) < a.revision) byDocument.set(a.documentId, a);
+          const checks = [{ id: "document_tools", passed: [...latest.values()].every((e) => e.payload.ok === true), detail: "文档工具请求均有真实成功结果；失败保留为未完成" }, { id: "document_artifact", passed: !events.some((e) => e.payload.name === "document_create") || documents.length > 0, detail: "创建请求必须存在可读取的文档产物" }];
+          result.delivery = { artifactIds: [...byDocument.values()].map((a) => a.id).slice(-8), checks, passed: checks.every((c) => c.passed) };
+        }
+      }
       latestState = { messages: result.messages, transcript: result.transcript, documentRun: latestState?.documentRun, stepProgress: latestState?.stepProgress ?? {}, repeat: latestState?.repeat ?? {}, usage: result.usage, pendingApprovals: [] };
       if (!task.turnId) await saveTranscript(result.transcript);
 

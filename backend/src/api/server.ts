@@ -17,11 +17,13 @@ import { errorMessage } from "../core/errors.ts";
 import type { Budget } from "../core/types.ts";
 import type { SessionStore, ArtifactStore } from "../core/storage-contracts.ts";
 import { SessionConflict } from "../runtime/store.ts";
-import { randomUUID, createHash } from "node:crypto";
-import { documentErrors, documentMarkdown, type DocumentAst } from "../../../shared/document.ts";
+import { randomUUID } from "node:crypto";
+import { documentErrors, type DocumentAst } from "../../../shared/document.ts";
 import { requireUuid } from "../runtime/postgres-shared.ts";
 import { ProviderService, ProviderError } from "../core/providers.ts";
 import { parseBudget } from "../core/budget.ts";
+import { DocumentService } from "../core/document-service.ts";
+import { DocumentRenderUnavailable, type DocumentFormat } from "../core/document-renderer.ts";
 
 export interface ApiDeps {
   store: TaskStore;
@@ -36,6 +38,7 @@ export interface ApiDeps {
   sessionStore?: SessionStore;
   providers?: ProviderService;
   artifactStore?: ArtifactStore;
+  documents?: DocumentService;
 }
 
 
@@ -59,6 +62,7 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 
 export function createApiServer(deps: ApiDeps): http.Server {
   const { store, jwtSecret } = deps;
+  const documents = deps.documents ?? (deps.artifactStore ? new DocumentService(deps.artifactStore) : undefined);
   const cors = deps.corsOrigin ?? "*";
   return http.createServer(async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", cors);
@@ -144,11 +148,13 @@ export function createApiServer(deps: ApiDeps): http.Server {
       if (req.method === "GET" && artifactMatch && deps.artifactStore) {
         const artifact = await deps.artifactStore.get(uid, artifactMatch[1]);
         if (!artifact) return json(res, 404, { error: "产物不存在" });
-        if (!artifactMatch[2]) return json(res, 200, { artifact, availableFormats: artifact.kind === "document" ? ["md"] : [] });
+        if (!artifactMatch[2]) return json(res, 200, { artifact, availableFormats: artifact.kind === "document" ? documents!.formats(artifact.inline as DocumentAst) : [] });
         if (artifact.kind !== "document" || documentErrors(artifact.inline).length) return json(res, 422, { error: "文档格式无效，无法导出" });
-        if ((url.searchParams.get("format") ?? "md") !== "md") return json(res, 400, { error: "目前该入口支持Markdown格式" });
-        const content = Buffer.from(documentMarkdown(artifact.inline as DocumentAst), "utf8");
-        res.writeHead(200, { "Content-Type": "text/markdown; charset=utf-8", "Content-Disposition": `attachment; filename="campusmate-document.md"; filename*=UTF-8''${encodeURIComponent((artifact.inline as DocumentAst).title + ".md")}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store", "X-Artifact-Sha256": artifact.sha256, "X-File-Sha256": createHash("sha256").update(content).digest("hex"), "X-Document-Revision": String(artifact.revision), "Access-Control-Expose-Headers": "Content-Disposition, X-Artifact-Sha256, X-File-Sha256, X-Document-Revision" });
+        const format = (url.searchParams.get("format") ?? "md") as DocumentFormat;
+        if (!["md", "docx", "pdf"].includes(format)) return json(res, 400, { error: "支持MD、DOCX或PDF" });
+        const exported = await documents!.export(uid, artifact.id, format), file = documents!.file(exported), content = file.bytes;
+        const filename = (artifact.inline as DocumentAst).title.replace(/[\\/:*?"<>|\x00-\x1f]/g, "-").slice(0, 100) + "." + format;
+        res.writeHead(200, { "Content-Type": file.mime, "Content-Disposition": `attachment; filename="campusmate-document.${format}"; filename*=UTF-8''${encodeURIComponent(filename)}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store", "X-Artifact-Sha256": artifact.sha256, "X-File-Sha256": file.sha256, "X-Document-Revision": String(artifact.revision), "Access-Control-Expose-Headers": "Content-Disposition, X-Artifact-Sha256, X-File-Sha256, X-Document-Revision" });
         res.end(content); return;
       }
       const artifactList = path.match(/^\/v1\/tasks\/([^/]+)\/artifacts$/);
@@ -321,6 +327,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
 
       return json(res, 404, { error: "not found" });
     } catch (err) {
+      if (err instanceof DocumentRenderUnavailable) return json(res, 503, { error: err.message });
       if (err instanceof ProviderError) return json(res, err.status, { error: err.message });
       if (err instanceof SessionConflict) return json(res, 409, { error: err.message });
       if (err instanceof SyntaxError || (err instanceof Error && err.message === "Invalid UUID")) return json(res, 400, { error: "invalid input" });

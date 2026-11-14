@@ -46,6 +46,8 @@ jobs:
       - run: npm ci
       - name: Backend Type Check
         run: npm run typecheck
+      - name: Install document renderer Chromium
+        run: npx playwright install --with-deps chromium
       - name: Backend Tests (unit/integration/security/recovery)
         run: npm test
       - name: Migration Validation (PGlite real engine)

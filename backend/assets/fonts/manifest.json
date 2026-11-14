@@ -1,0 +1,8 @@
+{
+  "name": "Noto Sans CJK SC",
+  "version": "2.004",
+  "file": "NotoSansCJKsc-Regular.otf",
+  "sha256": "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b",
+  "source": "https://api.github.com/repos/notofonts/noto-cjk/contents/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf?ref=main",
+  "license": "SIL Open Font License 1.1"
+}

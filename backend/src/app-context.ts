@@ -1,6 +1,7 @@
 // 共享装配：API 与 Worker 独立进程复用同一套 Core/Contracts/Store。
 // 生产守卫：NODE_ENV=production 必须有 DATABASE_URL（Postgres），否则明确失败，绝不静默降级 InMemory。
 import { createApiServer } from "./api/server.ts";
+import { DocumentService } from "./core/document-service.ts";
 import { InMemoryStore, type TaskStore } from "./runtime/store.ts";
 import { PostgresStore } from "./runtime/postgres-store.ts";
 import { PgPool, connectionStringFromEnv } from "./runtime/sql.ts";
@@ -36,6 +37,7 @@ export interface AppContext {
   providerStore: ProviderStore;
   providers: ProviderService;
   artifactStore: ArtifactStore;
+  documents: DocumentService;
   storeKind: "postgres" | "memory";
   dispose: () => Promise<void>;
 }
@@ -67,6 +69,7 @@ export function buildContext(env: Record<string, string | undefined>, options: {
     providerStore,
     providers: new ProviderService(providerStore, env, options.providerFetch),
     artifactStore,
+    documents: new DocumentService(artifactStore, { pdfEnabled: env.DOCUMENT_PDF_ENABLED !== "0" }),
     storeKind: pool ? "postgres" : "memory",
     dispose: async () => { if (pool && !options.pool) await pool.end(); },
   };
