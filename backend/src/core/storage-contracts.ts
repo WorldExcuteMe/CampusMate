@@ -29,8 +29,8 @@ export interface StoredProvider {
   encryptedSecret?: EncryptedSecret; isDefault: boolean; createdAt: number; updatedAt: number;
 }
 export type ProviderWrite = Pick<StoredProvider, "userId" | "providerId" | "displayName" | "protocol" | "baseUrl" | "modelId">
-  & Partial<Pick<StoredProvider, "capabilities" | "contextLimit" | "metadataSource" | "encryptedSecret" | "isDefault">>
-  & { removeSecret?: boolean };
+  & Partial<Pick<StoredProvider, "capabilities" | "metadataSource" | "encryptedSecret" | "isDefault">>
+  & { removeSecret?: boolean; contextLimit?: number | null };
 export interface ProviderStore {
   upsert(input: ProviderWrite): Promise<StoredProvider>;
   get(userId: string, providerId: string): Promise<StoredProvider | null>;

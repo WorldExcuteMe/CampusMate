@@ -359,8 +359,8 @@ Phase 4 — in progress. 用户已批准 Spec v2、实施计划及范围内子�
 | 任务 | 当前状态 | 所有者 | 依赖 | 提交/证据 |
 |---|---|---|---|---|
 | T1 | accepted | 本人 | v2 授权有效；各阶段已审 | e9d83d4；最终回归194/194 |
-| T2 | implementing | 本人 | T1已提交并验收；细化计划已审 | 恢复规则已获用户答复 |
-| T3 | pending | 本人 | T1 accepted | — |
+| T2 | accepted | 本人 | T1已提交并验收 | 350caed；后端218/前端104，类型/迁移/构建通过 |
+| T3 | accepted | 本人 | T1/T2 accepted | 完整后端224+最终定向13，前端106，类型/迁移/构建通过；见子规格 |
 | T4 | pending | 本人 | T2/T3 accepted | — |
 | T5 | pending | 本人 | T1 accepted | — |
 | T6 | pending | 本人 | T2/T3/T4/T9 accepted | — |

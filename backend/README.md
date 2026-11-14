@@ -1,6 +1,6 @@
 # CampusMate Backend（Agent Core 2.0 · Phase 0–3 基础）
 
-服务端 Agent 运行时。零运行时依赖（Node ≥24 直接运行 `.ts`，内置 `node --test`）。
+服务端 Agent 运行时（Node ≥24 直接运行 `.ts`，内置 `node --test`；生产依赖见package.json）。
 对应 `docs/agent-core/` 架构规范；本目录是 MIGRATION_PLAN Phase 0–3 的可运行可测实现。
 
 ## 运行
@@ -27,7 +27,8 @@ npm run typecheck
 
 | 变量 | 说明 |
 |---|---|
-| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 服务端 LLM 密钥（绝不进前端）。缺省 Worker 不启动，API 仍可用 |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 可选服务端默认模型；缺省时Worker仍可执行已配置的用户BYOK任务 |
+| `PROVIDER_MASTER_KEY` / `PROVIDER_KEY_VERSION` | 用户模型凭证加密主密钥及版本，仅服务端配置；见[接入说明](../docs/MODEL_SETUP.md) |
 | `SUPABASE_JWT_SECRET` | 验 SPA 提交的 Supabase JWT（HS256） |
 | `PORT` | API 端口，默认 8788 |
 | `WORKER_CONCURRENCY` / `LEASE_TTL_MS` / `HEARTBEAT_MS` | Worker 并发/lease/心跳，默认 2/60000/15000 |

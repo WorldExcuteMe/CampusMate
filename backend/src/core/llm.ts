@@ -44,6 +44,12 @@ export class DeepSeekTransport implements LlmTransport {
     this.timeoutMs = cfg.timeoutMs ?? 60_000;
   }
 
+  private redact(text: string): string {
+    const escaped = this.apiKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const credential = this.apiKey.length < 8 ? new RegExp(`\\b${escaped}\\b`, "g") : new RegExp(escaped, "g");
+    return text.replace(credential, "[密钥已隐藏]").split(encodeURIComponent(this.apiKey).length >= 8 ? encodeURIComponent(this.apiKey) : "\u0000").join("[密钥已隐藏]");
+  }
+
   async chat(opts: { messages: ChatMessage[]; tools?: ToolDef[]; reasoning?: string; temperature?: number }): Promise<ChatResult> {
     const retryable = new Set([429, 500, 502, 503, 504]);
     let lastErr: unknown = null;
@@ -70,20 +76,23 @@ export class DeepSeekTransport implements LlmTransport {
         }
         const text = await res.text();
         let data: any;
-        try { data = JSON.parse(text); } catch {
-          throw new LlmTransportError(`LLM 返回非 JSON（HTTP ${res.status}，${text.slice(0, 120) || "空体"}）`);
+        try {
+          data = JSON.parse(text, (_key, value) => typeof value === "string" ? this.redact(value) : value);
+        } catch {
+          throw new LlmTransportError(`LLM 返回非 JSON（HTTP ${res.status}）`);
         }
         if (!res.ok) {
           const e = data?.error;
           const msg = typeof e === "string" ? e : errorMessage(e ?? data);
           throw new LlmTransportError(`上游模型错误 HTTP ${res.status}: ${msg}`);
         }
-        const m = data.choices?.[0]?.message ?? {};
+        const m = data.choices?.[0]?.message;
+        if (!m || typeof m !== "object") throw new LlmTransportError("模型响应协议无效：缺少choices/message");
         return {
           content: m.content ?? "",
           toolCalls: m.tool_calls ?? [],
           usage: { input: data.usage?.prompt_tokens ?? 0, output: data.usage?.completion_tokens ?? 0 },
-          model: data.model ?? this.model,
+          model: typeof data.model === "string" ? data.model : "unknown",
         };
       } catch (err) {
         clearTimeout(timer);
@@ -96,7 +105,8 @@ export class DeepSeekTransport implements LlmTransport {
         break;
       }
     }
-    throw lastErr instanceof LlmTransportError ? lastErr : new LlmTransportError(errorMessage(lastErr), { cause: lastErr });
+    const safeError = errorMessage(this.redact(lastErr instanceof Error ? lastErr.message : errorMessage(lastErr)));
+    throw new LlmTransportError(safeError);
   }
 }
 

@@ -40,6 +40,11 @@ export interface GoalSpec {
 
 export interface Lease { owner: string | null; expiresAt: number | null; heartbeatAt: number | null; }
 
+export interface ProviderSnapshot {
+  providerId: string; displayName: string; protocol: string; baseUrl: string; modelId: string;
+  capabilities: Record<string, unknown>; contextLimit: number | null; metadataSource: string; configVersion: string;
+}
+
 export interface Task {
   id: string;
   userId: string;
@@ -50,6 +55,8 @@ export interface Task {
   inputHash?: string;
   transcriptCommitted?: boolean;
   promptUsage?: { inputTokens: number | null; contextLimit: number | null; outputReserve: number; source: "estimated" | "reported" | "unknown" };
+  modelConfig?: ProviderSnapshot;
+  modelRuntime?: { actualModel: string; providerId?: string };
   title: string;
   intent: string;
   images?: string[];

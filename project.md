@@ -5,7 +5,8 @@
 - 用户已批准 Spec v2（20项验收、10个任务），随后要求召回子智能体，现由主代理单独执行。分支 `codex/campusmate-reliability-experience`；方案见 `docs/specs/campusmate-reliability-and-experience.md`。
 - T1共享持久化底座已提交并本地验收（e9d83d4）：七类Postgres Repository、私有机会及子资源RLS、完整迁移清单。
 - T2会话画像接线完成本地实现：原子turn与顺序屏障、原始transcript/摘要/身份纠正、审批恢复、UUID映射、owner/session隔离与当前窗口计量。后端218/218、前端104/104、两侧类型、五版本迁移16/16和生产构建通过。详见 `docs/specs/tasks/t2-session-context.md`。
-- 后续继续模型、执行时间线、课表和文档产物。真实数据库/模型/浏览器端到端尚未验收；无push、发布或生产操作。
+- T3认证模型接入完成：owner级AES-GCM凭证、OpenAI兼容配置、默认/编辑/测试/删除、任务快照及真实Worker路由、配置模型与实际返回分离；开发代理停止新增明文key。完整后端224及最终定向13通过，前端106通过，类型/六份迁移/构建通过。配置见 `docs/MODEL_SETUP.md`。
+- 后续继续LLM调用策略、执行时间线、课表和文档产物。真实数据库/模型/浏览器端到端尚未验收；无push、发布或生产操作。
 
 > **长期状态文档**：每完成一个任务实时更新本文件（状态/决策/阻塞/变更日志）。团队三人（均用 Qoder）与 Agent 以本文件为最新事实来源。工程细节见 `docs/` 八份工程文档。
 

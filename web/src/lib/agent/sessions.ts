@@ -21,8 +21,10 @@ export interface ChatSession {
   pruned?: boolean;
   archived?: boolean;
   backendId?: string;
-  pendingTurn?: { turnId: string; content: string; images?: string[]; taskId?: string };
+  pendingTurn?: { turnId: string; content: string; images?: string[]; taskId?: string; providerId?: string };
   promptSource?: "estimated" | "reported" | "unknown";
+  actualModel?: string;
+  configuredModel?: string;
 }
 
 const KEY = "campusmate.sessions.v1";

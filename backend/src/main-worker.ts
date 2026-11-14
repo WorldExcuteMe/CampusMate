@@ -3,7 +3,6 @@
 import "./load-env.ts";
 import { buildContext } from "./app-context.ts";
 import { Worker } from "./runtime/worker.ts";
-import { transportFromEnv } from "./core/llm.ts";
 import { CLOUD_TOOLS, executeCloudTool } from "./core/cloud-tools.ts";
 
 const env = process.env;
@@ -11,12 +10,9 @@ let ctx;
 try { ctx = buildContext(env); }
 catch (e) { console.error(`[worker] 启动失败：${e instanceof Error ? e.message : String(e)}`); process.exit(1); }
 
-if (!env.LLM_API_KEY) { console.error("[worker] LLM_API_KEY 未配置，Worker 无法执行任务。"); process.exit(1); }
-
-const transport = transportFromEnv(env);
 const worker = new Worker({
   store: ctx.store,
-  transport,
+  resolveTransport: (task) => ctx.providers.transport(task),
   tools: CLOUD_TOOLS,
   approvals: ctx.approvals,
   companion: ctx.companion,

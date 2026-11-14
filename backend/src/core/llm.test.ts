@@ -54,3 +54,13 @@ test("非 JSON 响应 → LlmTransportError", async () => {
 test("缺密钥构造即抛错", () => {
   assert.throws(() => new DeepSeekTransport({ apiKey: "" }), /LLM_API_KEY missing/);
 });
+
+test("上游回显凭证被清除，缺失真实model保持unknown，协议错误拒绝", async () => {
+  const key = "dummy-sensitive-credential";
+  const t = new DeepSeekTransport({ apiKey: key, maxRetries: 0, fetchImpl: async () => res(200, { choices: [{ message: { content: `echo ${key}` } }] }) });
+  const reply = await t.chat({ messages: [] });
+  assert.ok(!JSON.stringify(reply).includes(key));
+  assert.equal(reply.model, "unknown");
+  const bad = new DeepSeekTransport({ apiKey: key, maxRetries: 0, fetchImpl: async () => res(200, { status: "ok" }) });
+  await assert.rejects(() => bad.chat({ messages: [] }), /协议无效/);
+});

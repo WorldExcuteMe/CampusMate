@@ -11,6 +11,8 @@ export interface AgentTask {
   error?: string;
   sessionId?: string; turnId?: string;
   promptUsage?: { inputTokens: number | null; contextLimit: number | null; outputReserve: number; source: "reported" | "estimated" | "unknown" };
+  modelConfig?: { providerId: string; displayName: string; modelId: string; contextLimit: number | null };
+  modelRuntime?: { actualModel: string; providerId?: string };
 }
 export interface AgentEvent { id: number; taskId: string; seq: number; type: string; payload: Record<string, unknown>; createdAt: number; }
 
@@ -41,7 +43,7 @@ export async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return JSON.parse(text) as T;
 }
 
-export interface TaskInput { title: string; intent?: string; sessionId?: string; turnId?: string; images?: string[]; }
+export interface TaskInput { title: string; intent?: string; sessionId?: string; turnId?: string; images?: string[]; providerId?: string; }
 export async function createTask(input: TaskInput): Promise<{ taskId: string; status: string }> {
   return req("/v1/tasks", { method: "POST", body: JSON.stringify(input) });
 }

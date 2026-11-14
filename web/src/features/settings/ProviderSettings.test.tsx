@@ -1,0 +1,23 @@
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, expect, it, vi } from "vitest";
+const api = vi.hoisted(() => ({ save: vi.fn(async () => true), test: vi.fn(async () => ({ ok: true, configuredModel: "Gemma4", actualModel: "gemma-returned", note: "连接成功" })), defaults: vi.fn(async () => {}), remove: vi.fn(async () => true) }));
+vi.mock("@/lib/llm/proxy", () => ({ listProviders: async () => [{ id: "builtin", name: "Gemma4", model: "Gemma4", hasKey: true, builtin: true, isDefault: true, protocol: "openai", baseUrl: "https://builtin.example" }, { id: "custom", name: "自定义", model: "model-a", hasKey: true, protocol: "openai", baseUrl: "https://custom.example/v1", capabilities: {}, contextLimit: null }], saveProvider: api.save, testProvider: api.test, defaultProvider: api.defaults, removeProvider: api.remove }));
+vi.mock("@/app/auth", () => ({ useAuth: () => ({ session: { user: { id: "alice" } } }) }));
+vi.mock("@/lib/agent/api-client", () => ({ backendEnabled: () => true }));
+import { ProviderSettings } from "./ProviderSettings";
+afterEach(() => { cleanup(); vi.clearAllMocks(); });
+it("显示实际配置，编辑留空保留密钥，可测试连接及设为默认", async () => {
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ProviderSettings /></QueryClientProvider>);
+  expect(await screen.findByText("Gemma4")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "编辑 自定义" }));
+  expect(screen.getByLabelText("API 密钥")).toHaveValue("");
+  fireEvent.change(screen.getByLabelText("显示名称"), { target: { value: "新名称" } });
+  fireEvent.click(screen.getByRole("button", { name: "保存更改" }));
+  await waitFor(() => expect(api.save).toHaveBeenCalledWith(expect.objectContaining({ id: "custom", name: "新名称", apiKey: undefined })));
+  fireEvent.click(screen.getByRole("button", { name: "测试连接 自定义" }));
+  expect(await screen.findByText(/gemma-returned/)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "设为默认 自定义" }));
+  await waitFor(() => expect(api.defaults).toHaveBeenCalledWith("custom"));
+  expect(localStorage.getItem("apiKey")).toBeNull();
+});

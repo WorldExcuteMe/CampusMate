@@ -126,18 +126,13 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && url === "/api/providers") {
     const list = loadProviders().map(publicView);
     if (env.LLM_API_KEY) {
-      list.unshift({ id: "builtin-deepseek", name: "DeepSeek（内置）", baseUrl: env.LLM_BASE_URL, protocol: "openai", model: env.LLM_MODEL, hasKey: true });
+      list.unshift({ id: "builtin-deepseek", name: env.LLM_DISPLAY_NAME || `${env.LLM_MODEL || "deepseek-chat"}（默认）`, baseUrl: env.LLM_BASE_URL, protocol: "openai", model: env.LLM_MODEL || "deepseek-chat", hasKey: true, isDefault: true, builtin: true });
     }
     return json(res, 200, { providers: list });
   }
-  // 新增/更新供应商（密钥仅在此一次提交，存服务端）
+  // Custom credentials are managed by the authenticated encrypted backend.
   if (req.method === "POST" && url === "/api/providers") {
-    const p = JSON.parse(await readBody(req));
-    if (!p.id || !p.baseUrl) return json(res, 400, { error: "id/baseUrl required" });
-    const list = loadProviders().filter((x) => x.id !== p.id);
-    list.push({ id: p.id, name: p.name || p.id, baseUrl: p.baseUrl, protocol: p.protocol || "openai", model: p.model || "", apiKey: p.apiKey || "" });
-    saveProviders(list);
-    return json(res, 200, { ok: true, provider: publicView(p) });
+    return json(res, 409, { error: "自定义密钥请使用认证后端的模型设置" });
   }
   // 删除供应商
   if (req.method === "DELETE" && url.startsWith("/api/providers/")) {

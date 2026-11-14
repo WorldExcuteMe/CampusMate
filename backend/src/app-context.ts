@@ -21,6 +21,7 @@ import { PostgresOpportunityStore } from "./runtime/postgres-opportunity-store.t
 import { PostgresSessionStore } from "./runtime/postgres-session-store.ts";
 import { PostgresProviderStore } from "./runtime/postgres-provider-store.ts";
 import { PostgresArtifactStore } from "./runtime/postgres-artifact-store.ts";
+import { ProviderService } from "./core/providers.ts";
 
 export interface AppContext {
   store: TaskStore;
@@ -33,6 +34,7 @@ export interface AppContext {
   opportunityStore: OpportunityStore;
   sessionStore: SessionStore;
   providerStore: ProviderStore;
+  providers: ProviderService;
   artifactStore: ArtifactStore;
   storeKind: "postgres" | "memory";
   dispose: () => Promise<void>;
@@ -42,13 +44,14 @@ export class ProductionDbRequiredError extends Error {
   constructor() { super("生产环境必须配置 DATABASE_URL（Postgres）；不允许静默降级 InMemory。"); this.name = "ProductionDbRequiredError"; }
 }
 
-export function buildContext(env: Record<string, string | undefined>, options: { pool?: SqlPool } = {}): AppContext {
+export function buildContext(env: Record<string, string | undefined>, options: { pool?: SqlPool; providerFetch?: typeof fetch } = {}): AppContext {
   const conn = connectionStringFromEnv(env);
   const isProd = env.NODE_ENV === "production";
   if (isProd && !conn && !options.pool) throw new ProductionDbRequiredError();
   const pool = options.pool ?? (conn ? new PgPool(conn) : undefined);
   const store: TaskStore = pool ? new PostgresStore(pool) : new InMemoryStore();
   const artifactStore: ArtifactStore = pool ? new PostgresArtifactStore(pool) : new MemoryArtifactStore(store);
+  const providerStore: ProviderStore = pool ? new PostgresProviderStore(pool) : new MemoryProviderStore();
   const capabilityRegistry = new CapabilityRegistry();
   registerCloudDefaults(capabilityRegistry);
   return {
@@ -61,7 +64,8 @@ export function buildContext(env: Record<string, string | undefined>, options: {
     personalContext: pool ? new PostgresPersonalContextStore(pool) : new ValidatedMemoryPersonalContextStore(),
     opportunityStore: pool ? new PostgresOpportunityStore(pool) : new InMemoryOpportunityStore(),
     sessionStore: pool ? new PostgresSessionStore(pool) : new MemorySessionStore(store),
-    providerStore: pool ? new PostgresProviderStore(pool) : new MemoryProviderStore(),
+    providerStore,
+    providers: new ProviderService(providerStore, env, options.providerFetch),
     artifactStore,
     storeKind: pool ? "postgres" : "memory",
     dispose: async () => { if (pool && !options.pool) await pool.end(); },

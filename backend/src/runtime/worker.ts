@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { AcceptanceCriterion, CompletionCertificate, Task, ToolDef, ToolInvocation } from "../core/types.ts";
 import type { LlmTransport } from "../core/llm.ts";
 import { CheckpointWriteError, runAgentLoop, type AgentLoopResult } from "../core/agent-loop.ts";
-import { errorMessage } from "../core/errors.ts";
+import { errorMessage, LlmTransportError } from "../core/errors.ts";
 import type { CompanionRegistry } from "../core/companion.ts";
 import { checkFsPath, checkTerminal, checkGroup } from "../core/companion.ts";
 import type { EvidenceStore } from "../core/evidence.ts";
@@ -26,10 +26,12 @@ import type { SessionStore } from "../core/storage-contracts.ts";
 import type { PersonalContextStore } from "../core/personal-context.ts";
 import type { ChatMessage } from "../core/types.ts";
 import { assertTurnLease, LeaseLostError, sessionHistory, identityContext, committedPrefix } from "../core/session-context.ts";
+import { ProviderError } from "../core/providers.ts";
 
 export interface WorkerDeps {
   store: TaskStore;
-  transport: LlmTransport;
+  transport?: LlmTransport;
+  resolveTransport?: (task: Task) => Promise<LlmTransport>;
   tools: ToolDef[];
   buildSystem: (task: Task) => string;
   executeTool: (task: Task, name: string, args: Record<string, unknown>) => Promise<string>;
@@ -58,6 +60,7 @@ function defaultAcceptance(_task: Task): AcceptanceCriterion[] {
 export class Worker {
   private store: TaskStore;
   private transport: LlmTransport;
+  private resolveTransport?: (task: Task) => Promise<LlmTransport>;
   private tools: ToolDef[];
   private buildSystem: (task: Task) => string;
   private executeTool: (task: Task, name: string, args: Record<string, unknown>) => Promise<string>;
@@ -80,7 +83,8 @@ export class Worker {
 
   constructor(deps: WorkerDeps) {
     this.store = deps.store;
-    this.transport = deps.transport;
+    this.transport = deps.transport ?? { async chat() { throw new LlmTransportError("未配置可用模型，请在设置中配置供应商"); } };
+    this.resolveTransport = deps.resolveTransport;
     this.tools = deps.tools;
     this.buildSystem = deps.buildSystem;
     this.executeTool = deps.executeTool;
@@ -267,13 +271,13 @@ export class Worker {
         initialUsage: cp?.state.usage,
         repeat,
         deps: {
-          transport: this.transport,
+          transport: this.resolveTransport ? await this.resolveTransport(task) : this.transport,
           tools: taskTools,
           budget: task.budget,
           executeTool: wrappedExecuteTool,
           hooks: {
             now: this.now,
-            onPromptUsage: async (promptUsage) => { await store.updateTask(task.id, { promptUsage }); },
+            onPromptUsage: async (promptUsage) => { await store.updateTask(task.id, { promptUsage: { ...promptUsage, contextLimit: task.modelConfig?.contextLimit ?? null } }); },
             onEvent: (type, payload) => { void store.appendEvent({ taskId: task.id, userId: task.userId, type, payload }); },
             onCheckpoint: async (state) => {
               latestState = state;
@@ -295,7 +299,7 @@ export class Worker {
       const fresh = await store.getTask(task.id);
       if (fresh?.cancelRequested) { await finishTurn({ status: "cancelled" }); return; }
 
-      await store.updateTask(task.id, { usage: result.usage });
+      await store.updateTask(task.id, { usage: result.usage, modelRuntime: { actualModel: result.model, providerId: task.modelConfig?.providerId } });
 
       // 审批暂停：转 needs_input，等待人工审批后 resume（不执行未批准的高危工具）。
       if (result.paused) {
@@ -319,6 +323,17 @@ export class Worker {
       }
     } catch (err) {
       if (err instanceof LeaseLostError) return;
+      if (err instanceof ProviderError && task.turnId && this.sessions && store.finishSessionTurn) {
+        const previous = (await store.latestCheckpoint(task.id))?.state ?? { messages: [], transcript: [], repeat: {}, stepProgress: {}, usage: task.usage, pendingApprovals: [] };
+        const state = { ...previous, transcript: [...(previous.transcript ?? []), { role: "assistant" as const, content: err.message }] };
+        try {
+          await store.finishSessionTurn({ taskId: task.id, userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now(), state, patch: { status: "failed", error: err.message } }, this.sessions);
+          await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.failed", payload: { reason: err.message } });
+        } catch {
+          await store.updateTask(task.id, { status: "paused", error: "任务历史保存失败，请恢复重试" }).catch(() => {});
+        }
+        return;
+      }
       if (err instanceof CheckpointWriteError) {
         await store.updateTask(task.id, { status: "paused", error: err.message }).catch(() => {});
         await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.needs_input", payload: { reason: "persistence_failed", message: err.message } }).catch(() => {});

@@ -68,7 +68,7 @@ export class MemoryProviderStore implements ProviderStore {
     assertSecret(input.encryptedSecret);
     if (!input.providerId || !input.modelId || !input.baseUrl) throw new Error("Provider configuration incomplete");
     const key = `${input.userId}|${input.providerId}`; const old = this.items.get(key); const now = Date.now();
-    const next: StoredProvider = { ...input, capabilities: structuredClone(input.capabilities ?? old?.capabilities ?? {}), metadataSource: input.metadataSource ?? old?.metadataSource ?? "configured", encryptedSecret: input.removeSecret ? undefined : structuredClone(input.encryptedSecret ?? old?.encryptedSecret), isDefault: input.isDefault ?? old?.isDefault ?? false, createdAt: old?.createdAt ?? now, updatedAt: now };
+    const next: StoredProvider = { ...input, contextLimit: input.contextLimit === null ? undefined : input.contextLimit ?? old?.contextLimit, capabilities: structuredClone(input.capabilities ?? old?.capabilities ?? {}), metadataSource: input.metadataSource ?? old?.metadataSource ?? "configured", encryptedSecret: input.removeSecret ? undefined : structuredClone(input.encryptedSecret ?? old?.encryptedSecret), isDefault: input.isDefault ?? old?.isDefault ?? false, createdAt: old?.createdAt ?? now, updatedAt: now };
     if (next.isDefault) for (const p of this.items.values()) if (p.userId === input.userId) p.isDefault = false;
     this.items.set(key, next); return structuredClone(next);
   }

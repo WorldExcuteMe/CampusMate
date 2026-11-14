@@ -54,14 +54,14 @@ export function AgentChatPage() {
   const [wsPath, setWsPath] = useState(() => localStorage.getItem("campusmate.workspace") || "");
   const fileRef = useRef<HTMLInputElement>(null);
   const [providerId, setProviderId] = useState(
-    () => localStorage.getItem("campusmate.providerId") || "builtin-deepseek",
+    () => localStorage.getItem(`campusmate.providerId:${owner}`) || "",
   );
-  const { data: providers = [] } = useQuery({ queryKey: ["providers"], queryFn: listProviders });
-  const { data: profile } = useQuery({ queryKey: ["profile"], queryFn: () => repository.getProfile() });
+  const { data: providers = [], error: providerError } = useQuery({ queryKey: ["providers", owner], queryFn: listProviders });
+  const { data: profile } = useQuery({ queryKey: ["profile", owner], queryFn: () => repository.getProfile() });
   const endRef = useRef<HTMLDivElement>(null);
   const workspace = WORKSPACES.find((w) => w.id === ws) ?? WORKSPACES[0];
-  const provider = providers.find((p: ProviderPublic) => p.id === providerId);
-  const modelName = provider?.model || "deepseek-chat";
+  const provider = providers.find((p: ProviderPublic) => p.id === providerId) ?? providers.find((p) => p.isDefault) ?? providers[0];
+  const modelName = provider?.model || "未知模型";
   const contextCap = resolveContextCap(modelName);
 
   useEffect(() => {
@@ -70,7 +70,7 @@ export function AgentChatPage() {
 
   function chooseProvider(id: string) {
     setProviderId(id);
-    localStorage.setItem("campusmate.providerId", id);
+    localStorage.setItem(`campusmate.providerId:${owner}`, id);
   }
 
   async function handleFiles(files: FileList | File[]) {
@@ -85,7 +85,7 @@ export function AgentChatPage() {
     const imgMarkers = attachments.filter((a) => a.kind === "image").map((a) => `[图片附件 ${a.name}]`).join(" ");
     const content = retry ? active.pendingTurn?.content ?? "" : (text + docText + (imgMarkers ? "\n" + imgMarkers : "")).trim();
     if (!content) return;
-    const pendingTurn = retry && active.pendingTurn ? active.pendingTurn : { turnId: crypto.randomUUID(), content, images: attachments.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) };
+    const pendingTurn = retry && active.pendingTurn ? active.pendingTurn : { turnId: crypto.randomUUID(), content, providerId: provider?.id, images: attachments.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) };
     setInput("");
     setAttachments([]);
     setBusy(true);
@@ -106,7 +106,7 @@ export function AgentChatPage() {
         if (!alive.current) return;
         update(active.id, (s) => ({ ...s, backendId: id }));
         const task = await runTaskViaBackend(
-          { title: content.slice(0, 80), intent: content, sessionId: id, turnId: pendingTurn.turnId, images: pendingTurn.images },
+          { title: content.slice(0, 80), intent: content, sessionId: id, turnId: pendingTurn.turnId, images: pendingTurn.images, providerId: pendingTurn.providerId },
           (t) => {
             if (!alive.current) return;
             update(active.id, (s) => ({ ...s, contextUsed: t.promptUsage?.inputTokens ?? undefined, contextCap: t.promptUsage?.contextLimit ?? undefined, promptSource: t.promptUsage?.source ?? "unknown" }));
@@ -123,6 +123,8 @@ export function AgentChatPage() {
           contextUsed: task.promptUsage?.inputTokens ?? undefined,
           contextCap: task.promptUsage?.contextLimit ?? undefined,
           promptSource: task.promptUsage?.source ?? "unknown",
+          actualModel: task.modelRuntime?.actualModel,
+          configuredModel: task.modelConfig?.modelId,
           tokens: s.tokens + (task.usage?.tokens ?? 0),
           messages: [...s.messages, { role: "assistant", content: reply, taskId: task.id, turnId: pendingTurn.turnId, actions: [], failed: task.status === "failed" }],
         }));
@@ -332,13 +334,15 @@ export function AgentChatPage() {
             >
               <Paperclip className="size-4 text-primary transition-transform group-hover:scale-110" />
             </button>
-            <Select value={providerId} onValueChange={chooseProvider}>
+            <Select value={provider?.id ?? ""} onValueChange={chooseProvider}>
               <SelectTrigger className={cn("h-8 w-40 text-xs", CONTROL_FEEDBACK)}><SelectValue placeholder="模型" /></SelectTrigger>
               <SelectContent>
                 {providers.map((p: ProviderPublic) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                {providers.length === 0 && <SelectItem value="builtin-deepseek">DeepSeek（内置）</SelectItem>}
+                {providers.length === 0 && <SelectItem value="unconfigured" disabled>请配置模型</SelectItem>}
               </SelectContent>
             </Select>
+            {providerError && <span className="text-xs text-destructive">模型目录加载失败：{errorMessage(providerError)}</span>}
+            {active.actualModel && <span className="text-xs text-muted-foreground" title={`最近任务配置：${active.configuredModel ?? "未知"}`}>最近返回：{active.actualModel}</span>}
             <span
               className="text-xs text-muted-foreground"
               title={`上下文组成：system+工具定义+历史摘要+近期历史+当前输入+输出预留；模型 ${modelName} 上限 ${contextCap.toLocaleString()} tok；累计用量 ${(active?.tokens ?? 0).toLocaleString()} tok`}

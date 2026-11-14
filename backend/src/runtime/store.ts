@@ -19,6 +19,7 @@ export interface CreateTaskInput {
   turnId?: string;
   turnSeq?: number;
   inputHash?: string;
+  modelConfig?: Task["modelConfig"];
   priority?: number;
   budget?: Budget;
   maxAttempts?: number;
@@ -52,7 +53,7 @@ export interface TurnProgress {
 
 export class SessionConflict extends Error { readonly status = 409; }
 export function sessionInputHash(input: CreateTaskInput): string {
-  return sha256(canonicalArgs({ title: input.title, intent: input.intent ?? input.title, images: input.images ?? [], priority: input.priority ?? 50, budget: input.budget ?? DEFAULT_BUDGET }));
+  return sha256(canonicalArgs({ title: input.title, intent: input.intent ?? input.title, images: input.images ?? [], priority: input.priority ?? 50, budget: input.budget ?? DEFAULT_BUDGET, modelConfig: input.modelConfig ?? null }));
 }
 
 export class InMemoryStore implements TaskStore {
@@ -135,6 +136,7 @@ export class InMemoryStore implements TaskStore {
       title: input.title,
       intent: input.intent ?? input.title,
       images: input.images,
+      modelConfig: input.modelConfig,
       status: "queued",
       priority: input.priority ?? 50,
       lease: { owner: null, expiresAt: null, heartbeatAt: null },

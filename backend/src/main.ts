@@ -4,7 +4,6 @@ import "./load-env.ts";
 import { buildContext, createApiServer } from "./app-context.ts";
 import { CompanionServer } from "./core/companion-server.ts";
 import { Worker } from "./runtime/worker.ts";
-import { transportFromEnv } from "./core/llm.ts";
 import { CLOUD_TOOLS, executeCloudTool } from "./core/cloud-tools.ts";
 
 const env = process.env;
@@ -12,7 +11,7 @@ const ctx = buildContext(env);
 const { store, approvals, companion, evidenceStore, capabilityRegistry, memoryStore, opportunityStore, storeKind } = ctx;
 const port = Number(env.PORT ?? 8788);
 
-const server = createApiServer({ store, jwtSecret: env.SUPABASE_JWT_SECRET ?? "", storeKind, approvals, capabilityRegistry, companion, personalContext: ctx.personalContext, opportunityStore, sessionStore: ctx.sessionStore });
+const server = createApiServer({ store, jwtSecret: env.SUPABASE_JWT_SECRET ?? "", storeKind, approvals, capabilityRegistry, companion, personalContext: ctx.personalContext, opportunityStore, sessionStore: ctx.sessionStore, providers: ctx.providers });
 // Companion 出站 WSS：设备令牌经 COMPANION_TOKENS（JSON: {token:{userId,capabilities,grantedScopes}}）授权。
 const companionTokens: Record<string, { userId: string; capabilities: string[]; grantedScopes: Record<string, unknown> }> = (() => { try { return JSON.parse(env.COMPANION_TOKENS ?? "{}"); } catch { return {}; } })();
 const companionServer = new CompanionServer(server, {
@@ -24,11 +23,10 @@ const companionServer = new CompanionServer(server, {
 });
 server.listen(port, "0.0.0.0", () => console.log(`[api] http://0.0.0.0:${port} (store=${storeKind}, companion wss=/companion)`));
 
-if (env.LLM_API_KEY) {
-  const transport = transportFromEnv(env);
+{
   const worker = new Worker({
     store,
-    transport,
+    resolveTransport: (task) => ctx.providers.transport(task),
     tools: CLOUD_TOOLS,
     approvals,
     companion,
@@ -49,6 +47,4 @@ if (env.LLM_API_KEY) {
   process.on("SIGTERM", () => ctrl.abort());
   void worker.run({ signal: ctrl.signal, pollMs: 1000 });
   console.log("[worker] started (cloud tools: web_search)");
-} else {
-  console.warn("[worker] LLM_API_KEY 未配置，Worker 未启动；API 仍可提交/查询任务。");
 }

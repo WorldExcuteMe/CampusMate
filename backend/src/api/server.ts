@@ -18,6 +18,7 @@ import type { SessionStore } from "../core/storage-contracts.ts";
 import { SessionConflict } from "../runtime/store.ts";
 import { randomUUID } from "node:crypto";
 import { requireUuid } from "../runtime/postgres-shared.ts";
+import { ProviderService, ProviderError } from "../core/providers.ts";
 
 export interface ApiDeps {
   store: TaskStore;
@@ -30,6 +31,7 @@ export interface ApiDeps {
   personalContext?: PersonalContextStore;
   opportunityStore?: OpportunityStore;
   sessionStore?: SessionStore;
+  providers?: ProviderService;
 }
 
 function json(res: http.ServerResponse, code: number, obj: unknown): void {
@@ -51,7 +53,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
   return http.createServer(async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", cors);
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
     const url = new URL(req.url ?? "/", "http://local");
@@ -67,6 +69,18 @@ export function createApiServer(deps: ApiDeps): http.Server {
       const claims = verifySupabaseJwt(token, jwtSecret);
       if (!claims) return json(res, 401, { error: "unauthorized" });
       const uid = claims.sub;
+
+      if (deps.providers) {
+        if (path === "/v1/providers" && req.method === "GET") return json(res, 200, { providers: await deps.providers.list(uid) });
+        if (path === "/v1/providers" && req.method === "POST") return json(res, 200, { provider: await deps.providers.save(uid, JSON.parse((await readBody(req)) || "{}")) });
+        const providerMatch = path.match(/^\/v1\/providers\/([a-z0-9_-]+)(\/(test|default))?$/i);
+        if (providerMatch) {
+          const id = providerMatch[1];
+          if (req.method === "DELETE" && !providerMatch[2]) return json(res, 200, { ok: await deps.providers.remove(uid, id) });
+          if (req.method === "POST" && providerMatch[3] === "test") return json(res, 200, await deps.providers.test(uid, id));
+          if (req.method === "POST" && providerMatch[3] === "default") { await deps.providers.setDefault(uid, id); return json(res, 200, { ok: true }); }
+        }
+      }
 
       if (deps.sessionStore) {
         const sessions = deps.sessionStore;
@@ -96,10 +110,16 @@ export function createApiServer(deps: ApiDeps): http.Server {
           if (!deps.sessionStore || !await deps.sessionStore.get(uid, body.sessionId)) return json(res, 404, { error: "session not found" });
         }
         if (body.turnId !== undefined) requireUuid(body.turnId);
+        if (body.providerId !== undefined && typeof body.providerId !== "string") return json(res, 400, { error: "providerId must be a string" });
+        const prior = body.sessionId && body.turnId ? (await store.listTasksByUser(uid)).find((t) => t.sessionId === body.sessionId && t.turnId === body.turnId) : undefined;
+        const requestedProvider = body.providerId === "builtin-deepseek" ? "builtin" : body.providerId;
+        const sameSelection = prior && (!requestedProvider || prior.modelConfig?.providerId === requestedProvider);
+        const modelConfig = sameSelection ? prior.modelConfig : deps.providers && (requestedProvider !== undefined || (await deps.providers.list(uid)).length > 0) ? await deps.providers.snapshot(uid, requestedProvider) : undefined;
         const images = Array.isArray(body.images) ? body.images.filter((x: unknown) => typeof x === "string").slice(0, 4) : undefined;
         const input = {
           userId: uid, title: body.title, intent: body.intent, sessionId: body.sessionId,
           images, priority: body.priority, budget: body.budget as Budget | undefined,
+          modelConfig,
         };
         const accepted = body.sessionId && deps.sessionStore && store.createSessionTask
           ? await store.createSessionTask({ ...input, sessionId: body.sessionId, turnId: body.turnId ?? randomUUID() }, deps.sessionStore)
@@ -225,6 +245,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
 
       return json(res, 404, { error: "not found" });
     } catch (err) {
+      if (err instanceof ProviderError) return json(res, err.status, { error: err.message });
       if (err instanceof SessionConflict) return json(res, 409, { error: err.message });
       if (err instanceof SyntaxError || (err instanceof Error && err.message === "Invalid UUID")) return json(res, 400, { error: "invalid input" });
       if (err instanceof Error && err.message === "Session owner forbidden") return json(res, 403, { error: "forbidden" });

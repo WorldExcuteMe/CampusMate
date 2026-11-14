@@ -1,6 +1,7 @@
 import { extractedNoticeSchema } from "../schemas";
 import { errorMessage, LlmTransportError } from "./errors";
 import type { LlmProvider, LlmRequest, LlmResult } from "./types";
+import { backendEnabled, req } from "../agent/api-client";
 
 export interface ProviderPublic {
   id: string;
@@ -9,9 +10,18 @@ export interface ProviderPublic {
   protocol: string;
   model: string;
   hasKey: boolean;
+  contextLimit?: number | null;
+  capabilities?: Record<string, unknown>;
+  metadataSource?: string;
+  isDefault?: boolean;
+  builtin?: boolean;
 }
 
 export async function listProviders(): Promise<ProviderPublic[]> {
+  if (backendEnabled()) {
+    const data = await req<{ providers: (ProviderPublic & { displayName: string; modelId: string })[] }>("/v1/providers");
+    return data.providers.map((p) => ({ ...p, name: p.displayName, model: p.modelId }));
+  }
   const res = await fetch("/api/providers");
   if (!res.ok) return [];
   const data = await res.json();
@@ -24,19 +34,29 @@ export async function saveProvider(p: {
   baseUrl: string;
   protocol: string;
   model: string;
-  apiKey: string;
+  apiKey?: string;
+  contextLimit?: number | null;
+  capabilities?: Record<string, unknown>;
+  removeSecret?: boolean;
 }): Promise<boolean> {
-  const res = await fetch("/api/providers", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(p),
-  });
-  return res.ok;
+  if (backendEnabled()) {
+    await req("/v1/providers", { method: "POST", body: JSON.stringify({ ...p, providerId: p.id, displayName: p.name, modelId: p.model, apiKey: p.apiKey || undefined }) });
+    return true;
+  }
+  throw new Error("自定义密钥需要配置认证后端并登录");
 }
 
 export async function removeProvider(id: string): Promise<boolean> {
+  if (backendEnabled()) return (await req<{ ok: boolean }>(`/v1/providers/${encodeURIComponent(id)}`, { method: "DELETE" })).ok;
   const res = await fetch(`/api/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
   return res.ok;
+}
+
+export async function testProvider(id: string): Promise<{ ok: boolean; configuredModel: string; actualModel: string; note: string }> {
+  return req(`/v1/providers/${encodeURIComponent(id)}/test`, { method: "POST", body: "{}" });
+}
+export async function defaultProvider(id: string): Promise<void> {
+  await req(`/v1/providers/${encodeURIComponent(id)}/default`, { method: "POST", body: "{}" });
 }
 
 export interface ChatMessage {

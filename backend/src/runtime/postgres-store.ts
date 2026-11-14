@@ -35,6 +35,8 @@ function rowToTask(r: Row): Task {
     transcriptCommitted: Boolean(r.transcript_committed),
     images: Array.isArray(r.images) ? r.images as string[] : undefined,
     promptUsage: r.prompt_usage as Task["promptUsage"],
+    modelConfig: r.model_config as Task["modelConfig"],
+    modelRuntime: r.model_runtime as Task["modelRuntime"],
     title: String(r.title),
     intent: String(r.intent ?? ""),
     status: r.status as Task["status"],
@@ -136,10 +138,10 @@ export class PostgresStore implements TaskStore {
     const id = randomUUID();
     const now = Date.now();
     const r = await this.pool.query(
-      `insert into agent_tasks (id,user_id,goal_id,session_id,title,intent,status,priority,attempt,max_attempts,budget,usage,cancel_requested,created_at,updated_at,turn_id,turn_seq,input_hash,images)
-       values ($1,$2,$3,$4,$5,$6,'queued',$7,0,$8,$9::jsonb,$10::jsonb,false,$11::timestamptz,$11::timestamptz,$12,$13,$14,$15::jsonb) returning *`,
+      `insert into agent_tasks (id,user_id,goal_id,session_id,title,intent,status,priority,attempt,max_attempts,budget,usage,cancel_requested,created_at,updated_at,turn_id,turn_seq,input_hash,images,model_config)
+       values ($1,$2,$3,$4,$5,$6,'queued',$7,0,$8,$9::jsonb,$10::jsonb,false,$11::timestamptz,$11::timestamptz,$12,$13,$14,$15::jsonb,$16::jsonb) returning *`,
       [id, input.userId, input.goalId ?? null, input.sessionId ?? null, input.title, input.intent ?? input.title,
-       input.priority ?? 50, input.maxAttempts ?? 3, j(input.budget ?? DEFAULT_BUDGET), j(EMPTY_USAGE), iso(now), input.turnId ?? null, input.turnSeq ?? null, input.inputHash ?? null, j(input.images ?? null)],
+       input.priority ?? 50, input.maxAttempts ?? 3, j(input.budget ?? DEFAULT_BUDGET), j(EMPTY_USAGE), iso(now), input.turnId ?? null, input.turnSeq ?? null, input.inputHash ?? null, j(input.images ?? null), j(input.modelConfig ?? null)],
     );
     const task = rowToTask(r.rows[0]);
     await this.appendEvent({ taskId: task.id, userId: task.userId, type: "task.queued", payload: { title: task.title } });
@@ -172,6 +174,8 @@ export class PostgresStore implements TaskStore {
     if (patch.title !== undefined) add("title", patch.title);
     if (patch.transcriptCommitted !== undefined) add("transcript_committed", patch.transcriptCommitted);
     if (patch.promptUsage !== undefined) add("prompt_usage", j(patch.promptUsage), "::jsonb");
+    if (patch.modelConfig !== undefined) add("model_config", j(patch.modelConfig), "::jsonb");
+    if (patch.modelRuntime !== undefined) add("model_runtime", j(patch.modelRuntime), "::jsonb");
     if (patch.lease !== undefined) {
       add("lease_owner", patch.lease.owner);
       add("lease_expires_at", patch.lease.expiresAt == null ? null : iso(patch.lease.expiresAt), "::timestamptz");

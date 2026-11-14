@@ -19,7 +19,7 @@ export class PostgresProviderStore implements ProviderStore {
       const secret = input.removeSecret ? null : input.encryptedSecret ?? old?.encryptedSecret ?? null;
       const r = await client.query<DbRow>(`insert into user_llm_providers(user_id,provider_id,display_name,protocol,base_url,model_id,capabilities,context_limit,metadata_source,encrypted_secret,is_default)
         values($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10::jsonb,$11) on conflict(user_id,provider_id) do update set display_name=excluded.display_name,protocol=excluded.protocol,base_url=excluded.base_url,model_id=excluded.model_id,capabilities=excluded.capabilities,context_limit=excluded.context_limit,metadata_source=excluded.metadata_source,encrypted_secret=excluded.encrypted_secret,is_default=excluded.is_default,updated_at=now() returning *`,
-      [input.userId, input.providerId, input.displayName, input.protocol, input.baseUrl, input.modelId, json(input.capabilities ?? old?.capabilities ?? {}), input.contextLimit ?? old?.contextLimit ?? null, input.metadataSource ?? old?.metadataSource ?? "configured", secret === null ? null : json(secret), isDefault]);
+      [input.userId, input.providerId, input.displayName, input.protocol, input.baseUrl, input.modelId, json(input.capabilities ?? old?.capabilities ?? {}), input.contextLimit === null ? null : input.contextLimit ?? old?.contextLimit ?? null, input.metadataSource ?? old?.metadataSource ?? "configured", secret === null ? null : json(secret), isDefault]);
       return provider(r.rows[0]);
     });
   }
