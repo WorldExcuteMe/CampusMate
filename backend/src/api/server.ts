@@ -35,6 +35,12 @@ export interface ApiDeps {
   providers?: ProviderService;
 }
 
+
+function taskView(task: import("../core/types.ts").Task) {
+  const { id, userId, title, sessionId, turnId, turnSeq, status, usage, budget, result, error, promptUsage, modelConfig, modelRuntime, cancelRequested, createdAt, updatedAt } = task;
+  return { id, userId, title, sessionId, turnId, turnSeq, status, usage, budget, result, error, promptUsage, modelConfig, modelRuntime, cancelRequested, createdAt, updatedAt };
+}
+
 function json(res: http.ServerResponse, code: number, obj: unknown): void {
   res.writeHead(code, { "Content-Type": "application/json" });
   res.end(JSON.stringify(obj));
@@ -96,7 +102,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         if (req.method === "GET" && sessionMatch) {
           requireUuid(sessionMatch[1]);
           if (!await sessions.get(uid, sessionMatch[1])) return json(res, 404, { error: "session not found" });
-          if (sessionMatch[2] === "tasks") return json(res, 200, { tasks: (await store.listTasksByUser(uid)).filter((t) => t.sessionId === sessionMatch[1]) });
+          if (sessionMatch[2] === "tasks") return json(res, 200, { tasks: (await store.listTasksByUser(uid)).filter((t) => t.sessionId === sessionMatch[1]).sort((a, b) => (b.turnSeq ?? 0) - (a.turnSeq ?? 0) || b.createdAt - a.createdAt).slice(0, 40).map(taskView) });
           const after = Number(url.searchParams.get("afterSeq") ?? 0);
           if (!Number.isSafeInteger(after) || after < 0) return json(res, 400, { error: "invalid afterSeq" });
           return json(res, 200, { messages: await sessions.listMessages(uid, sessionMatch[1], after) });
@@ -145,22 +151,30 @@ export function createApiServer(deps: ApiDeps): http.Server {
           return json(res, 200, { events: await store.listEvents(id, after) });
         }
         if (req.method === "GET" && sub === "/stream") {
-          // SSE：实时推送任务事件 + 状态，终态关闭。JWT 经 query ?token= 或 Authorization。
           res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "Access-Control-Allow-Origin": cors });
-          let seq = Number(url.searchParams.get("after") ?? 0);
-          let closed = false;
-          const send = (event: string, data: unknown) => { if (!closed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+          const cursor = Math.max(Number(url.searchParams.get("after") ?? 0), Number(req.headers["last-event-id"] ?? 0));
+          let seq = Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0;
+          let closed = false, lastStatus = "", timer: ReturnType<typeof setTimeout> | undefined;
+          const cleanup = () => { closed = true; if (timer) clearTimeout(timer); };
+          res.on("close", cleanup); req.on("aborted", cleanup);
+          const send = (event: string, data: unknown, id?: number) => { if (!closed) res.write((id === undefined ? "" : "id: " + id + "\n") + "event: " + event + "\ndata: " + JSON.stringify(data) + "\n\n"); };
           const tick = async () => {
             if (closed) return;
-            const evs = await store.listEvents(id, seq);
-            for (const e of evs) { send("task_event", e); seq = e.seq; }
-            const t = await store.getTask(id);
-            if (t) send("task_status", { id: t.id, status: t.status, usage: t.usage, result: t.result, promptUsage: t.promptUsage, sessionId: t.sessionId, turnId: t.turnId });
-            if (t && ["succeeded", "failed", "cancelled", "needs_input", "paused"].includes(t.status)) { send("close", { status: t.status }); closed = true; res.end(); return; }
+            try {
+              const events = await store.listEvents(id, seq);
+              for (const event of events) { send("task_event", event, event.seq); seq = event.seq; }
+              const current = await store.getTask(id);
+              if (!current) { cleanup(); res.end(); return; }
+              const snapshot = JSON.stringify(taskView(current));
+              if (snapshot !== lastStatus) { send("task_status", taskView(current)); lastStatus = snapshot; }
+              if (["succeeded", "failed", "cancelled", "needs_input", "paused"].includes(current.status)) {
+                for (const event of await store.listEvents(id, seq)) { send("task_event", event, event.seq); seq = event.seq; }
+                send("close", { status: current.status }); cleanup(); res.end(); return;
+              }
+              if (!closed) timer = setTimeout(() => { void tick(); }, 1000);
+            } catch { send("stream_error", { error: "事件暂不可用，请重新连接" }); cleanup(); res.end(); }
           };
           await tick();
-          const timer = setInterval(() => { void tick(); }, 1000);
-          req.on("close", () => { closed = true; clearInterval(timer); });
           return;
         }
         if (req.method === "POST" && sub === "/cancel") {

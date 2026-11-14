@@ -105,6 +105,7 @@ export async function llmChat(opts: {
   responseFormat?: { type: string };
   temperature?: number;
   reasoning?: string;
+  signal?: AbortSignal;
 }): Promise<ChatResult> {
   const body = JSON.stringify({
     providerId: opts.providerId,
@@ -120,7 +121,7 @@ export async function llmChat(opts: {
   // The server adapter owns retries. Browser retries would multiply billable requests.
   for (let attempt = 0; attempt < 1; attempt++) {
     try {
-      const res = await fetch(edge || "/api/llm", { method: "POST", headers, body });
+      const res = await fetch(edge || "/api/llm", { method: "POST", headers, body, signal: opts.signal });
       const text = await res.text();
       if (!res.ok) {
         let detail = "";

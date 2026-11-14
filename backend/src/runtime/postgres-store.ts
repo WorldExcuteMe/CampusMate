@@ -111,7 +111,7 @@ export class PostgresStore implements TaskStore {
       const task = await tasks.getTask(id);
       if (!task || task.userId !== userId) throw new Error("Task owner forbidden");
       if (task.sessionId) await client.query("select id from agent_sessions where id=$1 and user_id=$2 for update", [task.sessionId, userId]);
-      if (task.turnSeq !== undefined && (await client.query("select id from agent_tasks where user_id=$1 and session_id=$2 and turn_seq>$3 limit 1", [userId, task.sessionId, task.turnSeq])).rows.length) throw new SessionConflict("后续对话已开始，请用新消息继续；原任务记录已保留。");
+      if (task.status === "failed" && task.turnSeq !== undefined && (await client.query("select id from agent_tasks where user_id=$1 and session_id=$2 and turn_seq>$3 limit 1", [userId, task.sessionId, task.turnSeq])).rows.length) throw new SessionConflict("后续对话已开始，请用新消息继续；原任务记录已保留。");
       return tasks.updateTask(id, { status: "queued", transcriptCommitted: false, ...(budget ? { budget } : {}), error: "" });
     });
   }
@@ -128,7 +128,9 @@ export class PostgresStore implements TaskStore {
       for (const message of turnMessages(task, input.state.transcript ?? [])) await sessions.appendMessage(message);
       const store = new PostgresStore(pool);
       await store.writeCheckpoint({ taskId: task.id, userId: task.userId, eventSeq: 0, state: input.state });
-      return store.updateTask(task.id, { ...patch, usage: input.state.usage, transcriptCommitted: Boolean(patch) });
+      const next = await store.updateTask(task.id, { ...patch, usage: input.state.usage, transcriptCommitted: Boolean(patch) });
+      if (patch?.status && ["succeeded", "failed", "cancelled"].includes(patch.status)) await store.appendEvent({ taskId: task.id, userId: task.userId, type: `task.${patch.status}` as EventType, payload: { reason: patch.error, partial: patch.result?.partial } });
+      return next;
     });
   }
   async saveTurnProgress(input: TurnProgress, _sessions: SessionStore): Promise<Task> { return this.persistSessionTurn(input); }
@@ -232,21 +234,27 @@ export class PostgresStore implements TaskStore {
   }
 
   async requestCancel(id: string, userId: string): Promise<boolean> {
-    const r = await this.pool.query(`update agent_tasks set cancel_requested=true,
+    return this.pool.transaction(async (client) => {
+    const r = await client.query<Row>(`update agent_tasks set cancel_requested=true,
       transcript_committed=case when turn_id is not null and status in ('queued','paused','needs_input') then true else transcript_committed end,
       status=case when turn_id is not null and status in ('queued','paused','needs_input') then 'cancelled' else status end,
-      updated_at=$3::timestamptz where id=$1 and user_id=$2 returning id`, [id, userId, iso(Date.now())]);
+      updated_at=$3::timestamptz where id=$1 and user_id=$2 and status not in ('succeeded','failed','cancelled') returning id,status`, [id, userId, iso(Date.now())]);
+    if (r.rows[0]?.status === "cancelled") await new PostgresStore(transactionPool(client)).appendEvent({ taskId: id, userId, type: "task.cancelled", payload: { reason: "user_requested" } });
     return r.rowCount > 0;
+    });
   }
 
   async appendEvent(input: { taskId: string; userId: string; stepId?: string; type: EventType; payload?: Record<string, unknown> }): Promise<AgentEvent> {
-    const r = await this.pool.query(
+    return this.pool.transaction(async (client) => {
+    await client.query("select id from agent_tasks where id=$1 and user_id=$2 for update", [input.taskId, input.userId]);
+    const r = await client.query(
       `insert into agent_events (task_id,user_id,step_id,seq,type,payload)
        select $1,$2,$3, coalesce(max(seq),0)+1, $4, $5::jsonb from agent_events where task_id=$1
        returning *`,
       [input.taskId, input.userId, input.stepId ?? null, input.type, j(input.payload ?? {})],
     );
     return rowToEvent(r.rows[0]);
+    });
   }
 
   async listEvents(taskId: string, afterSeq = 0): Promise<AgentEvent[]> {

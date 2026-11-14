@@ -26,6 +26,9 @@ import { resolveContextCap } from "@/lib/agent/context";
 import { MockBadge } from "@/components/shared";
 import { SetupWizard } from "./SetupWizard";
 import { parseFile, type Attachment } from "@/lib/ingest/files";
+import { mergeTask, mergeEvent } from "@/lib/agent/task-state";
+import { useTaskMonitor } from "./use-task-monitor";
+import { TaskWorkspace } from "./TaskWorkspace";
 
 // 统一控件鼠标反馈：悬停边框+阴影+图标放大、聚焦环、按压缩放
 const CONTROL_FEEDBACK =
@@ -41,7 +44,7 @@ export function AgentChatPage() {
   const alive = useRef(true);
   const requestController = useRef<AbortController | null>(null);
   useEffect(() => { alive.current = true; return () => { alive.current = false; requestController.current?.abort(); }; }, []);
-  const { active, update, rename } = useSessions();
+  const { active, update, rename, storageError } = useSessions();
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -67,6 +70,8 @@ export function AgentChatPage() {
   const provider = providers.find((p: ProviderPublic) => p.id === providerId) ?? providers.find((p) => p.isDefault) ?? providers[0];
   const modelName = provider?.model || "未知模型";
   const contextCap = resolveContextCap(modelName);
+  const monitor = useTaskMonitor(active, update, busy);
+  const busyUI = busy || Object.values(active.taskViews ?? {}).some((view) => ["queued", "running"].includes(view.task.status));
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -84,7 +89,7 @@ export function AgentChatPage() {
 
   async function send(retry = false) {
     const text = input.trim();
-    if ((!text && attachments.length === 0 && !retry) || busy || !active || (!backendEnabled() && !profile)) return;
+    if ((!text && attachments.length === 0 && !retry) || busyUI || !active || (!backendEnabled() && !profile)) return;
     const docText = attachments.filter((a) => a.kind === "doc" && a.text).map((a) => `\n[附件 ${a.name}]\n${a.text}`).join("");
     const imgMarkers = attachments.filter((a) => a.kind === "image").map((a) => `[图片附件 ${a.name}]`).join(" ");
     const content = retry ? active.pendingTurn?.content ?? "" : (text + docText + (imgMarkers ? "\n" + imgMarkers : "")).trim();
@@ -100,6 +105,8 @@ export function AgentChatPage() {
       pendingTurn: backendEnabled() ? pendingTurn : undefined,
       messages: retry ? s.messages : [...s.messages, { role: "user", content, turnId: pendingTurn.turnId }],
     }));
+    let acceptedId: string | undefined;
+    let localId: string | undefined;
     try {
       // AC01：配置 VITE_BACKEND_URL 时默认走服务端 Task Runtime（浏览器关闭不影响后台任务）；
       // 未配置时保留浏览器 runChat 作为开发/兼容 fallback。
@@ -113,45 +120,40 @@ export function AgentChatPage() {
           { title: content.slice(0, 80), intent: content, sessionId: id, turnId: pendingTurn.turnId, images: pendingTurn.images, providerId: pendingTurn.providerId, reasoning: pendingTurn.reasoning },
           (t) => {
             if (!alive.current) return;
-            update(active.id, (s) => ({ ...s, contextUsed: t.promptUsage?.inputTokens ?? undefined, contextCap: t.promptUsage?.contextLimit ?? undefined, promptSource: t.promptUsage?.source ?? "unknown" }));
+            update(active.id, (s) => mergeTask(s, t));
           },
-          { signal: controller.signal, onAccepted: (taskId) => { if (alive.current) update(active.id, (s) => ({ ...s, pendingTurn: { ...pendingTurn, taskId } })); } },
+          { signal: controller.signal,
+            onAccepted: (taskId) => {
+              acceptedId = taskId;
+              if (alive.current) update(active.id, (s) => mergeTask({ ...s, currentTaskId: taskId, pendingTurn: { ...pendingTurn, taskId } }, { id: taskId, userId: owner, title: content.slice(0, 80), sessionId: id, turnId: pendingTurn.turnId, status: "queued", usage: { tokens: 0, toolCalls: 0, wallMs: 0, costUsd: 0 }, createdAt: Date.now() }));
+            },
+            onEvent: (event) => { if (alive.current) update(active.id, (s) => mergeEvent(s, event)); },
+            onConnection: (connection) => { if (alive.current && acceptedId) update(active.id, (s) => { const view = s.taskViews?.[acceptedId!]; return view ? { ...s, taskViews: { ...s.taskViews, [acceptedId!]: { ...view, connection } } } : s; }); },
+          },
         );
         if (!alive.current) return;
-        const reply = (task.status === "needs_input" || task.status === "paused")
-          ? "该任务触发了高危操作审批门控，已暂停等待人工批准（如 propose_verification 写入全局核验）。批准后任务可继续；这是安全设计，不是故障。"
-          : (task.result?.summary ?? task.error ?? `任务${task.status}`);
-        update(active.id, (s) => ({
-          ...s,
-          pendingTurn: undefined,
-          contextUsed: task.promptUsage?.inputTokens ?? undefined,
-          contextCap: task.promptUsage?.contextLimit ?? undefined,
-          promptSource: task.promptUsage?.source ?? "unknown",
-          actualModel: task.modelRuntime?.actualModel,
-          configuredModel: task.modelConfig?.modelId,
-          tokens: s.tokens + (task.usage?.tokens ?? 0),
-          messages: [...s.messages, { role: "assistant", content: reply, taskId: task.id, turnId: pendingTurn.turnId, actions: [], failed: task.status === "failed" }],
-        }));
-        if (task.status === "needs_input") toast.message("任务等待审批/补充信息，可在后端恢复。");
+        update(active.id, (s) => mergeTask(s, task));
+        if (["needs_input", "paused"].includes(task.status)) toast.message("任务需要处理，请查看执行面板。");
       } else {
-        const out = await runChat({ message: content, history, repository, profile: profile!, providerId: provider?.id, mode: active.mode, model: modelName, memoryScope: `${owner}:${active.id}`, reasoning });
+        localId = `local:${crypto.randomUUID()}`;
+        const controller = new AbortController(); requestController.current = controller;
+        let eventSeq = 0;
+        const localTask = { id: localId, userId: owner, title: content.slice(0, 80), turnId: pendingTurn.turnId, status: "running" as const, usage: { tokens: 0, toolCalls: 0, wallMs: 0, costUsd: 0 }, createdAt: Date.now() };
+        update(active.id, (s) => mergeTask({ ...s, currentTaskId: localId }, localTask));
+        const out = await runChat({ message: content, history, repository, profile: profile!, providerId: provider?.id, mode: active.mode, model: modelName, memoryScope: `${owner}:${active.id}`, reasoning, signal: controller.signal, onActivity: (type, payload) => { if (alive.current) update(active.id, (s) => mergeEvent(s, { id: ++eventSeq, taskId: localTask.id, seq: eventSeq, type, payload, createdAt: Date.now() })); } });
         if (!alive.current) return;
         if (out.needsSetup) setShowSetup(true);
-        update(active.id, (s) => ({
-          ...s,
-          tokens: s.tokens + out.usage.input + out.usage.output,
-          contextUsed: out.contextUsed ?? s.contextUsed ?? 0,
-          promptSource: "estimated",
-          contextCap: out.contextCap ?? contextCap,
-          compressed: out.compressed ?? false,
-          pruned: out.pruned ?? false,
-          messages: [...s.messages, { role: "assistant", content: out.reply, actions: out.actions, mock: out.mock }],
-        }));
+        update(active.id, (s) => {
+          const merged = mergeTask(s, { ...localTask, status: out.needsSetup ? "needs_input" : out.mock ? "failed" : "succeeded", usage: { ...localTask.usage, tokens: out.usage.input + out.usage.output, wallMs: Date.now() - localTask.createdAt }, result: { summary: out.reply, artifactIds: [], partial: out.mock || out.needsSetup, completion: { state: out.mock || out.needsSetup ? "partial" : "complete", reason: out.needsSetup ? "missing_information" : "local_development_reply" } }, modelRuntime: { actualModel: out.model }, promptUsage: { inputTokens: out.contextUsed ?? null, contextLimit: provider?.contextLimit ?? null, outputReserve: 8000, source: "estimated" } });
+          return { ...merged, compressed: out.compressed ?? false, pruned: out.pruned ?? false, messages: merged.messages.map((m) => m.taskId === localTask.id ? { ...m, mock: out.mock, actions: out.actions } : m) };
+        });
       }
     } catch (e) {
       if (!alive.current || (e instanceof DOMException && e.name === "AbortError")) return;
+      if (acceptedId) { toast.message("进度连接暂不可用，任务保留在后台，正在重新连接。"); return; }
       // 兜底：runChat 理论上自兜底，此处再防一层，保证 busy 复位且错误可读（绝不 [object Object]）。
       const reason = errorMessage(e);
+      if (localId) { update(active.id, (s) => mergeTask(s, { id: localId!, userId: owner, title: content.slice(0, 80), turnId: pendingTurn.turnId, status: "failed", usage: { tokens: 0, toolCalls: 0, wallMs: 0, costUsd: 0 }, error: reason })); toast.error(reason); return; }
       update(active.id, (s) => ({
         ...s,
         messages: [...s.messages, { role: "assistant", content: `处理失败（${reason}）。${backendEnabled() ? "可重试提交同一轮次。" : "请重发本条重试。"}`, failed: true }],
@@ -252,7 +254,8 @@ export function AgentChatPage() {
       )}
 
       {/* 无边框消息流 */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6">
           {active?.messages.length === 0 && (
             <div className="mt-16 text-center text-sm text-muted-foreground">
@@ -271,15 +274,17 @@ export function AgentChatPage() {
               {m.role === "user" && <User className="mt-1 size-5 shrink-0 text-muted-foreground" />}
             </div>
           ))}
-          {busy && <Loader2 className="size-5 animate-spin text-muted-foreground" />}
-          {!busy && active.pendingTurn && <Button variant="outline" size="sm" onClick={() => send(true)}>重试提交同一轮次</Button>}
+          {!busyUI && active.pendingTurn && !active.pendingTurn.taskId && <Button variant="outline" size="sm" onClick={() => send(true)}>重试提交同一轮次</Button>}
           <div ref={endRef} />
         </div>
+      </div>
+      <TaskWorkspace key={active.id} session={active} loadError={monitor.error} onSelect={(id) => update(active.id, (s) => ({ ...s, currentTaskId: id }))} onTask={(task) => update(active.id, (s) => mergeTask(s, task))} onRefresh={monitor.refresh} onContinue={(title) => setInput(`请基于已有记录继续：${title}`)} />
       </div>
 
       {/* 输入区：工作区在输入栏左；模型选择在输入框下、Enter 左；上下文状态 */}
       <div className="border-t border-border bg-background px-4 py-3">
         <div className="mx-auto max-w-3xl">
+          {storageError && <p role="alert" className="mb-2 text-xs text-destructive">{storageError}</p>}
           {attachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
               {attachments.map((a, i) => (
@@ -366,8 +371,8 @@ export function AgentChatPage() {
                 <span className="ml-1 rounded bg-info/15 px-1 py-0.5 text-info">工具截断</span>
               )}
             </span>
-            <Button size="sm" className="ml-auto" disabled={busy || (!input.trim() && attachments.length === 0)} onClick={() => send()}>
-              {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+            <Button size="sm" className="ml-auto" disabled={busyUI || (!input.trim() && attachments.length === 0)} onClick={() => send()}>
+              {busyUI ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
               发送
             </Button>
           </div>

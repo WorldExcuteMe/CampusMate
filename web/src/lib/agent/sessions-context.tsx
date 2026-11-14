@@ -18,6 +18,7 @@ interface SessionsState {
   restore: (id: string) => void;
   update: (id: string, fn: (s: ChatSession) => ChatSession) => void;
   active: ChatSession;
+  storageError: string | null;
 }
 
 const Ctx = createContext<SessionsState | null>(null);
@@ -34,8 +35,9 @@ function OwnerSessionsProvider({ children, owner }: { children: ReactNode; owner
     return s.length ? s : [newSession()];
   });
   const [activeId, setActiveId] = useState(() => sessions[0]?.id);
+  const [storageError, setStorageError] = useState<string | null>(null);
 
-  useEffect(() => saveSessions(sessions, owner), [sessions, owner]);
+  useEffect(() => { setStorageError(saveSessions(sessions, owner) ? null : "浏览器存储已满或不可用，本次本地记录可能无法在刷新后保留；后台任务继续运行。"); }, [sessions, owner]);
 
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0];
 
@@ -44,6 +46,7 @@ function OwnerSessionsProvider({ children, owner }: { children: ReactNode; owner
     activeId,
     setActiveId,
     active,
+    storageError,
     create: () => {
       const preset = localStorage.getItem("campusmate.defaultMode");
       const mode = preset === "daily" || preset === "auto" ? preset : (active?.mode ?? "auto");

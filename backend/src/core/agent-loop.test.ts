@@ -89,7 +89,7 @@ test("事件与检查点钩子被调用", async () => {
   const transport = new FakeTransport([{ toolCalls: [tc("save_to_inbox", {})] }, { content: "ok" }]);
   await runAgentLoop({
     system: "s", user: "x",
-    deps: { transport, tools, budget: DEFAULT_BUDGET, executeTool: async () => JSON.stringify({ ok: true }), hooks: { onEvent: (t) => events.push(t), onCheckpoint: () => { checkpoints++; } } },
+    deps: { transport, tools, budget: DEFAULT_BUDGET, executeTool: async () => JSON.stringify({ ok: true }), hooks: { onEvent: (t) => { events.push(t); }, onCheckpoint: () => { checkpoints++; } } },
   });
   assert.ok(events.includes("tool.called"));
   assert.ok(events.includes("checkpoint.written"));

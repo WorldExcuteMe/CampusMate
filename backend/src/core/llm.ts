@@ -96,7 +96,7 @@ export class DeepSeekTransport implements LlmTransport {
             toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
             model = typeof data.model === "string" ? data.model : "unknown"; rawUsage = data.usage;
             finishReason = data.choices[0].finish_reason ?? null; truncated = finishReason === "length";
-            ttftMs = Date.now() - start;
+            ttftMs = null; // Non-streaming responses do not expose first-token timing.
           }
           const usage = normalizeUsage(rawUsage);
           return {

@@ -52,6 +52,7 @@ for (const postgres of [false, true]) {
     assert.ok(first);
     await ctx.store.updateTask(first.id, { status: "needs_input" });
     assert.equal(await ctx.store.claimNext({ workerId: "two", leaseTtlMs: 60000, now: Date.now() }), null);
+    assert.equal((await post(`/v1/tasks/${first.id}/resume`, {})).status, 200, "尚在屏障后的queued轮次不应阻止暂停任务恢复");
   });
 
   test(`${mode}：已有后续对话时旧失败任务提示新消息继续，原记录不变`, async (t) => {

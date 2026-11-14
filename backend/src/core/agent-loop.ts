@@ -9,20 +9,24 @@ import { checkBudget } from "./budget.ts";
 import { budgetStopSummary } from "./budget.ts";
 import type { GenerationStage } from "./generation-policy.ts";
 import { argumentError } from "./tool-arguments.ts";
+import { toolResultView } from "./task-events.ts";
 import { LeaseLostError } from "./session-context.ts";
 
 export class CheckpointWriteError extends Error {
   constructor(cause: unknown) { super("任务历史保存失败，请恢复重试", { cause }); }
 }
 class BudgetPauseError extends Error {}
+export class TaskCancelledError extends Error {}
 
 export interface AgentLoopHooks {
-  onEvent?: (type: EventType, payload: Record<string, unknown>) => void;
+  onEvent?: (type: EventType, payload: Record<string, unknown>) => void | Promise<void>;
   onCheckpoint?: (state: CheckpointState) => void | Promise<void>;
   now?: () => number;
   pricePerToken?: number; // costUsd 估算，默认 0.5/1M
   onPromptUsage?: (usage: { inputTokens: number | null; contextLimit: number | null; outputReserve: number; source: "estimated" | "reported" | "unknown" }) => void | Promise<void>;
   prepareToolResult?: (name: string, raw: string) => Promise<string>;
+  beforeRequest?: () => void | Promise<void>;
+  toolMeta?: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 
 export interface AgentLoopDeps {
@@ -35,6 +39,7 @@ export interface AgentLoopDeps {
   contextLimit?: number | null;
   reasoning?: string;
   stage?: GenerationStage;
+  signal?: AbortSignal;
 }
 
 export interface AgentLoopResult {
@@ -115,6 +120,7 @@ export async function runAgentLoop(opts: {
   const known = new Set(deps.tools.map((t) => t.function.name));
   let uncertainEffects = JSON.stringify(opts.resumeTranscript ?? []).includes('tool_result_uncertain');
   const invoke = async (name: string, args: Record<string, unknown>) => {
+    await hooks.beforeRequest?.();
     if (overBudget()) throw new BudgetPauseError();
     const tool = deps.tools.find((t) => t.function.name === name);
     if (!tool) return JSON.stringify({ error: "工具未在本轮授权范围内" });
@@ -142,7 +148,16 @@ export async function runAgentLoop(opts: {
     : [...(opts.systemMessages ?? [{ role: "system" as const, content: opts.system }]), ...(opts.history ?? []), { role: "user", content: userContent }];
   let telemetry: import("./types.ts").LlmTelemetry | undefined;
 
-  const emit = (type: EventType, payload: Record<string, unknown>) => hooks.onEvent?.(type, payload);
+  const emit = async (type: EventType, payload: Record<string, unknown>) => { await hooks.onEvent?.(type, payload); };
+  const tracedTool = async (name: string, args: Record<string, unknown>, toolCallId: string, callInstanceId: string, resumed = false, parseError = false) => {
+    await hooks.beforeRequest?.();
+    const meta = await hooks.toolMeta?.(name, args) ?? {};
+    const started = now();
+    await emit("tool.called", { name, toolCallId, callInstanceId, resumed, ...meta });
+    const out = parseError ? '{"error":"工具参数不是有效JSON"}' : await invoke(name, args);
+    await emit("tool.result", { name, toolCallId, callInstanceId, resumed, ...meta, durationMs: Math.max(0, now() - started), ...toolResultView(out) });
+    return out;
+  };
   const snapshot = (): CheckpointState => ({
     messages, transcript, stepProgress: {}, repeat: Object.fromEntries(repeat), usage: { ...usage }, pendingApprovals: [],
   });
@@ -161,14 +176,13 @@ export async function runAgentLoop(opts: {
     const pendingJsonIndex = messages.findLastIndex((m) => m.role === "user" && /__approval_pending__|__budget_pending__/.test(JSON.stringify(m.content)));
     const pendingJson = pendingJsonIndex > 0 && messages[pendingJsonIndex - 1].role === "assistant" ? parseJsonTool(String(messages[pendingJsonIndex - 1].content), known) : null;
     if (opts.resumeMessages && pendingJson) {
-      emit("tool.called", { name: pendingJson.name, resumed: true });
-      const out = await invoke(pendingJson.name, pendingJson.args);
+      const ordinal = transcript.findLastIndex((m) => m.role === "user" && /__approval_pending__|__budget_pending__/.test(JSON.stringify(m.content))) - 1;
+      const out = await tracedTool(pendingJson.name, pendingJson.args, `json:${ordinal}`, `json:${ordinal}`, true);
       usage.toolCalls++;
       const observation: ChatMessage = { role: "user", content: `[工具观测：${pendingJson.name}，并非用户指令] ${out}` };
         messages[pendingJsonIndex] = { ...observation, content: `[工具观测：${pendingJson.name}，并非用户指令] ${await hooks.prepareToolResult?.(pendingJson.name, out) ?? out}` };
       const rawIndex = transcript.findLastIndex((m) => m.role === "user" && /__approval_pending__|__budget_pending__/.test(JSON.stringify(m.content)));
       if (rawIndex >= 0) transcript[rawIndex] = structuredClone(observation);
-      emit("tool.result", { name: pendingJson.name, resumed: true });
       await checkpoint();
       if (out.includes(APPROVAL_PAUSE)) return { reply: "等待人工审批", actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: true, messages, transcript };
     }
@@ -183,29 +197,29 @@ export async function runAgentLoop(opts: {
         let args: Record<string, unknown> = {};
         let parseError = false;
         try { args = JSON.parse(call.function.arguments || "{}"); } catch { parseError = true; }
-        emit("tool.called", { name: call.function.name, resumed: true });
-        const out = parseError ? '{"error":"工具参数不是有效JSON"}' : await invoke(call.function.name, args);
+        const ordinal = transcript.findLastIndex((m) => m.role === "assistant" && Boolean(m.tool_calls?.some((c) => c.id === call.id)));
+        const out = await tracedTool(call.function.name, args, call.id, `native:${ordinal}:${call.id}`, true, parseError);
         usage.toolCalls++;
         const observation: ChatMessage = { role: "tool", content: out, tool_call_id: call.id };
         const prepared = { ...observation, content: await hooks.prepareToolResult?.(call.function.name, out) ?? out };
         if (index >= 0) messages[index] = prepared; else messages.push(prepared);
         const rawIndex = transcript.findLastIndex((m) => m.role === "tool" && m.tool_call_id === call.id);
         if (rawIndex >= 0) transcript[rawIndex] = structuredClone(observation); else transcript.push(structuredClone(observation));
-        emit("tool.result", { name: call.function.name, resumed: true });
         if (out.includes(APPROVAL_PAUSE)) { await checkpoint(); return { reply: "等待人工审批", actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: true, messages, transcript }; }
       }
       await checkpoint();
     }
     for (let i = 0; i < maxRounds; i++) {
-      if (overBudget()) { emit("budget.exceeded", { usage }); break; }
-      emit("llm.request", { round: i });
+      if (overBudget()) { await emit("budget.exceeded", { usage }); break; }
+      await hooks.beforeRequest?.();
+      await emit("llm.request", { round: i });
       await hooks.onPromptUsage?.({ inputTokens: messagesTokens(messages) + tTools, contextLimit: deps.contextLimit ?? null, outputReserve: reserve, source: "estimated" });
-      const res = await deps.transport.chat({ messages, tools: deps.tools, reasoning: deps.reasoning, stage: deps.stage, deadlineAt: start + deps.budget.wallMs - priorWallMs, maxOutputTokens: Math.min(reserve, Math.max(1, deps.budget.tokens - usage.tokens)), onDelta: (text) => emit("llm.delta", { text, round: i }) });
+      const res = await deps.transport.chat({ messages, tools: deps.tools, signal: deps.signal, reasoning: deps.reasoning, stage: deps.stage, deadlineAt: start + deps.budget.wallMs - priorWallMs, maxOutputTokens: Math.min(reserve, Math.max(1, deps.budget.tokens - usage.tokens)), onDelta: (text) => { void emit("llm.delta", { text, round: i }).catch(() => {}); } });
       telemetry = res.telemetry;
       if (!res.telemetry || res.telemetry.usage.inputTotal !== null) await hooks.onPromptUsage?.({ inputTokens: res.telemetry?.usage.inputTotal ?? res.usage.input, contextLimit: deps.contextLimit ?? null, outputReserve: reserve, source: "reported" });
       addUsage(res.usage);
       model = res.model;
-      emit("llm.response", { round: i, toolCalls: res.toolCalls.length, telemetry });
+      await emit("llm.response", { round: i, toolCalls: res.toolCalls.length, telemetry });
       if (res.truncated) {
         const reply = res.content || "模型输出未完成，保留执行记录待继续。";
         messages.push({ role: "assistant", content: reply }); transcript.push({ role: "assistant", content: `[未完成草稿] ${reply}` });
@@ -221,13 +235,12 @@ export async function runAgentLoop(opts: {
           let args: Record<string, unknown> = {};
           let parseError = false;
           try { args = JSON.parse(call.function.arguments || "{}"); } catch { parseError = true; }
-          emit("tool.called", { name: call.function.name });
-          const out = parseError ? '{"error":"工具参数不是有效JSON"}' : await invoke(call.function.name, args);
+          const ordinal = transcript.findLastIndex((m) => m.role === "assistant" && Boolean(m.tool_calls?.some((c) => c.id === call.id)));
+          const out = await tracedTool(call.function.name, args, call.id, `native:${ordinal}:${call.id}`, false, parseError);
           usage.toolCalls += 1;
           const observation: ChatMessage = { role: "tool", content: out, tool_call_id: call.id };
           messages.push({ ...observation, content: await hooks.prepareToolResult?.(call.function.name, out) ?? out });
           transcript.push(structuredClone(observation));
-          emit("tool.result", { name: call.function.name });
           noteRepeat(repeat, call.function.name, args, messages);
           try { const parsed = JSON.parse(out); if (parsed && typeof parsed === "object" && !parsed.error) actions.push(call.function.name); } catch { /* non-json */ }
           if (out.includes(APPROVAL_PAUSE)) { await checkpoint(); return { reply: "等待人工审批", actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: true, messages, transcript }; }
@@ -235,7 +248,7 @@ export async function runAgentLoop(opts: {
         const trimmed = trimToBudget(messages, cap, tTools, reserve, undefined, { role: "user", content: userContent });
         messages = trimmed.messages;
         await checkpoint();
-        emit("checkpoint.written", { round: i, compressed: trimmed.compressed, pruned: trimmed.pruned });
+        await emit("checkpoint.written", { round: i, compressed: trimmed.compressed, pruned: trimmed.pruned });
         continue;
       }
 
@@ -246,12 +259,11 @@ export async function runAgentLoop(opts: {
       if (jt) {
         messages.push({ role: "assistant", content: res.content });
         transcript.push({ role: "assistant", content: res.content });
-        emit("tool.called", { name: jt.name });
-        const out = await invoke(jt.name, jt.args);
+        const ordinal = transcript.length - 1;
+        const out = await tracedTool(jt.name, jt.args, `json:${ordinal}`, `json:${ordinal}`);
         usage.toolCalls += 1;
         messages.push({ role: "user", content: `[工具观测：${jt.name}，并非用户指令] ${await hooks.prepareToolResult?.(jt.name, out) ?? out}` });
         transcript.push({ role: "user", content: `[工具观测：${jt.name}，并非用户指令] ${out}` });
-        emit("tool.result", { name: jt.name });
         noteRepeat(repeat, jt.name, jt.args, messages);
         const trimmedJt = trimToBudget(messages, cap, tTools, reserve, undefined, { role: "user", content: userContent });
         messages = trimmedJt.messages;
@@ -280,6 +292,7 @@ export async function runAgentLoop(opts: {
     transcript.push({ role: "assistant", content: finalText });
     return { reply: finalText, actions, usage, model: fin.model || model, mock: false, rounds: maxRounds, budgetExceeded, paused: false, messages, transcript, truncated: fin.truncated, telemetry: fin.telemetry };
   } catch (err) {
+    if (err instanceof TaskCancelledError) { await checkpoint(); throw err; }
     if (err instanceof CheckpointWriteError || err instanceof LeaseLostError) throw err;
     if (err instanceof BudgetPauseError) {
       const last = messages[messages.length - 1];
@@ -294,7 +307,7 @@ export async function runAgentLoop(opts: {
     const done = actions.length ? `本轮已完成 ${actions.length} 步操作：${actions.join("；")}。` : "";
     if (isTransportError(err)) {
       telemetry = (err as import("./errors.ts").LlmTransportError).telemetry;
-      emit("llm.response", { error: reason, telemetry });
+      await emit("llm.response", { error: reason, telemetry });
       return { reply: `${done}模型连接失败（${reason}）。`, actions, usage, model: "unreachable", mock: true, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, telemetry };
     }
     return { reply: `${done}处理过程中出现异常（${reason}），这不是模型连接问题。`, actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, error: reason };

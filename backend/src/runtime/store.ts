@@ -98,7 +98,7 @@ export class InMemoryStore implements TaskStore {
     const task = await this.getTask(id);
     if (!task || task.userId !== userId) throw new Error("Task owner forbidden");
     return this.sessionTransaction(task.sessionId ?? id, async () => {
-      if (task.turnSeq !== undefined && [...this.tasks.values()].some((t) => t.userId === userId && t.sessionId === task.sessionId && (t.turnSeq ?? 0) > task.turnSeq!)) throw new SessionConflict("后续对话已开始，请用新消息继续；原任务记录已保留。");
+      if (task.status === "failed" && task.turnSeq !== undefined && [...this.tasks.values()].some((t) => t.userId === userId && t.sessionId === task.sessionId && (t.turnSeq ?? 0) > task.turnSeq!)) throw new SessionConflict("后续对话已开始，请用新消息继续；原任务记录已保留。");
       return this.updateTask(id, { status: "queued", transcriptCommitted: false, ...(budget ? { budget } : {}), error: "" });
     });
   }
@@ -117,8 +117,9 @@ export class InMemoryStore implements TaskStore {
       memory.commitSession(task.sessionId!, staged);
       this.checkpoints.set(checkpoint.id, checkpoint);
       const next = { ...current, ...patch, usage: structuredClone(input.state.usage), lastCheckpointId: checkpoint.id, transcriptCommitted: Boolean(patch), updatedAt: input.now };
-      this.tasks.set(task.id, next);
       await this.appendEvent({ taskId: task.id, userId: task.userId, type: "checkpoint.written", payload: { checkpointId: checkpoint.id } });
+      if (patch?.status && ["succeeded", "failed", "cancelled"].includes(patch.status)) await this.appendEvent({ taskId: task.id, userId: task.userId, type: `task.${patch.status}` as EventType, payload: { reason: patch.error, partial: patch.result?.partial } });
+      this.tasks.set(task.id, next);
       return next;
     });
   }
@@ -201,7 +202,9 @@ export class InMemoryStore implements TaskStore {
   async requestCancel(id: string, userId: string): Promise<boolean> {
     const t = this.tasks.get(id);
     if (!t || t.userId !== userId) return false;
+    if (["succeeded", "failed", "cancelled"].includes(t.status)) return false;
     const terminal = t.turnId && ["queued", "paused", "needs_input"].includes(t.status);
+    if (terminal) await this.appendEvent({ taskId: id, userId, type: "task.cancelled", payload: { reason: "user_requested" } });
     this.tasks.set(id, { ...t, cancelRequested: true, ...(terminal ? { status: "cancelled", transcriptCommitted: true } as const : {}), updatedAt: Date.now() });
     return true;
   }

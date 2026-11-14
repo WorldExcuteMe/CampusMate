@@ -25,6 +25,9 @@ export interface ChatSession {
   promptSource?: "estimated" | "reported" | "unknown";
   actualModel?: string;
   configuredModel?: string;
+  currentTaskId?: string;
+  taskViews?: Record<string, { task: import("./api-client").AgentTask; events: import("./api-client").AgentEvent[]; lastSeq: number; draft?: string; connection?: string }>;
+  taskTokenUsage?: Record<string, number>;
 }
 
 const KEY = "campusmate.sessions.v1";
@@ -39,8 +42,8 @@ export function loadSessions(owner = "demo"): ChatSession[] {
   }
 }
 
-export function saveSessions(list: ChatSession[], owner = "demo"): void {
-  localStorage.setItem(ownerKey(owner), JSON.stringify(list));
+export function saveSessions(list: ChatSession[], owner = "demo"): boolean {
+  try { localStorage.setItem(ownerKey(owner), JSON.stringify(list)); return true; } catch { return false; }
 }
 
 export function backendSessionId(owner: string, localId: string): string {

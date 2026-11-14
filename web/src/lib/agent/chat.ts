@@ -380,6 +380,8 @@ export async function runChat(opts: {
   contextCap?: number;
   memoryScope?: string;
   reasoning?: "auto" | "low" | "medium" | "high";
+  onActivity?: (type: string, payload: Record<string, unknown>) => void;
+  signal?: AbortSignal;
 }): Promise<ChatOutcome> {
   const actions: string[] = [];
   const mode = opts.mode ?? "auto";
@@ -433,15 +435,23 @@ export async function runChat(opts: {
   let model = "unknown";
   try {
     for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
-      const res = await llmChat({ providerId: opts.providerId, messages, tools, reasoning: opts.reasoning ?? "auto" });
+      if (opts.signal?.aborted) throw new DOMException("浏览器执行已中断", "AbortError");
+      opts.onActivity?.("llm.request", { round: i });
+      const res = await llmChat({ providerId: opts.providerId, messages, tools, reasoning: opts.reasoning ?? "auto", signal: opts.signal });
+      opts.onActivity?.("llm.response", { round: i, model: res.model, toolCalls: res.toolCalls.length });
       usage = { input: usage.input + res.usage.input, output: usage.output + res.usage.output };
       model = res.model;
       if (res.toolCalls.length > 0) {
         messages.push({ role: "assistant", content: res.content, tool_calls: res.toolCalls });
         for (const call of res.toolCalls) {
+          if (opts.signal?.aborted) throw new DOMException("浏览器执行已中断", "AbortError");
           let args: Record<string, unknown> = {};
           try { args = JSON.parse(call.function.arguments || "{}"); } catch {}
+          const callInstanceId = `local:${i}:${call.id}`, started = Date.now();
+          opts.onActivity?.("tool.called", { name: call.function.name, toolCallId: call.id, callInstanceId });
           const out = await executeTool(call.function.name, args, opts.repository, opts.profile, actions, scope, opts.memoryScope);
+          let ok = true; try { ok = !JSON.parse(out)?.error; } catch { /* text observation */ }
+          opts.onActivity?.("tool.result", { name: call.function.name, callInstanceId, durationMs: Date.now() - started, ok, summary: ok ? "已返回工具数据" : "工具未完成，请查看回复" });
           messages.push({ role: "tool", content: out, tool_call_id: call.id });
           noteRepeat(repeat, call.function.name, args, messages);
         }
@@ -459,8 +469,13 @@ export async function runChat(opts: {
       }
       const jt = parseJsonTool(res.content);
       if (jt) {
+        if (opts.signal?.aborted) throw new DOMException("浏览器执行已中断", "AbortError");
         messages.push({ role: "assistant", content: res.content });
+        const callInstanceId = `local:${i}:json`, started = Date.now();
+        opts.onActivity?.("tool.called", { name: jt.name, toolCallId: callInstanceId, callInstanceId });
         const out = await executeTool(jt.name, jt.args, opts.repository, opts.profile, actions, scope, opts.memoryScope);
+        let ok = true; try { ok = !JSON.parse(out)?.error; } catch { /* text observation */ }
+        opts.onActivity?.("tool.result", { name: jt.name, callInstanceId, durationMs: Date.now() - started, ok, summary: ok ? "已返回工具数据" : "工具未完成，请查看回复" });
         messages.push({ role: "user", content: `工具 ${jt.name} 返回：${out}` });
         noteRepeat(repeat, jt.name, jt.args, messages);
         const trimmed = trimToBudget(messages, cap, tTools);
@@ -477,7 +492,7 @@ export async function runChat(opts: {
     const trimmedFin = trimToBudget(messages, cap, tTools);
     messages = trimmedFin.messages;
     compressed = compressed || trimmedFin.compressed; pruned = pruned || trimmedFin.pruned;
-    const fin = await llmChat({ providerId: opts.providerId, messages, reasoning: "low" });
+    const fin = await llmChat({ providerId: opts.providerId, messages, reasoning: "low", signal: opts.signal });
     usage = { input: usage.input + fin.usage.input, output: usage.output + fin.usage.output };
     const actionsSummary = actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}` : "（未获取到有效结果）";
     const finalText = fin.content && !parseJsonTool(fin.content) ? fin.content : actionsSummary;
