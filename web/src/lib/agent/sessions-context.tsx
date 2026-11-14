@@ -13,6 +13,8 @@ interface SessionsState {
   create: () => ChatSession;
   rename: (id: string, name: string) => void;
   remove: (id: string) => void;
+  archive: (id: string) => void;
+  restore: (id: string) => void;
   update: (id: string, fn: (s: ChatSession) => ChatSession) => void;
   active: ChatSession;
 }
@@ -36,7 +38,9 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     setActiveId,
     active,
     create: () => {
-      const s = newSession(active?.mode ?? "auto");
+      const preset = localStorage.getItem("campusmate.defaultMode");
+      const mode = preset === "daily" || preset === "auto" ? preset : (active?.mode ?? "auto");
+      const s = newSession(mode);
       setSessions((l) => [s, ...l]);
       setActiveId(s.id);
       return s;
@@ -49,6 +53,16 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         if (id === activeId) setActiveId(fin[0].id);
         return fin;
       }),
+    archive: (id) =>
+      setSessions((l) => {
+        const next = l.map((s) => (s.id === id ? { ...s, archived: true } : s));
+        if (id === activeId) {
+          const vis = next.find((s) => !s.archived);
+          if (vis) setActiveId(vis.id);
+        }
+        return next;
+      }),
+    restore: (id) => setSessions((l) => l.map((s) => (s.id === id ? { ...s, archived: false } : s))),
     update: (id, fn) => setSessions((l) => l.map((s) => (s.id === id ? fn(s) : s))),
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

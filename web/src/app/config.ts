@@ -1,5 +1,6 @@
 import { getProvider, resolveConfig, type LlmProvider } from "@/lib/llm";
 import { getRepository, type Repository } from "@/lib/data";
+import { withBackendOpportunities } from "@/lib/data/backend-opportunities";
 import { createSupabaseClient } from "@/lib/data/supabase";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -17,10 +18,11 @@ export const supabaseClient: SupabaseClient | null = isDemo
   : createSupabaseClient(appConfig.supabaseUrl!, appConfig.supabaseAnonKey!);
 
 // 会话绑定：AuthProvider 登录后切换为 SupabaseRepository（按 auth.uid 隔离）。
-export let repository: Repository = getRepository({});
+// backendEnabled 时机会雷达读写走后端真相源（装饰器仅覆盖机会方法）。
+export let repository: Repository = withBackendOpportunities(getRepository({}));
 
 export function setRepository(r: Repository): void {
-  repository = r;
+  repository = withBackendOpportunities(r);
 }
 
 // 浏览器端始终使用明确标识的 Mock Provider；真实模型经服务端代理/Edge Function，

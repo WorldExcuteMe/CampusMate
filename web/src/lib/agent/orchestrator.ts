@@ -5,6 +5,7 @@ import {
   type ExtractedNotice,
 } from "../schemas";
 import type { LlmProvider } from "../llm/types";
+import { errorMessage } from "../llm/errors";
 import { classify } from "./classifier";
 
 export interface AgentRun {
@@ -62,8 +63,8 @@ export async function runInboxPipeline(
       provider: provider.name,
       mock: provider.mock,
       tokenUsage: { input: 0, output: 0 },
-      error: err instanceof Error ? err.message : String(err),
+      error: errorMessage(err),
     };
-    throw Object.assign(err instanceof Error ? err : new Error(String(err)), { run });
+    throw Object.assign(err instanceof Error ? err : new Error(errorMessage(err)), { run });
   }
 }

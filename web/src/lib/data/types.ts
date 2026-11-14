@@ -32,6 +32,7 @@ export interface InboxItem {
   status: InboxStatus;
   createdAt: string;
   demo: boolean;
+  mergedFrom?: string[];
 }
 
 export interface Task {
@@ -105,6 +106,7 @@ export interface Repository {
   createOpportunity(o: Opportunity): Promise<Opportunity>;
   listReports(): Promise<VerificationReport[]>;
   getReport(id: string): Promise<VerificationReport | null>;
+  createReport(r: VerificationReport): Promise<VerificationReport>;
   logActivity(e: ActivityEvent): Promise<void>;
   listActivity(): Promise<ActivityEvent[]>;
   logAgentRun(run: AgentRun): Promise<void>;

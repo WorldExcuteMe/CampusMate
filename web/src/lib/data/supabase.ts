@@ -184,6 +184,29 @@ export class SupabaseRepository implements Repository {
     if (error) throw error;
     return data ? rowToReport(data) : null;
   }
+  async createReport(r: VerificationReport): Promise<VerificationReport> {
+    const { error } = await this.db.from("verification_reports").insert({
+      id: r.id,
+      opportunity_id: r.opportunityId,
+      status: r.status,
+      summary: r.summary,
+      findings: r.findings,
+    });
+    if (error) throw error;
+    if (r.evidence?.length) {
+      await this.db.from("evidence_items").insert(
+        r.evidence.map((e) => ({
+          report_id: r.id,
+          source_url: e.sourceUrl,
+          source_type: e.sourceType,
+          excerpt: e.excerpt,
+          supports: e.supports,
+          confidence: e.confidence,
+        })),
+      );
+    }
+    return r;
+  }
   async logActivity(e: ActivityEvent): Promise<void> {
     await this.db.from("activity_events").insert({
       id: e.id,

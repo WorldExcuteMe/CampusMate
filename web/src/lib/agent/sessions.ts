@@ -3,6 +3,7 @@ export interface SessionMsg {
   content: string;
   actions?: string[];
   mock?: boolean;
+  failed?: boolean;
 }
 
 export interface ChatSession {
@@ -12,6 +13,11 @@ export interface ChatSession {
   createdAt: string;
   messages: SessionMsg[];
   tokens: number;
+  contextUsed?: number;
+  contextCap?: number;
+  compressed?: boolean;
+  pruned?: boolean;
+  archived?: boolean;
 }
 
 const KEY = "campusmate.sessions.v1";

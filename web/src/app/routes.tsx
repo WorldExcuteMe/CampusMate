@@ -14,6 +14,7 @@ import { ProfilePage } from "@/features/profile/ProfilePage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
 import { AgentChatPage } from "@/features/agent/AgentChatPage";
 import { DailyTasksPage } from "@/features/daily/DailyTasksPage";
+import { CalendarPage } from "@/features/calendar/CalendarPage";
 import { LoginPage } from "./auth";
 
 export function AppRoutes() {
@@ -28,6 +29,7 @@ export function AppRoutes() {
         <Route path="inbox/new" element={<NewInboxPage />} />
         <Route path="inbox/:id" element={<InboxDetailPage />} />
         <Route path="daily" element={<DailyTasksPage />} />
+        <Route path="calendar" element={<CalendarPage />} />
         <Route path="radar" element={<RadarPage />} />
         <Route path="radar/:id" element={<OpportunityDetailPage />} />
         <Route path="trust" element={<TrustPage />} />
