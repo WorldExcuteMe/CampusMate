@@ -4,6 +4,7 @@ import { CredentialVault } from "./credentials.ts";
 import { DeepSeekTransport, type LlmTransport } from "./llm.ts";
 import { providerFetch, providerUrl } from "./provider-http.ts";
 import { canonicalArgs, sha256 } from "../runtime/idempotency.ts";
+import { normalizeCapabilities as capabilities, resolveModelCapabilities } from "./model-capabilities.ts";
 
 export class ProviderError extends Error {
   status: number;
@@ -14,16 +15,11 @@ export interface PublicProvider {
   capabilities: Record<string, unknown>; contextLimit: number | null; metadataSource: string; isDefault: boolean; builtin: boolean;
 }
 
-function capabilities(input: unknown): Record<string, unknown> {
-  const data = input && typeof input === "object" ? input as Record<string, unknown> : {};
-  const result: Record<string, unknown> = {};
-  const enums: Record<string, unknown[]> = { tools: ["native", "json", "none", "unknown"], vision: [true, false, "unknown"], streaming: [true, false, "unknown"], temperature: [true, false, "unknown"], reasoning: ["reasoning_effort", "enable_thinking", "thinking_budget", "none", "unknown"], outputParameter: ["max_tokens", "max_completion_tokens", "unknown"] };
-  for (const [key, values] of Object.entries(enums)) result[key] = values.includes(data[key]) ? data[key] : "unknown";
-  if (typeof data.streamUsage === "boolean") result.streamUsage = data.streamUsage;
-  if (Number.isSafeInteger(data.maxOutputTokens) && Number(data.maxOutputTokens) >= 256) result.maxOutputTokens = Number(data.maxOutputTokens);
-  return result;
+function effectiveProvider(p: StoredProvider): StoredProvider {
+  const resolved = resolveModelCapabilities(p.baseUrl, p.modelId, p.capabilities, p.contextLimit);
+  return { ...p, capabilities: resolved.capabilities, contextLimit: resolved.contextLimit ?? undefined, metadataSource: resolved.profile ? `endpoint-profile+configured:${resolved.profile}` : p.metadataSource };
 }
-const publicConfig = (p: StoredProvider, builtin = false): PublicProvider => ({ id: p.providerId, displayName: p.displayName, protocol: p.protocol, baseUrl: p.baseUrl, modelId: p.modelId, hasKey: Boolean(p.encryptedSecret), capabilities: p.capabilities, contextLimit: p.contextLimit ?? null, metadataSource: p.metadataSource, isDefault: p.isDefault, builtin });
+const publicConfig = (stored: StoredProvider, builtin = false): PublicProvider => { const p = effectiveProvider(stored); return { id: p.providerId, displayName: p.displayName, protocol: p.protocol, baseUrl: p.baseUrl, modelId: p.modelId, hasKey: Boolean(p.encryptedSecret), capabilities: p.capabilities, contextLimit: p.contextLimit ?? null, metadataSource: p.metadataSource, isDefault: p.isDefault, builtin }; };
 const configVersion = (p: StoredProvider) => sha256(canonicalArgs({ providerId: p.providerId, modelId: p.modelId, baseUrl: p.baseUrl, capabilities: p.capabilities, contextLimit: p.contextLimit ?? null, secret: p.encryptedSecret ?? null }));
 
 export class ProviderService {
@@ -77,7 +73,7 @@ export class ProviderService {
     const p = chosen === "builtin" ? this.builtin() : chosen ? await this.store.get(userId, chosen) : null;
     if (!p) throw new ProviderError("所选模型不存在，请在设置中配置供应商", 404);
     if (p.protocol !== "openai") throw new ProviderError("模型协议未支持");
-    return p;
+    return effectiveProvider(p);
   }
   private version(p: StoredProvider): string { return p.providerId === "builtin" ? sha256(configVersion(p) + this.env.LLM_API_KEY) : configVersion(p); }
   async snapshot(userId: string, providerId?: string): Promise<ProviderSnapshot> {

@@ -12,8 +12,9 @@ export function generationPolicy(caps: Record<string, unknown>, preference: stri
   const constrained = outputTokens < 1024 && tier === "high";
   if (constrained) tier = "medium";
   const family = String(caps.reasoning ?? "unknown");
-  const params: Record<string, unknown> = family === "reasoning_effort" ? { reasoning_effort: tier } : family === "enable_thinking" ? { enable_thinking: tier !== "low" } : {};
-  const effective = family === "reasoning_effort" ? tier : family === "enable_thinking" ? (tier === "low" ? "off" : "on") : null;
-  const reason = effective === null ? "端点未确认可调参数，未发送思考控制" : constrained ? "输出预算不足，限制思考档位" : family === "enable_thinking" ? "接口仅支持思考开关" : requested === "auto" ? `按${stage}阶段选择` : "采用用户偏好";
+  const toggle = family === "enable_thinking" || family === "chat_template_kwargs";
+  const params: Record<string, unknown> = family === "reasoning_effort" ? { reasoning_effort: tier } : family === "chat_template_kwargs" ? { chat_template_kwargs: { enable_thinking: tier !== "low" } } : family === "enable_thinking" ? { enable_thinking: tier !== "low" } : {};
+  const effective = family === "reasoning_effort" ? tier : toggle ? (tier === "low" ? "off" : "on") : null;
+  const reason = effective === null ? "端点未确认可调参数，未发送思考控制" : constrained ? "输出预算不足，限制思考档位" : toggle ? "接口仅支持思考开关" : requested === "auto" ? `按${stage}阶段选择` : "采用用户偏好";
   return { requested, effective, family, stage, reason, params };
 }

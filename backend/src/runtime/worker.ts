@@ -33,6 +33,22 @@ import { isProposalRequest } from "../core/document-plan.ts";
 import { runProposal, type ProposalResult } from "../core/proposal.ts";
 import { toolResultFailed } from "../core/tool-result.ts";
 
+function executionFailure(result: AgentLoopResult): string {
+  if (result.error === "invalid_tool_protocol") return "模型工具调用格式无效，尚未执行相应操作";
+  if (result.error === "llm_timeout") return "模型响应超时，未得到完整答复";
+  if (result.error === "llm_capability") return "当前端点的输入能力与请求不匹配";
+  if (result.error === "llm_input") return "模型输入超出配置限制";
+  if (result.error === "llm_authentication") return "模型接口认证失败";
+  if (result.error === "llm_rate_limit") return "模型接口限流";
+  if (result.error === "llm_protocol") return "模型响应协议无效";
+  if (result.error === "llm_cancelled" || result.stopReason === "cancelled") return "任务已取消";
+  if (result.mock) return "模型连接未成功";
+  if (result.toolErrors) return `有${result.toolErrors}项工具执行失败`;
+  if (result.budgetExceeded) return "任务预算已耗尽";
+  if (result.truncated) return "模型输出未完成";
+  return "执行尚未满足验收条件";
+}
+
 export interface WorkerDeps {
   store: TaskStore;
   transport?: LlmTransport;
@@ -124,7 +140,7 @@ export class Worker {
     }
     if (criteria.some((c) => c.required)) return { taskId: task.id, evaluatedBy: "evaluator", passed: false, criteria: criteria.map((c) => ({ id: c.id, passed: false, evidenceIds: [], note: "未配置独立验收存储，无法证明此条件" })), evaluatedAt: this.now() };
     const passed = !result.mock && !result.error && !result.truncated && !result.budgetExceeded && !result.toolErrors;
-    return { taskId: task.id, evaluatedBy: "evaluator", passed, criteria: [{ id: "model_reachable", passed, evidenceIds: [], note: passed ? "模型真实答复" : "模型不可达，降级" }], evaluatedAt: this.now() };
+    return { taskId: task.id, evaluatedBy: "evaluator", passed, criteria: [{ id: "model_reachable", passed, evidenceIds: [], note: passed ? "模型真实答复" : executionFailure(result) }], evaluatedAt: this.now() };
   }
 
   // 认领并执行至多 concurrency 个任务，返回处理数。
@@ -406,7 +422,7 @@ export class Worker {
 
       let certificate = await this.evaluator(task, result);
       const executionPassed = !result.error && !result.mock && !result.truncated && !result.budgetExceeded && !result.toolErrors && (!result.stopReason || result.stopReason === "completed");
-      certificate = { ...certificate, passed: certificate.passed && executionPassed, criteria: [...certificate.criteria, { id: "runtime_execution", passed: executionPassed, evidenceIds: [], note: executionPassed ? "正常结束，未观测到工具失败" : `执行未通过：${result.stopReason ?? "error"}，toolErrors=${result.toolErrors ?? 0}` }] };
+      certificate = { ...certificate, passed: certificate.passed && executionPassed, criteria: [...certificate.criteria, { id: "runtime_execution", passed: executionPassed, evidenceIds: [], note: executionPassed ? "正常结束，未观测到工具失败" : executionFailure(result) }] };
       if (result.delivery) certificate = { ...certificate, passed: certificate.passed && result.delivery.passed, criteria: [...certificate.criteria, ...result.delivery.checks.map((c) => ({ id: c.id, passed: c.passed, evidenceIds: [], note: c.detail }))] };
       await store.appendEvent({ taskId: task.id, userId: task.userId, type: certificate.passed ? "eval.passed" : "eval.failed", payload: { certificate } });
 
@@ -416,7 +432,7 @@ export class Worker {
           result: { summary: result.reply, certificate, artifactIds: result.delivery?.artifactIds ?? [], partial: false, ...(result.delivery ? { completion: { state: "complete", reason: "checks_passed", checks: result.delivery.checks } as const } : {}) },
         });
       } else {
-        const summary = result.delivery ? result.reply : `任务未通过验收（${certificate.criteria.filter(c => !c.passed).map(c => c.note).join("；")}）。\n${result.reply}`;
+        const summary = result.delivery ? result.reply : `任务未通过验收（${[...new Set(certificate.criteria.filter(c => !c.passed).map(c => c.note))].join("；")}）。\n${result.reply}`;
         await finishTurn({ status: "failed", error: summary, result: { summary, certificate, artifactIds: result.delivery?.artifactIds ?? [], ...(result.delivery ? { partial: true, completion: { state: "partial", reason: "document_checks_failed", checks: result.delivery.checks } as const } : {}) } });
       }
     } catch (err) {

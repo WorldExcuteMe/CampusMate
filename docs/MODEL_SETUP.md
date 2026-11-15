@@ -8,9 +8,11 @@ CampusMate的认证后端管理默认模型和用户自定义OpenAI兼容端点�
 
 例如实际请求Gemma时应填写服务商给出的Gemma模型ID；不能仅修改显示名。聊天中的“最近返回”取上游响应`model`字段；缺失则未知，并不假定服务商实际运行了配置模型。
 
-`LLM_CONTEXT_LIMIT`和`LLM_CAPABILITIES`仅填写该服务端点文档确认的能力。例如工具`native/json/none/unknown`、图片/streaming/temperature为`true/false/unknown`、输出参数`max_tokens/max_completion_tokens/unknown`，最大输出`maxOutputTokens`。思考控制当前适配`reasoning_effort`和`enable_thinking`；预算型参数尚需专用adapter，不会硬塞给通用端点。连接测试只验证文本请求，不自动推断工具、视觉、思考和窗口。
+普通用户不需要填写接口能力。内置与自定义连接共用能力解析，Radeon官方`https://developer.amd.com.cn/radeon/api/v1`的`Gemma-4-31B-IT`自动采用原生工具、图片、SSE、`max_tokens`及`chat_template_kwargs.enable_thinking`契约，窗口262144；8192是本应用工作输出上限，非服务商硬上限声明。其他端点不因模型名称相同而套用这份规则。
 
-聊天可选auto/low/medium/high；auto在规划/核验阶段允许high，常规阶段low，低输出预算会限制档位。端点未知则不发送思考控制，并说明原因。未知工具协议使用受限JSON回退，已知none不提供工具；未知图片能力会提示切换视觉模型。
+`LLM_CONTEXT_LIMIT`和`LLM_CAPABILITIES`保留为运维覆盖配置，仅设置端点实际确认的值；未知字段由已知端点规则补齐。思考控制支持`reasoning_effort`、`enable_thinking`和上述Radeon嵌套开关；预算型参数需专用adapter。规则声明不代表当次服务在线或质量已验证，连接测试仍只验证文字连通。
+
+聊天可选auto/low/medium/high；auto在规划/核验阶段允许high，常规阶段low，低输出预算会限制档位。端点未知则不发送思考控制，并说明原因。未知工具协议使用受限JSON回退，已知none不提供工具；未知图片能力允许向所选端点实际尝试，明确配置为不支持才本地拒绝，不静默丢图片或换模型。未知能力尚未实现完整的持久探测矩阵。
 
 单次模型调用最多3个attempt，共用覆盖响应体与退避的deadline；浏览器不再叠加重试或偷偷切备用端点。输出截断/断流会保留草稿并暂停；预算暂停需要明确调整后恢复。观测保留requestId、attempt、TTFT、总时长、停止原因、前缀/schema指纹及nullable用量。缺失cache/reasoning不当作0，reasoning已包含在output时不重复加总；未知价格时USD费用未知。原图pts无法直接换算成美元。
 
@@ -18,7 +20,7 @@ CampusMate的认证后端管理默认模型和用户自定义OpenAI兼容端点�
 
 先为服务端配置`PROVIDER_MASTER_KEY`：32随机字节的base64或64字符hex。使用密码管理器或受控密钥生成器生成，API和Worker保持一致，不能放入任何`VITE_`变量、前端配置、提交、日志或用户聊天。
 
-后端当前从`backend/.env`或部署环境读取配置，参考`backend/.env.example`；生产数据库迁移和部署须单独执行，本轮未运行远程操作。登录后在设置页填连接ID、显示名、公开HTTPS地址、模型ID和API密钥。编辑密钥留空表示保留，移除凭证是独立按钮；测试连接由用户主动触发并会向相应模型发一个小文本请求。
+后端从`backend/.env`或部署环境读取配置，参考`backend/.env.example`；数据库环境见`docs/CLOUD_RUNTIME_SETUP.md`。登录后只需填写公开HTTPS地址、模型ID和API密钥，连接ID自动生成，显示名可留空；页面展示能力状态及规则来源，不要求手选底层参数。编辑密钥留空保留原值，移除凭证是独立按钮；测试连接会向相应模型发一个小文本请求。
 
 AES-256-GCM密文包含版本、随机nonce、认证tag和密文。AAD绑定用户/供应商/版本；密文不能复制给其他用户或配置使用。缺主密钥时保存新密钥返回明确错误，没有明文回退。列表、Task快照和事件只含hasKey或非敏感配置。遗留开发代理不再接受新明文密钥写入；已有本地开发配置不会自动上传。
 
@@ -34,4 +36,4 @@ AES-256-GCM密文包含版本、随机nonce、认证tag和密文。AAD绑定用�
 
 ## 当前验证边界
 
-API→存储→真实Worker使用本地假上游验证owner、路由和密钥边界；PGlite验证SQL读写。未调用真实付费模型，未验证生产Supabase RLS、多进程PG、服务网关真实能力或缓存收益；这些不能由本地通过结果代替。
+自动回归使用固定响应验证owner、路由、异常和预算边界；真实云Supabase的持久化/重启/RLS另有实测记录。用户已授权使用现有Gemma API调优，2026-11-15真实图片读取、搜索调用及高校通知抓取均已完成实测，完整任务结论与当前验收见`docs/MODEL_TOOL_RECOVERY.md`。尚未验证其他Key/网关、原生其他协议、独立多进程生产部署或真实KV收益，不能据单个端点通过外推。

@@ -1,4 +1,5 @@
 import type { ToolCall } from "./types.ts";
+import { LlmTransportError, errorMessage } from "./errors.ts";
 export function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(new Error("模型请求超时或已取消"));
   return new Promise((resolve, reject) => {
@@ -19,7 +20,9 @@ export async function readSse(res: Response, opts: { signal: AbortSignal; start:
   const reader = res.body?.getReader(); if (!reader) throw new Error("模型流缺少响应体");
   const decoder = new TextDecoder(); let buffer = "", content = "", pending = "", model = "unknown";
   let doneMarker = false, finishReason: string | null = null, usage: unknown, ttftMs: number | null = null, bytes = 0, sentAt = opts.start;
-  const calls = new Map<number, ToolCall>();
+  const calls = new Map<string, ToolCall>();
+  const active = new Map<number, string>(), byId = new Map<string, string>();
+  let serial = 0;
   const flush = (final = false) => {
     pending = opts.redact(pending);
     const length = final ? pending.length : Math.max(0, pending.length - (opts.guardTail ?? 0));
@@ -30,6 +33,12 @@ export async function readSse(res: Response, opts: { signal: AbortSignal; start:
     if (!payload) return;
     if (payload === "[DONE]") { doneMarker = true; return; }
     const data = JSON.parse(payload);
+    if (data.error) {
+      const status = Number(data.error.status ?? data.status);
+      const category = String(data.error.type ?? data.error.code ?? "").toLowerCase();
+      const reason = status === 401 || status === 403 || /auth|permission|api.?key/.test(category) ? "authentication" : status === 429 || /rate.?limit/.test(category) ? "rate_limit" : status >= 500 || /server|overload/.test(category) ? "upstream" : "protocol";
+      throw new LlmTransportError(`模型流返回错误：${errorMessage(data.error)}`, { reason, status: Number.isInteger(status) ? status : undefined });
+    }
     if (typeof data.model === "string") model = data.model;
     if (data.usage) usage = data.usage;
     const choice = data.choices?.[0];
@@ -40,12 +49,32 @@ export async function readSse(res: Response, opts: { signal: AbortSignal; start:
       if (pending.length >= 64 || opts.now() - sentAt >= 250) flush();
     }
     for (const piece of delta?.tool_calls ?? []) {
-      if (!Number.isInteger(piece.index) || piece.index < 0 || piece.index >= 64) throw new Error("工具流索引无效");
-      const call = calls.get(piece.index) ?? { id: "", type: "function", function: { name: "", arguments: "" } };
-      if (piece.id) call.id += piece.id;
-      if (piece.function?.name) call.function.name += piece.function.name;
-      if (piece.function?.arguments) call.function.arguments += piece.function.arguments;
-      calls.set(piece.index, call);
+      if (!Number.isInteger(piece.index) || piece.index < 0 || piece.index >= 64) throw new LlmTransportError("工具流索引无效", { reason: "protocol" });
+      let key = active.get(piece.index);
+      if (piece.id) {
+        if (typeof piece.id !== "string" || piece.id.length > 256) throw new LlmTransportError("工具流ID无效", { reason: "protocol" });
+        const existing = byId.get(piece.id);
+        if (existing) key = existing;
+        else {
+          // Some compatible gateways reuse index=0 for independent complete
+          // IDs. An index routes subsequent deltas, never merges two IDs.
+          if (!key || calls.get(key)?.id) key = `call-${serial++}`;
+          byId.set(piece.id, key);
+        }
+      }
+      key ??= `call-${serial++}`;
+      if (!calls.has(key) && calls.size >= 64) throw new LlmTransportError("工具流调用数量超限", { reason: "protocol" });
+      const call = calls.get(key) ?? { id: "", type: "function", function: { name: "", arguments: "" } };
+      if (piece.id) call.id = piece.id;
+      if (piece.function?.name) {
+        if (typeof piece.function.name !== "string") throw new LlmTransportError("工具流函数名称无效", { reason: "protocol" });
+        if (piece.function.name !== call.function.name) call.function.name = piece.function.name.startsWith(call.function.name) ? piece.function.name : call.function.name + piece.function.name;
+      }
+      if (piece.function?.arguments) {
+        if (typeof piece.function.arguments !== "string") throw new LlmTransportError("工具流参数类型无效", { reason: "protocol" });
+        call.function.arguments += piece.function.arguments;
+      }
+      calls.set(key, call); active.set(piece.index, key);
     }
   };
   let broken = false;
@@ -56,10 +85,11 @@ export async function readSse(res: Response, opts: { signal: AbortSignal; start:
       bytes += chunk.value.byteLength; if (bytes > 4_000_000) throw new Error("模型流超过大小限制");
       buffer += decoder.decode(chunk.value, { stream: true });
       let boundary: RegExpExecArray | null;
-      while ((boundary = /\r?\n\r?\n/.exec(buffer))) { frame(buffer.slice(0, boundary.index)); buffer = buffer.slice(boundary.index + boundary[0].length); }
+      while ((boundary = /\r?\n\r?\n/.exec(buffer))) { frame(buffer.slice(0, boundary.index)); buffer = buffer.slice(boundary.index + boundary[0].length); if (doneMarker) break; }
+      if (doneMarker) break;
     }
-    buffer += decoder.decode(); if (buffer.trim()) frame(buffer);
-  } catch (error) { if (!content && !calls.size) throw error; broken = true; }
+    if (!doneMarker) { buffer += decoder.decode(); if (buffer.trim()) frame(buffer); }
+  } catch (error) { if (error instanceof LlmTransportError || (!content && !calls.size)) throw error; broken = true; }
   finally { flush(true); void reader.cancel().catch(() => {}); }
   return { content: opts.redact(content), toolCalls: [...calls.values()], model, usage, ttftMs, finishReason, truncated: broken || !doneMarker || finishReason === "length" || !finishReason };
 }

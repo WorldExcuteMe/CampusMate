@@ -9,6 +9,7 @@ import { sanitizeProposedStatus, type VerificationStatus } from "./verification.
 import type { ArtifactStore } from "./storage-contracts.ts";
 import { DocumentService, saveFetchedSource } from "./document-service.ts";
 import type { DocumentBlock } from "../../../shared/document.ts";
+import { searchWeb } from "./web-search.ts";
 
 export const CLOUD_TOOLS: ToolDef[] = [
   { type: "function", function: { name: "document_create", description: "创建通用文档并保存真实产物。blocks只接受heading(level,text)、paragraph(text,claimType,sourceIds)、list(items)、table(headers,rows)、image(data PNG/JPEG,alt)、chart(title,labels,values)、reference(sourceId)。外部事实须用web_fetch返回的sourceId，不可自填已核实来源。长文先分章节准备再创建；可用previousArtifactId追加同任务的新版本。", parameters: { type: "object", properties: { title: { type: "string" }, blocks: { type: "array", items: { type: "object" } }, sourceIds: { type: "array", items: { type: "string" } }, previousArtifactId: { type: "string" } }, required: ["title", "blocks"] } } },
@@ -101,42 +102,7 @@ export async function executeCloudTool(name: string, args: Record<string, unknow
     return JSON.stringify({ artifactId: artifact.id, sha256: artifact.sha256, offset, text: text.slice(offset, offset + limit), nextOffset: offset + limit < text.length ? offset + limit : null, totalChars: text.length });
   }
   if (name === "web_search") {
-    // 搜索引擎用 Bing 中国（DDG 在国内网络不可达会挂起）。fetch 自带 12s 超时，先于 Worker 15s 兜底自 abort。
-    try {
-      const query = String(args.query ?? "");
-      const limit = Math.min(Math.max(Number(args.limit ?? 6) || 6, 1), 10);
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 12000);
-      let html: string;
-      try {
-        const r = await fetch(`https://cn.bing.com/search?q=${encodeURIComponent(query)}&count=${limit + 2}`, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-          },
-          signal: ctrl.signal,
-        });
-        html = await r.text();
-      } finally {
-        clearTimeout(timer);
-      }
-      const strip = (s: string) => s
-        .replace(/<[^>]+>/g, "")
-        .replace(/&ensp;/g, " ").replace(/&#0183;/g, "·").replace(/&quot;/g, '"')
-        .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
-        .replace(/\s+/g, " ").trim();
-      const results: { title: string; url: string; snippet: string }[] = [];
-      const re = /<h2><a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a><\/h2>(?:<div class="b_caption"><p[^>]*>([\s\S]*?)<\/p>)?/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(html)) && results.length < limit) {
-        const url = m[1];
-        if (!/^https?:/.test(url)) continue;
-        results.push({ title: strip(m[2]), url, snippet: strip(m[3] ?? "") });
-      }
-      return JSON.stringify({ engine: "bing", results });
-    } catch (e) {
-      return JSON.stringify({ error: `web_search 失败：${errorMessage(e)}`, results: [] });
-    }
+    return JSON.stringify(await searchWeb(String(args.query ?? ""), Math.min(Math.max(Number(args.limit ?? 6) || 6, 1), 10)));
   }
   if (name === "web_fetch") {
     try {

@@ -12,6 +12,7 @@ import { argumentError } from "./tool-arguments.ts";
 import { toolResultView } from "./task-events.ts";
 import { LeaseLostError } from "./session-context.ts";
 import { toolResultFailed } from "./tool-result.ts";
+import { parseTextToolCall, looksLikeToolCall } from "./tool-protocol.ts";
 
 export class CheckpointWriteError extends Error {
   constructor(cause: unknown) { super("任务历史保存失败，请恢复重试", { cause }); }
@@ -60,29 +61,14 @@ export interface AgentLoopResult {
   telemetry?: import("./types.ts").LlmTelemetry;
   stopReason?: "completed" | "budget" | "cancelled" | "approval" | "round_limit" | "invalid_output" | "error";
   toolErrors?: number;
+  recoveredReadErrors?: number;
 }
 
 const MAX_TOOL_ROUNDS = 20;
 const APPROVAL_PAUSE = "__approval_pending__";
 
 export function parseJsonTool(content: string, known: Set<string>): { name: string; args: Record<string, unknown> } | null {
-  const candidates: string[] = [];
-  const fence = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) candidates.push(fence[1]);
-  const brace = content.match(/\{[\s\S]*\}/);
-  if (brace) candidates.push(brace[0]);
-  for (const c of candidates) {
-    try {
-      const obj = JSON.parse(c.trim());
-      const name = obj.tool ?? obj.name ?? obj.function?.name;
-      if (typeof name === "string" && known.has(name)) {
-        let args = obj.args ?? obj.arguments ?? obj.parameters ?? {};
-        if (typeof args === "string") args = JSON.parse(args);
-        return { name, args };
-      }
-    } catch { /* try next */ }
-  }
-  return null;
+  return parseTextToolCall(content, known);
 }
 
 function canonicalKey(name: string, args: Record<string, unknown>): string {
@@ -105,9 +91,45 @@ function noteRepeat(repeat: Map<string, number>, name: string, args: Record<stri
 
 export async function runAgentLoop(opts: Parameters<typeof runAgentLoopInternal>[0]): Promise<AgentLoopResult> {
   const result = await runAgentLoopInternal(opts);
-  result.toolErrors = Math.max(opts.resumeToolErrors ?? 0, result.transcript.filter((m) => m.role === "tool" ? toolResultFailed(String(m.content)) : m.role === "user" && typeof m.content === "string" && m.content.startsWith("[工具观测：") && toolResultFailed(m.content.replace(/^\[工具观测：[^\]]+\]\s*/, ""))).length);
+  const rawErrors = (messages: ChatMessage[]) => messages.filter((m) => m.role === "tool" ? toolResultFailed(String(m.content)) : m.role === "user" && typeof m.content === "string" && m.content.startsWith("[工具观测：") && toolResultFailed(m.content.replace(/^\[工具观测：[^\]]+\]\s*/, ""))).length;
+  const requiredText = [opts.user, ...(opts.history ?? []).filter(m => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[工具观测")).map(m => String(m.content))].join("\n");
+  const recovered = !result.error && !result.mock && !result.truncated && !result.budgetExceeded && !result.paused ? recoveredFetchErrors(result.transcript, requiredText, result.reply, new Set(opts.deps.tools.map(t => t.function.name))) : 0;
+  // Preserve errors whose original observations are absent from an old checkpoint.
+  result.toolErrors = Math.max(0, (opts.resumeToolErrors ?? 0) - rawErrors(opts.resumeTranscript ?? [])) + rawErrors(result.transcript) - recovered;
+  if (recovered) {
+    const oldReply = result.reply;
+    result.reply = `有${recovered}次网页读取失败；摘要采用已取得并列出的资料，未成功读取的链接仅作入口，未核实部分仍需核对。\n\n${oldReply}`;
+    const last = result.transcript.at(-1); if (last?.role === "assistant" && last.content === oldReply) last.content = result.reply;
+    result.recoveredReadErrors = recovered;
+  }
   result.stopReason ??= result.budgetExceeded ? "budget" : result.paused ? "approval" : result.mock || result.error || result.truncated ? "error" : "completed";
   return result;
+}
+function fetchObservations(messages: ChatMessage[], known: Set<string>) {
+  type Call = { name: string; args: Record<string, unknown> };
+  const calls = new Map<string, Call>(); let lastTextCall: Call | null = null;
+  const observations: { index: number; call: Call; data: Record<string, unknown>; failed: boolean }[] = [];
+  for (const [index, message] of messages.entries()) {
+    if (message.role === "assistant") {
+      for (const call of message.tool_calls ?? []) { try { calls.set(call.id, { name: call.function.name, args: JSON.parse(call.function.arguments) }); } catch { /* Invalid calls remain errors. */ } }
+      lastTextCall = typeof message.content === "string" ? parseJsonTool(message.content, known) : null;
+    }
+    let call: Call | undefined, content: string | undefined;
+    if (message.role === "tool") { call = calls.get(message.tool_call_id ?? ""); content = String(message.content); }
+    if (message.role === "user" && typeof message.content === "string") {
+      const match = /^\[工具观测：([^，\]]+)(?:，[^\]]*)?\]\s*([\s\S]*)$/.exec(message.content);
+      if (match && lastTextCall?.name === match[1]) { call = lastTextCall; content = match[2]; }
+    }
+    if (call?.name !== "web_fetch" || content === undefined) continue;
+    try { const data = JSON.parse(content); if (data && typeof data === "object") observations.push({ index, call, data, failed: toolResultFailed(content) }); } catch { /* No structured fetch proof. */ }
+  }
+  return observations;
+}
+function recoveredFetchErrors(messages: ChatMessage[], requiredText: string, reply: string, known: Set<string>): number {
+  const observations = fetchObservations(messages, known);
+  return observations.filter(o => o.failed && typeof o.call.args?.url === "string" && !requiredText.includes(o.call.args.url) && observations.some(later =>
+    later.index > o.index && !later.failed && Number(later.data.status) >= 200 && Number(later.data.status) < 300 && typeof later.data.text === "string" && later.data.text.trim().length > 0 && typeof later.data.url === "string" && reply.includes(later.data.url),
+  )).length;
 }
 async function runAgentLoopInternal(opts: {
   system: string;
@@ -148,6 +170,9 @@ async function runAgentLoopInternal(opts: {
   const priorWallMs = usage.wallMs;
   const transcript: ChatMessage[] = structuredClone(opts.resumeTranscript ?? []);
   let model = "unknown";
+  let protocolRepairs = 0;
+  let synthesizing = false;
+  const briefInformation = (!deps.stage || deps.stage === "simple") && /^\s*(?:(?:请|帮我|麻烦)\s*)*(收集|搜集|查询|查找|搜索|了解|介绍)/.test(opts.user) && !/详细|全面|长文|报告|对比|分别|保存|写入|导出|生成|制作|计划|方案|推导|验证|核验/.test(opts.user);
   const cap = deps.contextLimit ?? resolveContextCap(opts.model);
   const reserve = Math.min(RESERVE_OUTPUT, Math.floor(cap * 0.25));
   const tTools = toolsTokens(deps.tools);
@@ -225,8 +250,21 @@ async function runAgentLoopInternal(opts: {
       if (overBudget()) { await emit("budget.exceeded", { usage }); break; }
       await hooks.beforeRequest?.();
       await emit("llm.request", { round: i });
-      await hooks.onPromptUsage?.({ inputTokens: messagesTokens(messages) + tTools, contextLimit: deps.contextLimit ?? null, outputReserve: reserve, source: "estimated" });
-      const res = await deps.transport.chat({ messages, tools: deps.tools, signal: deps.signal, reasoning: deps.reasoning, stage: deps.stage, deadlineAt: start + deps.budget.wallMs - priorWallMs, maxOutputTokens: Math.min(reserve, Math.max(1, deps.budget.tokens - usage.tokens)), onDelta: (text) => { void emit("llm.delta", { text, round: i }).catch(() => {}); } });
+      const availableSources = briefInformation && !synthesizing ? fetchObservations(transcript, known).filter(o => !o.failed && Number(o.data.status) >= 200 && Number(o.data.status) < 300 && typeof o.data.text === "string" && o.data.text.trim() && typeof o.data.url === "string") : [];
+      if (availableSources.length) {
+        synthesizing = true;
+        messages.push({ role: "system", content: "【信息摘要阶段】已取得真实网页材料，现在交付首轮摘要，不再调用工具。只用最多6条单句要点，约300字，不用分节标题或大表格。第一条说明截至当前日期的时效/报名状态；最后一条引用成功读取页的完整URL，而非页面内提到但没有读取的官网入口。赛前通知中的计划赛程不能写成已实际举办的决赛日期。仅依据已取得材料，缺失信息写未核实，不能据未取得通知断言未来赛事不存在。用户需要详细材料时可继续展开。本轮可引用的实际读取URL：" + JSON.stringify([...new Set(availableSources.map(o => o.data.url))]) });
+      }
+      const requestTools = synthesizing ? [] : deps.tools;
+      const outputLimit = Math.min(reserve, Math.max(1, deps.budget.tokens - usage.tokens), synthesizing ? 1024 : Infinity);
+      await hooks.onPromptUsage?.({ inputTokens: messagesTokens(messages) + (synthesizing ? 0 : tTools), contextLimit: deps.contextLimit ?? null, outputReserve: outputLimit, source: "estimated" });
+      let heldDelta = "", plainDelta = false;
+      const res = await deps.transport.chat({ messages, tools: requestTools, signal: deps.signal, reasoning: deps.reasoning, stage: synthesizing ? "write" : deps.stage, deadlineAt: start + deps.budget.wallMs - priorWallMs, maxOutputTokens: outputLimit, onDelta: (text) => {
+        if (plainDelta) { void emit("llm.delta", { text, round: i }).catch(() => {}); return; }
+        heldDelta += text;
+        const first = heldDelta.trimStart()[0];
+        if (first && !["{", "<", "`"].includes(first)) { plainDelta = true; void emit("llm.delta", { text: heldDelta, round: i }).catch(() => {}); heldDelta = ""; }
+      } });
       telemetry = res.telemetry;
       if (!res.telemetry || res.telemetry.usage.inputTotal !== null) await hooks.onPromptUsage?.({ inputTokens: res.telemetry?.usage.inputTotal ?? res.usage.input, contextLimit: deps.contextLimit ?? null, outputReserve: reserve, source: "reported" });
       addUsage(res.usage);
@@ -234,11 +272,12 @@ async function runAgentLoopInternal(opts: {
       model = res.model;
       await emit("llm.response", { round: i, toolCalls: res.toolCalls.length, telemetry });
       if (res.truncated) {
-        const reply = res.content || "模型输出未完成，保留执行记录待继续。";
+        const reply = looksLikeToolCall(res.content) ? "工具指令尚未完整接收，未执行相应操作；请用新消息继续。" : res.content || "模型输出未完成，保留执行记录待继续。";
         messages.push({ role: "assistant", content: reply }); transcript.push({ role: "assistant", content: `[未完成草稿] ${reply}` });
         await checkpoint();
         return { reply, actions, usage, model: res.model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, truncated: true, messages, transcript, telemetry };
       }
+      if (synthesizing && (res.toolCalls.length || looksLikeToolCall(res.content))) return { reply: "模型在摘要阶段仍返回了工具指令，未执行相应操作，请用新消息继续。", actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: "invalid_output", error: "invalid_tool_protocol" };
 
       if (res.toolCalls.length > 0) {
         const request: ChatMessage = { role: "assistant", content: res.content, tool_calls: res.toolCalls };
@@ -284,8 +323,22 @@ async function runAgentLoopInternal(opts: {
         if (out.includes(APPROVAL_PAUSE)) return { reply: "等待人工审批", actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: true, messages, transcript };
         continue;
       }
+      if (looksLikeToolCall(res.content)) {
+        if (protocolRepairs++ < 1) {
+          messages.push({ role: "assistant", content: res.content });
+          messages.push({ role: "user", content: '[系统协议校验] 上一条工具指令未能解析，尚未执行。请用本轮已提供的原生工具，或单个严格JSON {"tool":"已注册名称","args":{...}} 修正；不要返回表达式、多个指令或裸控制标记。' });
+          await checkpoint();
+          continue;
+        }
+        return { reply: "模型工具调用格式无效，尚未执行该操作。已尝试修正一次，请用新消息重试。", actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: "invalid_output", error: "invalid_tool_protocol" };
+      }
+      if (heldDelta) await emit("llm.delta", { text: heldDelta, round: i });
       const warning = uncertainEffects ? "存在操作结果未确认，请核对后用新消息继续。\n\n" : "";
-      const finalReply = warning + (res.content.trim() ? res.content : (actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}。` : "（模型未返回内容，请重试或换一种问法）"));
+      let finalReply = warning + (res.content.trim() ? res.content : (actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}。` : "（模型未返回内容，请重试或换一种问法）"));
+      if (synthesizing) {
+        const urls = [...new Set(fetchObservations(transcript, known).filter(o => !o.failed && Number(o.data.status) >= 200 && Number(o.data.status) < 300 && typeof o.data.text === "string" && o.data.text.trim() && typeof o.data.url === "string").map(o => String(o.data.url)))];
+        if (!urls.some(url => finalReply.includes(url))) finalReply += "\n\n本次实际读取的资料来源：\n" + urls.map(url => `- ${url}`).join("\n");
+      }
       transcript.push({ role: "assistant", content: finalReply });
       return { reply: finalReply, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: overBudget(), paused: false, messages, transcript, telemetry, error: uncertainEffects ? warning : undefined };
     }
@@ -317,7 +370,9 @@ async function runAgentLoopInternal(opts: {
     if (isTransportError(err)) {
       telemetry = (err as import("./errors.ts").LlmTransportError).telemetry;
       await emit("llm.response", { error: reason, telemetry });
-      return { reply: `${done}模型连接失败（${reason}）。`, actions, usage, model: "unreachable", mock: true, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, telemetry };
+      const category = (err as import("./errors.ts").LlmTransportError).reason ?? "network";
+      if (category === "network") return { reply: `${done}模型连接失败（${reason}）。`, actions, usage, model: "unreachable", mock: true, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, telemetry };
+      return { reply: `${done}${reason}。`, actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, telemetry, error: `llm_${category}`, stopReason: category === "cancelled" ? "cancelled" : "error" };
     }
     return { reply: `${done}处理过程中出现异常（${reason}），这不是模型连接问题。`, actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, error: reason };
   }

@@ -7,6 +7,8 @@ import { normalizeUsage } from "./llm-usage.ts";
 import { generationPolicy, type GenerationStage } from "./generation-policy.ts";
 import { canonicalArgs, sha256 } from "../runtime/idempotency.ts";
 import { messagesTokens, toolsTokens, estimateTokens } from "./context.ts";
+import { resolveModelCapabilities } from "./model-capabilities.ts";
+import { parseTextToolCall } from "./tool-protocol.ts";
 
 export interface ChatOptions {
   messages: ChatMessage[]; tools?: ToolDef[]; reasoning?: string; temperature?: number;
@@ -29,7 +31,11 @@ export function reasoningParams(model: string | undefined, tier: string | undefi
 }
 export class DeepSeekTransport implements LlmTransport {
   private cfg: DeepSeekConfig;
-  constructor(cfg: DeepSeekConfig) { if (!cfg.apiKey) throw new Error("LLM_API_KEY missing (server-side)"); this.cfg = cfg; }
+  constructor(cfg: DeepSeekConfig) {
+    if (!cfg.apiKey) throw new Error("LLM_API_KEY missing (server-side)");
+    const resolved = resolveModelCapabilities(cfg.baseUrl ?? "https://api.deepseek.com", cfg.model ?? "deepseek-chat", cfg.capabilities, cfg.contextLimit);
+    this.cfg = { ...cfg, ...(cfg.capabilities !== undefined || resolved.profile ? { capabilities: resolved.capabilities } : {}), contextLimit: resolved.contextLimit };
+  }
   private redact(text: string): string {
     const key = this.cfg.apiKey;
     const escaped = key.replace(/[.*+?^$()|[\]{}\\]/g, "\\$&");
@@ -49,7 +55,11 @@ export class DeepSeekTransport implements LlmTransport {
     const policy = generationPolicy(caps, opts.reasoning ?? cfg.reasoningPreference, opts.stage ?? "simple", maxOutput);
     const tools = [...(opts.tools ?? [])].sort((a, b) => a.function.name.localeCompare(b.function.name));
     const jsonTools = tools.length > 0 && !["native", "none"].includes(String(caps.tools)) && cfg.capabilities !== undefined;
-    const messages = jsonTools ? [opts.messages[0], { role: "system" as const, content: '工具协议：需要工具时仅输出JSON {"tool":"名称","args":{...}}，等待真实观测再继续。仅可使用以下工具及参数；普通文本不是工具结果：\n' + JSON.stringify(tools) }, ...opts.messages.slice(1)].filter(Boolean) : opts.messages;
+    const protocol = '工具协议：需要工具时仅输出一个严格JSON {"tool":"名称","args":{...}}，等待真实观测再继续；不要额外闭括号或裸控制标记。仅可使用以下工具及参数；普通文本不是工具结果：\n' + JSON.stringify(tools);
+    const messages = jsonTools || caps.singleSystem === true ? [
+      { role: "system" as const, content: opts.messages.filter(m => m.role === "system").map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).concat(jsonTools ? [protocol] : []).join("\n\n") },
+      ...opts.messages.filter(m => m.role !== "system"),
+    ] : opts.messages;
     const body = {
       model: cfg.model ?? "deepseek-chat", messages,
       ...(caps.temperature === true ? { temperature: opts.temperature ?? 0.2 } : {}),
@@ -61,8 +71,9 @@ export class DeepSeekTransport implements LlmTransport {
     let lastError: unknown;
     let attempts = 0;
     try {
-      if (opts.messages.some((m) => Array.isArray(m.content) && m.content.some((part) => part.type === "image_url")) && caps.vision !== true) throw new LlmTransportError("该端点未确认图片输入能力，请配置视觉模型或改用文字材料");
-      if (cfg.contextLimit && estimatedInput >= cfg.contextLimit) throw new LlmTransportError("上下文超出已配置窗口，请缩小输入");
+      if (opts.signal?.aborted) throw new LlmTransportError("模型请求已由调用方取消", { reason: "cancelled" });
+      if (opts.messages.some((m) => Array.isArray(m.content) && m.content.some((part) => part.type === "image_url")) && caps.vision === false) throw new LlmTransportError("当前端点已配置为不支持图片输入，请选择视觉模型或使用文字材料", { reason: "capability" });
+      if (cfg.contextLimit && estimatedInput >= cfg.contextLimit) throw new LlmTransportError("上下文超出已配置窗口，请缩小输入", { reason: "input" });
       const maxAttempts = Math.max(1, Math.min(3, (cfg.maxRetries ?? 2) + 1));
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         attempts = attempt;
@@ -88,10 +99,10 @@ export class DeepSeekTransport implements LlmTransport {
             const text = await responseText(res, ctrl.signal);
             let data: any;
             try { data = JSON.parse(text, (_key, value) => typeof value === "string" ? this.redact(value) : value); }
-            catch { throw new LlmTransportError("LLM 返回非 JSON（HTTP " + res.status + "）"); }
-            if (!res.ok) throw new LlmTransportError("上游模型错误 HTTP " + res.status + ": " + errorMessage(data.error ?? data));
+            catch { throw new LlmTransportError("LLM 返回非 JSON（HTTP " + res.status + "）", { reason: "protocol", status: res.status }); }
+            if (!res.ok) throw new LlmTransportError("上游模型错误 HTTP " + res.status + ": " + errorMessage(data.error ?? data), { reason: [401,403].includes(res.status) ? "authentication" : res.status === 429 ? "rate_limit" : "upstream", status: res.status });
             const message = data.choices?.[0]?.message;
-            if (!message || typeof message !== "object") throw new LlmTransportError("模型响应协议无效：缺少choices/message");
+            if (!message || typeof message !== "object") throw new LlmTransportError("模型响应协议无效：缺少choices/message", { reason: "protocol" });
             content = typeof message.content === "string" ? message.content : "";
             toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
             model = typeof data.model === "string" ? data.model : "unknown"; rawUsage = data.usage;
@@ -99,6 +110,10 @@ export class DeepSeekTransport implements LlmTransport {
             ttftMs = null; // Non-streaming responses do not expose first-token timing.
           }
           const usage = normalizeUsage(rawUsage);
+          if (!truncated && !toolCalls.length && caps.tools === "native") {
+            const parsed = parseTextToolCall(content, new Set(tools.map(t => t.function.name)));
+            if (parsed) { toolCalls = [{ id: `compat-${requestId}`, type: "function", function: { name: parsed.name, arguments: JSON.stringify(parsed.args) } }]; content = ""; }
+          }
           return {
             content, toolCalls, model, finishReason, truncated,
             usage: { input: usage.inputTotal ?? estimatedInput, output: usage.output ?? estimateTokens(content + JSON.stringify(toolCalls)) },
@@ -116,7 +131,9 @@ export class DeepSeekTransport implements LlmTransport {
       }
       throw lastError;
     } catch (error) {
-      throw new LlmTransportError(errorMessage(this.redact(error instanceof Error ? error.message : errorMessage(error))), { telemetry: { requestId, attempts, ttftMs: null, totalMs: Date.now() - start, finishReason: null, stablePrefixHash: sha256(canonicalArgs({ system: opts.messages.find((m) => m.role === "system")?.content ?? "" })), toolsHash: sha256(canonicalArgs(tools)), usage: normalizeUsage(null), reasoning: { requested: policy.requested, effective: policy.effective, family: policy.family, stage: policy.stage, reason: policy.reason } } });
+      const reason = opts.signal?.aborted ? "cancelled" : ctrl.signal.aborted ? "timeout" : error instanceof LlmTransportError ? error.reason : error instanceof SyntaxError ? "protocol" : "network";
+      const message = reason === "timeout" ? `模型响应超时（本次请求限时${Math.max(0, Math.round((deadline - start) / 1000))}秒）` : reason === "cancelled" ? "模型请求已由调用方取消" : error instanceof Error ? error.message : errorMessage(error);
+      throw new LlmTransportError(errorMessage(this.redact(message)), { reason, status: error instanceof LlmTransportError ? error.status : undefined, telemetry: { requestId, attempts, ttftMs: null, totalMs: Date.now() - start, finishReason: null, stablePrefixHash: sha256(canonicalArgs({ system: opts.messages.find((m) => m.role === "system")?.content ?? "" })), toolsHash: sha256(canonicalArgs(tools)), usage: normalizeUsage(null), reasoning: { requested: policy.requested, effective: policy.effective, family: policy.family, stage: policy.stage, reason: policy.reason } } });
     } finally { clearTimeout(timer); opts.signal?.removeEventListener("abort", abort); }
   }
   private async delay(ms: number, signal: AbortSignal, deadline: number) {

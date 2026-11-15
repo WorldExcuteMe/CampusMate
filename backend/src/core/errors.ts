@@ -52,12 +52,16 @@ export function errorMessage(err: unknown): string {
 
 export class LlmTransportError extends Error {
   readonly kind = "llm-transport";
+  reason: "network" | "timeout" | "cancelled" | "capability" | "input" | "protocol" | "authentication" | "rate_limit" | "upstream";
+  status?: number;
   telemetry?: import("./types.ts").LlmTelemetry;
-  constructor(message: string, options?: { cause?: unknown; telemetry?: import("./types.ts").LlmTelemetry }) {
+  constructor(message: string, options?: { cause?: unknown; telemetry?: import("./types.ts").LlmTelemetry; reason?: LlmTransportError["reason"]; status?: number }) {
     super(message);
     this.name = "LlmTransportError";
     if (options?.cause !== undefined) (this as { cause?: unknown }).cause = options.cause;
     this.telemetry = options?.telemetry;
+    this.reason = options?.reason ?? "network";
+    this.status = options?.status;
   }
 }
 

@@ -1,5 +1,14 @@
 # CampusMate · project.md
 
+## 2026-11-15 Gemma 工具执行回归修复
+
+- 用户报告竞赛收集任务只返回JSON/Gemma工具token，随后超时；已查实前两任务无tool.called却succeeded，第三任务单次180008ms超时。主代理单独修复，分支`codex/model-tool-recovery-20261115`，不push/不合并main。
+- 修复独立工具文本解析/一次有界协议修正、未执行指令禁止验收成功；Radeon builtin/BYOK自动适配图像/原生工具/SSE/max_tokens/嵌套思考与单system。设置页移除能力填写，ID自动生成、名称可选。
+- 真实API又揭示同index不同ID被拼成web_fetchweb_fetch，以及SSE错误帧被漏读；已修复ID组装、错误分类和DONE终止。补搜索实体相关性/一次短查询回退、已取得正文后的简短摘要阶段、真实来源绑定、带提示的只读抓取恢复；写入失败、用户指定必读来源、预算/取消/幂等保护保留。
+- 已用用户授权的真实Gemma识别测试图7319/红色圆形；原始竞赛提示在完整工具清单下5次模型请求、4次工具调用、128824ms正常结束，成功读取高校通知并列出来源，原官网抓取失败透明提示。不将赛前计划日期叙述视为独立事实验收，保留质量风险。
+- 后端320项：319 pass / 0 fail / 1外部TEST_DATABASE_URL skip，类型通过；前端219/219及类型/生产构建通过。已确认无排队/运行任务后重启本机8788，postgres/Worker开启，5176=200，认证模型列表200/未认证401，内置Gemma自动能力已生效。主密钥、云数据和旧任务记录保持。
+- 详情见`docs/MODEL_TOOL_RECOVERY.md`及`docs/specs/model-tool-recovery.md`。其他Key/端点完整探测、原生其他协议和KV收益仍待真实验收；本次不宣称全模型兼容或所有事实准确。
+
 ## 2026-11-15 云端持久化运行接入
 
 - 用户因 WSL 内存占用明确选择复用原云端 Supabase。主代理单独完成，分支 `codex/local-persistent-runtime-20261115`，基于已发布 main d22efc9；本次不 push、不合并 main。
