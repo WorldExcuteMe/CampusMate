@@ -1,5 +1,6 @@
 // QQ/微信群通知导入清洗管线：去噪 → 归一 → 去重 → 日常时间提取。
 // 仅处理用户主动转发/粘贴/截图导入的自有群消息（授权个人使用）。
+import { beijingDay, daysUntil } from "@/lib/time-policy";
 
 export function cleanGroupMessage(raw: string): string {
   let text = raw;
@@ -31,16 +32,15 @@ export function beijingNow(): Date {
   return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
 }
 export function todayBeijing(): string {
-  const d = beijingNow();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return beijingDay();
 }
 export function nowBeijingText(): string {
   return new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
 }
 // 截止日期是否已过期（早于今天，北京时间）。null 视为未知，不判过期。
 export function isExpired(deadline: string | null | undefined): boolean {
-  if (!deadline) return false;
-  return deadline < todayBeijing();
+  const days = daysUntil(deadline);
+  return days !== null && days < 0;
 }
 
 const WEEKDAY: Record<string, number> = {

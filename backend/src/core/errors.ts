@@ -52,10 +52,12 @@ export function errorMessage(err: unknown): string {
 
 export class LlmTransportError extends Error {
   readonly kind = "llm-transport";
-  constructor(message: string, options?: { cause?: unknown }) {
+  telemetry?: import("./types.ts").LlmTelemetry;
+  constructor(message: string, options?: { cause?: unknown; telemetry?: import("./types.ts").LlmTelemetry }) {
     super(message);
     this.name = "LlmTransportError";
     if (options?.cause !== undefined) (this as { cause?: unknown }).cause = options.cause;
+    this.telemetry = options?.telemetry;
   }
 }
 

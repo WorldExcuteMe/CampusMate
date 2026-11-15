@@ -37,6 +37,13 @@ describe("dedupe: 语义相似度（语料调校）", () => {
     const sch = clusters.filter((c) => c.some((x) => x.title === SCH_MAR || x.title === SCH_SEP));
     expect(sch.length).toBe(2);
   });
+  it("桥接通知最后到达时，合并已经分开的两个簇，与到达顺序无关", () => {
+    for (const titles of [[FORMAL, PROMO, MINI], [PROMO, FORMAL, MINI], [MINI, PROMO, FORMAL]]) {
+      const clusters = clusterNotices(titles.map((title) => ({ title })));
+      expect(clusters).toHaveLength(1);
+      expect(clusters[0]).toHaveLength(3);
+    }
+  });
 });
 
 describe("dedupe: mergeInbox 合并历史通知", () => {

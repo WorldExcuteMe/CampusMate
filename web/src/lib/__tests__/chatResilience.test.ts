@@ -5,6 +5,7 @@ import { DemoRepository, resetDemo } from "../data/demo";
 import { runChat } from "../agent/chat";
 import { clearPlan, clearMemory } from "../agent/memory";
 import type { ChatMessage } from "../llm/proxy";
+import type { AgentProgress } from "../agent/progress";
 
 type Msg = { content?: string; tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[] };
 const tc = (name: string, args: Record<string, unknown>, id = "c1") => ({ id, type: "function" as const, function: { name, arguments: JSON.stringify(args) } });
@@ -31,6 +32,36 @@ beforeEach(() => { resetDemo(); clearPlan(); clearMemory(); });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("runChat 韧性：工具/DB 失败不中断模型、不出现 [object Object]", () => {
+  it("progress follows model→actual tool wait→next model; observer errors cannot break execution", async () => {
+    const repo = new DemoRepository();
+    const profile = await repo.getProfile();
+    let release!: () => void;
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    repo.createTask = async task => { await wait; return task; };
+    vi.stubGlobal("fetch", router([{ tool_calls: [tc("create_daily_task", { title: "测试进度" })] }, { content: "已完成。" }], []));
+    const progress: AgentProgress[] = [];
+    const running = runChat({ message: "创建测试任务", history: [], repository: repo, profile, onProgress: event => { progress.push(event); } });
+    await vi.waitFor(() => expect(progress.at(-1)?.phase).toBe("tool"));
+    expect(progress.map(p => p.phase)).toEqual(["preparing", "model", "tool"]);
+    expect(progress.at(-1)).toMatchObject({ tool: "create_daily_task", toolIndex: 1, toolTotal: 1 });
+    release();
+    expect((await running).reply).toBe("已完成。");
+    expect(progress.at(-1)).toMatchObject({ phase: "model", round: 2, completedTools: 1 });
+    vi.stubGlobal("fetch", router([{ content: "正常回复" }], []));
+    const out = await runChat({ message: "hi", history: [], repository: repo, profile, onProgress: () => { throw new Error("UI error"); } });
+    expect(out.reply).toBe("正常回复");
+    expect(out.failed).not.toBe(true);
+  });
+  it("invalid_tools reports request rejection, not missing key or connection failure", async () => {
+    const repo = new DemoRepository();
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", router([], bodies, 400, "invalid_tools"));
+    const out = await runChat({ message: "hi", history: [], repository: repo, profile: await repo.getProfile(), mode: "auto" });
+    expect(out).toMatchObject({ mock: false, failed: true });
+    expect(out.reply).toContain("模型请求被拒绝（invalid_tools）");
+    expect(out.reply).not.toContain("模型连接失败");
+    expect(bodies).toHaveLength(1);
+  });
   it("save_to_inbox 写库抛 Supabase 普通对象 → 模型仍在线(mock:false)，错误可读回传，无 [object Object]", async () => {
     const repo = new DemoRepository();
     // 模拟 Supabase PostgrestError：普通对象，非 Error 实例（旧代码 String() → [object Object]）

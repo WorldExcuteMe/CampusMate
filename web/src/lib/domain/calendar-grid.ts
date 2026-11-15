@@ -2,7 +2,8 @@
 // 纯逻辑，确定性可测。单双周/周次由 occursInWeek 判定。
 
 export interface ScheduleItem { courseName: string; weekday: number; startTime: string; endTime: string; startWeek: number; endWeek: number; weekPattern: "every" | "odd" | "even"; classroom?: string; }
-export interface CalendarEntry { id: string; title: string; weekday: number; startTime: string; endTime: string; kind: "course" | "exam" | "activity" | "deadline" | "interview" | "opportunity"; classroom?: string; }
+export type { CalendarEntry } from "../../../../shared/calendar";
+import type { CalendarEntry } from "../../../../shared/calendar";
 
 export function occursInWeek(s: Pick<ScheduleItem, "startWeek" | "endWeek" | "weekPattern">, week: number): boolean {
   if (week < s.startWeek || week > s.endWeek) return false;
@@ -34,7 +35,7 @@ export function freeTime(entries: CalendarEntry[], dayStart = "08:00", dayEnd = 
   const grid = weekGrid(entries);
   const fmt = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
   for (let d = 0; d < 7; d++) {
-    const busy = grid[d].map((e) => [toMin(e.startTime), toMin(e.endTime)] as [number, number]).sort((a, b) => a[0] - b[0]);
+    const busy = grid[d].filter((e) => !e.allDay && e.endTime > e.startTime).map((e) => [Math.max(toMin(dayStart), toMin(e.startTime)), Math.min(toMin(dayEnd), toMin(e.endTime))] as [number, number]).filter(([s, e]) => e > s).sort((a, b) => a[0] - b[0]);
     let cursor = toMin(dayStart);
     const end = toMin(dayEnd);
     for (const [s, e] of busy) {

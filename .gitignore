@@ -1,9 +1,15 @@
 # dependencies / build
+node_modules/
+.local/
+supabase/.temp/
+supabase/.branches/
 web/node_modules/
 web/dist/
 backend/node_modules/
 web/coverage/
 backend/coverage/
+.agent_versions/
+supabase/.temp/
 
 # env / secrets
 .env
@@ -14,6 +20,7 @@ web/.env.*
 web/.providers.local.json
 backend/.env
 backend/.env.*
+!backend/.env.example
 
 # internal docs & local Qoder config (team policy: not uploaded)
 docs/research/

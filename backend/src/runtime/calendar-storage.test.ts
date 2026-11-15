@@ -1,0 +1,27 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { OWNER, OTHER, contextFor, storageFixture } from "./storage-test-fixture.ts";
+import { previewImport } from "../core/schedule-import.ts";
+const CSV = "courseName,weekday,startTime,endTime,startWeek,endWeek,weekPattern,classroom\n数学,1,08:00,09:40,1,16,every,A101";
+for (const mode of ["memory", "postgres"] as const) test(`${mode}：课表确认事务、重读、调课源目标和作息持久化`, async (t) => {
+  const fixture = mode === "postgres" ? await storageFixture(t) : undefined;
+  const ctx = fixture?.first ?? contextFor(), pc = ctx.personalContext;
+  const term = await pc.createTerm({ userId: OWNER, institutionId: "A", name: "秋", startDate: "2026-09-01", endDate: "2027-01-20", weekAnchor: "2026-08-31", totalWeeks: 20, timezone: "Asia/Shanghai" });
+  assert.equal((await pc.listTerms(OWNER))[0].weekAnchor, "2026-08-31");
+  const preview = previewImport("csv", CSV, term.startDate, term.totalWeeks);
+  const job = await pc.createImportJob({ userId: OWNER, termId: term.id, format: "csv", status: "previewed", sourceName: "数学.csv", previewCount: 1, errorCount: 0, version: 1, createdAt: Date.now(), preview });
+  assert.equal(await pc.getImportJob(OTHER, job.id), null);
+  await assert.rejects(() => pc.confirmImportJob(OTHER, job.id));
+  const [a, b] = await Promise.all([pc.confirmImportJob(OWNER, job.id), pc.confirmImportJob(OWNER, job.id)]);
+  assert.equal(a[0].id, b[0].id); assert.equal((await pc.listSchedules(OWNER, term.id)).length, 1);
+  const reader = fixture?.rebuild().personalContext ?? pc;
+  assert.equal((await reader.getImportJob(OWNER, job.id))?.status, "confirmed");
+  await pc.addException({ userId: OWNER, termId: term.id, scheduleId: a[0].id, kind: "reschedule", sourceDate: "2026-09-07", date: "2026-09-15", startTime: "16:00", endTime: "17:40" });
+  assert.equal((await reader.listExceptions(OWNER, term.id))[0].sourceDate, "2026-09-07");
+  const scheme = { userId: OWNER, termId: term.id, institutionId: "A", campus: "东校区", name: "夏季", effectiveFrom: term.startDate, effectiveTo: "2026-10-31", periods: [{ index: 1, startTime: "08:00", endTime: "08:50" }] };
+  await pc.saveTimeScheme(scheme);
+  await pc.saveTimeScheme({ ...scheme, name: "冬季", effectiveFrom: "2026-11-01", effectiveTo: term.endDate, periods: [{ index: 1, startTime: "08:30", endTime: "09:20" }] });
+  assert.equal((await reader.listTimeSchemes(OWNER, term.id)).length, 2);
+  assert.deepEqual(await reader.listTimeSchemes(OTHER, term.id), []);
+  await assert.rejects(() => pc.saveTimeScheme({ ...scheme, userId: OTHER }));
+});

@@ -7,7 +7,7 @@ import type { SqlClient, SqlPool, SqlResult } from "./sql.ts";
 export class PGlitePool implements SqlPool {
   private db: PGlite;
   constructor(db: PGlite) { this.db = db; }
-  static async create(): Promise<PGlitePool> { return new PGlitePool(await PGlite.create({ extensions: { pgcrypto } })); }
+  static async create(dataDir?: string): Promise<PGlitePool> { return new PGlitePool(await PGlite.create({ dataDir, extensions: { pgcrypto } })); }
   async query<T = Record<string, unknown>>(text: string, params?: unknown[]): Promise<SqlResult<T>> {
     const r = await this.db.query(text, params as unknown[]);
     return { rows: r.rows as T[], rowCount: r.affectedRows ?? r.rows.length };

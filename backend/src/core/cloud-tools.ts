@@ -6,8 +6,15 @@ import { safeFetch, htmlToText } from "./ssrf.ts";
 import type { EvidenceStore } from "./evidence.ts";
 import type { OpportunityStore } from "./opportunity-store.ts";
 import { sanitizeProposedStatus, type VerificationStatus } from "./verification.ts";
+import type { ArtifactStore } from "./storage-contracts.ts";
+import { DocumentService, saveFetchedSource } from "./document-service.ts";
+import type { DocumentBlock } from "../../../shared/document.ts";
 
 export const CLOUD_TOOLS: ToolDef[] = [
+  { type: "function", function: { name: "document_create", description: "创建通用文档并保存真实产物。blocks只接受heading(level,text)、paragraph(text,claimType,sourceIds)、list(items)、table(headers,rows)、image(data PNG/JPEG,alt)、chart(title,labels,values)、reference(sourceId)。外部事实须用web_fetch返回的sourceId，不可自填已核实来源。长文先分章节准备再创建；可用previousArtifactId追加同任务的新版本。", parameters: { type: "object", properties: { title: { type: "string" }, blocks: { type: "array", items: { type: "object" } }, sourceIds: { type: "array", items: { type: "string" } }, previousArtifactId: { type: "string" } }, required: ["title", "blocks"] } } },
+  { type: "function", function: { name: "document_inspect", description: "读取本人文档的结构、版本、来源及可用导出格式。结构检查不代表内容事实/视觉均已验收。", parameters: { type: "object", properties: { artifactId: { type: "string" } }, required: ["artifactId"] } } },
+  { type: "function", function: { name: "document_export", description: "把已保存文档真实导出为MD/DOCX/PDF，重开核对并缓存文件，返回字节哈希和授权下载路径。缺环境会明确报错；只有成功后才能声称可下载。", parameters: { type: "object", properties: { artifactId: { type: "string" }, format: { type: "string", enum: ["md", "docx", "pdf"] } }, required: ["artifactId", "format"] } } },
+  { type: "function", function: { name: "read_artifact", description: "按artifactId分页读取本人任务生成的完整工具材料。offset从0开始，limit最多6000字符。", parameters: { type: "object", properties: { artifactId: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["artifactId"] } } },
   {
     type: "function",
     function: {
@@ -71,9 +78,28 @@ export const CLOUD_TOOLS: ToolDef[] = [
   },
 ];
 
-export interface CloudToolCtx { taskId: string; userId: string; evidenceStore?: EvidenceStore; opportunityStore?: OpportunityStore; }
+export interface CloudToolCtx { taskId: string; userId: string; evidenceStore?: EvidenceStore; opportunityStore?: OpportunityStore; artifactStore?: ArtifactStore; documents?: DocumentService; }
 
 export async function executeCloudTool(name: string, args: Record<string, unknown>, ctx?: CloudToolCtx): Promise<string> {
+  if (["document_create", "document_inspect", "document_export"].includes(name)) {
+    const documents = ctx?.documents ?? (ctx?.artifactStore ? new DocumentService(ctx.artifactStore) : undefined);
+    if (!ctx || !documents) return JSON.stringify({ error: "文档持久化服务不可用" });
+    try {
+      if (name === "document_create") { const artifact = await documents.create(ctx.userId, ctx.taskId, { title: String(args.title ?? ""), blocks: args.blocks as DocumentBlock[], sourceIds: args.sourceIds as string[] | undefined, previousArtifactId: args.previousArtifactId as string | undefined }); return JSON.stringify({ artifactId: artifact.id, documentId: artifact.documentId, revision: artifact.revision, sha256: artifact.sha256, availableFormats: documents.formats(artifact.inline as import("../../../shared/document.ts").DocumentAst) }); }
+      if (name === "document_inspect") return JSON.stringify(await documents.inspect(ctx.userId, String(args.artifactId ?? "")));
+      if (!["md", "docx", "pdf"].includes(String(args.format))) return JSON.stringify({ error: "格式仅支持md/docx/pdf" });
+      const artifact = await documents.export(ctx.userId, String(args.artifactId ?? ""), args.format as "md" | "docx" | "pdf"), file = documents.file(artifact);
+      return JSON.stringify({ artifactId: artifact.id, sourceArtifactId: file.sourceArtifactId, format: args.format, mime: file.mime, bytes: file.bytes.length, sha256: file.sha256, downloadPath: `/v1/artifacts/${encodeURIComponent(file.sourceArtifactId)}/download?format=${args.format}` });
+    } catch (e) { return JSON.stringify({ error: errorMessage(e) }); }
+  }
+  if (name === "read_artifact") {
+    const artifact = ctx?.artifactStore ? await ctx.artifactStore.get(ctx.userId, String(args.artifactId ?? "")) : null;
+    if (!artifact) return JSON.stringify({ error: "产物不存在或无权读取" });
+    const inline = artifact.inline as { text?: string };
+    const text = typeof inline?.text === "string" ? inline.text : JSON.stringify(artifact.inline);
+    const offset = Math.max(0, Math.floor(Number(args.offset) || 0)), limit = Math.min(6000, Math.max(1, Math.floor(Number(args.limit) || 4000)));
+    return JSON.stringify({ artifactId: artifact.id, sha256: artifact.sha256, offset, text: text.slice(offset, offset + limit), nextOffset: offset + limit < text.length ? offset + limit : null, totalChars: text.length });
+  }
   if (name === "web_search") {
     // 搜索引擎用 Bing 中国（DDG 在国内网络不可达会挂起）。fetch 自带 12s 超时，先于 Worker 15s 兜底自 abort。
     try {
@@ -115,7 +141,9 @@ export async function executeCloudTool(name: string, args: Record<string, unknow
   if (name === "web_fetch") {
     try {
       const r = await safeFetch(String(args.url ?? ""));
-      return JSON.stringify({ url: r.url, status: r.status, text: htmlToText(r.text).slice(0, 12000), truncated: r.truncated });
+      const text = htmlToText(r.text).slice(0, 12000);
+      const sourceId = ctx?.artifactStore && r.status >= 200 && r.status < 300 ? await saveFetchedSource(ctx.artifactStore, ctx.userId, ctx.taskId, { url: r.url, text }) : undefined;
+      return JSON.stringify({ url: r.url, status: r.status, text, truncated: r.truncated, sourceId });
     } catch (e) {
       return JSON.stringify({ error: errorMessage(e) });
     }

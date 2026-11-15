@@ -20,6 +20,7 @@ export class CompanionClient {
   private WS: typeof WebSocket;
   private ws: WebSocket | null = null;
   private hb: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
   registered = false;
 
@@ -52,9 +53,22 @@ export class CompanionClient {
         return;
       }
     });
-    ws.on("close", () => { this.registered = false; if (this.hb) { clearInterval(this.hb); this.hb = null; } if (!this.stopped) setTimeout(() => this.connect(), this.reconnectMs); });
+    ws.on("close", () => {
+      this.registered = false;
+      if (this.hb) { clearInterval(this.hb); this.hb = null; }
+      if (!this.stopped) this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        this.connect();
+      }, this.reconnectMs);
+    });
     ws.on("error", () => { /* close 触发重连 */ });
   }
 
-  stop(): void { this.stopped = true; if (this.hb) clearInterval(this.hb); this.ws?.close(); }
+  stop(): void {
+    this.stopped = true;
+    this.registered = false;
+    if (this.hb) { clearInterval(this.hb); this.hb = null; }
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.ws?.close();
+  }
 }

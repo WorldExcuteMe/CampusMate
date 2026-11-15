@@ -1,20 +1,17 @@
-// 在真实 Postgres 引擎（PGlite WASM）上应用 0001+0002 并跑 PostgresStore 完整契约。
-// 证明 migration DDL 有效（SKIP LOCKED / ON CONFLICT / 触发器 / RLS 策略），生产 dashboard 应用可保证成功。
+// 在本地 PGlite 引擎应用完整显式迁移清单并验证存储契约；不证明生产可用性或真实 Supabase RLS。
 // 运行：node scripts/validate-migration.ts
-import fs from "node:fs";
 import { PGlitePool } from "../src/runtime/pglite-pool.ts";
 import { PostgresStore } from "../src/runtime/postgres-store.ts";
 import { randomUUID } from "node:crypto";
 import type { ToolInvocation } from "../src/core/types.ts";
+import { readMigrations } from "../src/runtime/migrations.ts";
 
-const root = new URL("../../", import.meta.url);
 // PGlite 由构造器加载 pgcrypto；剥离 SQL 中的 create extension 语句（生产 Supabase 保留）。
 const stripExtension = (s: string) => s.replace(/create extension if not exists pgcrypto;/gi, "");
-const sql0001 = stripExtension(fs.readFileSync(new URL("supabase/migrations/0001_init.sql", root), "utf8"));
-const sql0002 = stripExtension(fs.readFileSync(new URL("backend/migrations/0002_agent_runtime.sql", root), "utf8"));
 
 // Supabase 专有对象桩：auth.users + auth.uid()（PGlite 无 Supabase auth schema）。
 const AUTH_STUB = `
+create role anon; create role authenticated; create role service_role bypassrls;
 create schema if not exists auth;
 create table if not exists auth.users (id uuid primary key default gen_random_uuid(), email text);
 create or replace function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
@@ -26,10 +23,12 @@ let pass = 0, fail = 0;
 const check = (name: string, cond: boolean) => { if (cond) { pass++; console.log("  ✔", name); } else { fail++; console.log("  ✖", name); } };
 
 try {
-  console.log("[1] 应用 auth 桩 + 0001_init + 0002_agent_runtime");
+  console.log("[1] 应用 auth 桩 + 全部显式迁移");
   await pool.exec(AUTH_STUB);
-  await pool.exec(sql0001);
-  await pool.exec(sql0002);
+  for (const migration of await readMigrations()) {
+    await pool.exec(stripExtension(migration.sql));
+    console.log(`    MIGRATION_APPLIED ${migration.path}`);
+  }
   await pool.query("insert into auth.users (id, email) values ($1, $2)", [userId, "test@example.com"]);
   const tables = await pool.query<{ t: string }>("select table_name as t from information_schema.tables where table_name like 'agent_%' order by table_name");
   check("agent_* 8 表创建", tables.rows.length >= 8);

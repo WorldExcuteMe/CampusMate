@@ -40,11 +40,24 @@ export interface GoalSpec {
 
 export interface Lease { owner: string | null; expiresAt: number | null; heartbeatAt: number | null; }
 
+export interface ProviderSnapshot {
+  providerId: string; displayName: string; protocol: string; baseUrl: string; modelId: string;
+  capabilities: Record<string, unknown>; contextLimit: number | null; metadataSource: string; configVersion: string;
+  reasoningPreference?: "auto" | "low" | "medium" | "high";
+}
+
 export interface Task {
   id: string;
   userId: string;
   goalId?: string;
   sessionId?: string;
+  turnId?: string;
+  turnSeq?: number;
+  inputHash?: string;
+  transcriptCommitted?: boolean;
+  promptUsage?: { inputTokens: number | null; contextLimit: number | null; outputReserve: number; source: "estimated" | "reported" | "unknown" };
+  modelConfig?: ProviderSnapshot;
+  modelRuntime?: { actualModel: string; providerId?: string; lastRequest?: LlmTelemetry };
   title: string;
   intent: string;
   images?: string[];
@@ -92,11 +105,13 @@ export interface TaskResult {
   certificate?: CompletionCertificate;
   artifactIds: string[];
   partial?: boolean;
+  completion?: { state: "complete" | "partial"; reason: string; checks?: { id: string; passed: boolean; detail?: string }[] };
 }
 
 export type EventType =
   | "goal.created" | "task.queued" | "task.claimed" | "step.started" | "step.finished"
   | "llm.request" | "llm.response" | "tool.called" | "tool.result" | "tool.approval_requested"
+  | "llm.delta"
   | "checkpoint.written" | "budget.exceeded" | "eval.passed" | "eval.failed"
   | "task.needs_input" | "task.cancelled" | "task.failed" | "task.succeeded" | "lease.renewed";
 
@@ -112,11 +127,14 @@ export interface AgentEvent {
 }
 
 export interface CheckpointState {
+  documentRun?: import("./proposal.ts").DocumentRun;
   messages: ChatMessage[];
+  transcript?: ChatMessage[];
   stepProgress: Record<string, StepStatus>;
   repeat: Record<string, number>;
   usage: Usage;
   pendingApprovals: string[];
+  toolErrors?: number; // Optional for checkpoints written by older versions.
 }
 
 export interface Checkpoint {
@@ -162,6 +180,19 @@ export interface ChatResult {
   toolCalls: ToolCall[];
   usage: { input: number; output: number };
   model: string;
+  truncated?: boolean;
+  finishReason?: string | null;
+  telemetry?: LlmTelemetry;
+}
+
+export interface NormalizedLlmUsage {
+  inputTotal: number | null; output: number | null; reasoning: number | null; cacheRead: number | null; cacheWrite: number | null;
+  reasoningIncludedInOutput: boolean | null; costUsd: number | null; source: "reported" | "unknown"; raw: Record<string, unknown> | null;
+}
+export interface LlmTelemetry {
+  requestId: string; attempts: number; ttftMs: number | null; totalMs: number; finishReason: string | null;
+  stablePrefixHash: string; toolsHash: string; usage: NormalizedLlmUsage;
+  reasoning: { requested: string; effective: string | null; family: string; stage: string; reason: string };
 }
 
 export interface ToolResult { ok: true; data: unknown; invocationId: string; }

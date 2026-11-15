@@ -66,6 +66,15 @@ export class LlmTransportError extends Error {
   }
 }
 
+// A rejected request is not a broken connection or proof that an API key is missing.
+export class LlmRequestError extends Error {
+  readonly kind = "llm-request" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "LlmRequestError";
+  }
+}
+
 export function isTransportError(err: unknown): boolean {
   return err instanceof LlmTransportError || (err instanceof Error && err.name === "LlmTransportError");
 }

@@ -1,6 +1,12 @@
 # CampusMate Backend（Agent Core 2.0 · Phase 0–3 基础）
 
-服务端 Agent 运行时。零运行时依赖（Node ≥24 直接运行 `.ts`，内置 `node --test`）。
+> 2026-11-15 集成状态：下方 Phase 0–8 章节保留历史设计说明；当前还包含 T1–T10 的持久会话、加密 BYOK、事件恢复、课表及文档生成。验证见 `../docs/PR5_INTEGRATION_REVIEW.md`。迁移以完整九份清单 `src/runtime/migrations.ts` 为唯一来源；不要仅应用旧的 `0002_agent_runtime.sql` 后就假定当前所有接口可用。真实外部数据库、Supabase Auth/REST/RLS 的联调仍需单独验收。
+
+当前新增课表API：`POST /v1/terms`创建学期，`GET /v1/schedules?termId=...`返回课程/例外/作息，`POST /v1/schedules/import`上传预览并返回jobId，再以`{confirm:true,jobId}`确认（可选allowPartial）。XLSX的data需base64并指定encoding。确认只追加去重，不覆盖旧课程。`POST /v1/schedules/exceptions`写例外，调课sourceDate是源日期、date是目标。`POST /v1/timetable-schemes`保存学校/校区/学期生效作息。全部需要owner身份。
+
+分发后端时需保留仓库同级`shared/`纯逻辑模块及其package.json。完整迁移顺序以`src/runtime/migrations.ts`为准，新增DDL尚未应用远程库。本地执行与生产应用是不同验收层。
+
+服务端 Agent 运行时（Node ≥24 直接运行 `.ts`，内置 `node --test`；生产依赖见package.json）。
 对应 `docs/agent-core/` 架构规范；本目录是 MIGRATION_PLAN Phase 0–3 的可运行可测实现。
 
 ## 运行
@@ -27,7 +33,8 @@ npm run typecheck
 
 | 变量 | 说明 |
 |---|---|
-| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 服务端 LLM 密钥（绝不进前端）。缺省 Worker 不启动，API 仍可用 |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 可选服务端默认模型；缺省时Worker仍可执行已配置的用户BYOK任务 |
+| `PROVIDER_MASTER_KEY` / `PROVIDER_KEY_VERSION` | 用户模型凭证加密主密钥及版本，仅服务端配置；见[接入说明](../docs/MODEL_SETUP.md) |
 | `SUPABASE_JWT_SECRET` | 验 SPA 提交的 Supabase JWT（HS256） |
 | `PORT` | API 端口，默认 8788 |
 | `WORKER_CONCURRENCY` / `LEASE_TTL_MS` / `HEARTBEAT_MS` | Worker 并发/lease/心跳，默认 2/60000/15000 |
@@ -81,7 +88,7 @@ DDL 已在真实 Postgres 引擎（PGlite WASM）验证：`node scripts/validate
 ```bash
 # 有直连权限的环境：
 DATABASE_URL=postgresql://postgres:PWD@db.REF.supabase.co:5432/postgres node scripts/apply-migration.ts
-# 或 dashboard：Supabase Dashboard → SQL Editor → 粘贴 backend/migrations/0002_agent_runtime.sql → Run
+# 或 dashboard：按 src/runtime/migrations.ts 的完整顺序核对并应用尚未执行的迁移。
 ```
 应用后设 `DATABASE_URL` 启动 main.ts 即用 PostgresStore；`postgres-integration.test.ts` 不再 skip。
 

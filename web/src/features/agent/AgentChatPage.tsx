@@ -14,49 +14,63 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { repository } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import { runChat } from "@/lib/agent/chat";
-import { backendEnabled, runTaskViaBackend } from "@/lib/agent/api-client";
+import { backendEnabled, runTaskViaBackend, ensureSession } from "@/lib/agent/api-client";
 import { errorMessage } from "@/lib/llm/errors";
 import { listProviders, type ProviderPublic, type ChatMessage } from "@/lib/llm/proxy";
 import { useSessions } from "@/lib/agent/sessions-context";
-import { autoName } from "@/lib/agent/sessions";
+import { autoName, backendSessionId } from "@/lib/agent/sessions";
+import { useAuth } from "@/app/auth";
 import { resolveContextCap } from "@/lib/agent/context";
 import { MockBadge } from "@/components/shared";
 import { SetupWizard } from "./SetupWizard";
 import { parseFile, type Attachment } from "@/lib/ingest/files";
+import { mergeTask, mergeEvent } from "@/lib/agent/task-state";
+import { useTaskMonitor } from "./use-task-monitor";
+import { TaskWorkspace } from "./TaskWorkspace";
+import { AssistantMessage } from "./AssistantMessage";
+import { AgentActivityCard } from "./AgentActivityCard";
+import type { AgentActivity } from "@/lib/agent/progress";
 
 // 统一控件鼠标反馈：悬停边框+阴影+图标放大、聚焦环、按压缩放
 const CONTROL_FEEDBACK =
   "group cursor-pointer rounded-md border border-transparent bg-muted transition-all duration-150 hover:border-ring/40 hover:bg-accent hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.97]";
 
-const WORKSPACES = [
-  { id: "local", name: "本地工作区", path: "C:\\Users\\Asus\\Documents\\QQ工具", python: "miniconda3 (64-bit)" },
-];
-
 export function AgentChatPage() {
-  const { active, update, rename } = useSessions();
+  const repository = useRepository();
+  const { session } = useAuth();
+  const owner = session?.user.id ?? "demo";
+  const alive = useRef(true);
+  const requestController = useRef<AbortController | null>(null);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; requestController.current?.abort(); }; }, []);
+  const { active, update, rename, storageError, setActiveId } = useSessions();
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [activity,setActivity] = useState<AgentActivity | null>(null);
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
-  const [ws] = useState("local");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSetup, setShowSetup] = useState(false);
   const [picking, setPicking] = useState(false);
   const [showOnboard, setShowOnboard] = useState(() => !localStorage.getItem("campusmate.onboarded"));
-  const [wsPath, setWsPath] = useState(() => localStorage.getItem("campusmate.workspace") || "");
+  const [wsPath, setWsPath] = useState(() => localStorage.getItem(`campusmate.workspace:${owner}`) || "");
   const fileRef = useRef<HTMLInputElement>(null);
   const [providerId, setProviderId] = useState(
-    () => localStorage.getItem("campusmate.providerId") || "builtin-deepseek",
+    () => localStorage.getItem(`campusmate.providerId:${owner}`) || "",
   );
-  const { data: providers = [] } = useQuery({ queryKey: ["providers"], queryFn: listProviders });
-  const { data: profile } = useQuery({ queryKey: ["profile"], queryFn: () => repository.getProfile() });
+  const [reasoning, setReasoning] = useState<"auto" | "low" | "medium" | "high">(() => {
+    const stored = localStorage.getItem(`campusmate.reasoning:${owner}`);
+    return stored === "low" || stored === "medium" || stored === "high" ? stored : "auto";
+  });
+  const { data: providers = [], error: providerError } = useQuery({ queryKey: ["providers", owner], queryFn: listProviders });
+  const { data: profile } = useQuery({ queryKey: ["profile", owner], queryFn: () => repository.getProfile() });
   const endRef = useRef<HTMLDivElement>(null);
-  const workspace = WORKSPACES.find((w) => w.id === ws) ?? WORKSPACES[0];
-  const provider = providers.find((p: ProviderPublic) => p.id === providerId);
-  const modelName = provider?.model || "deepseek-chat";
+  const provider = providers.find((p: ProviderPublic) => p.id === providerId) ?? providers.find((p) => p.isDefault) ?? providers[0];
+  const modelName = provider?.model || "未知模型";
   const contextCap = resolveContextCap(modelName);
+  const monitor = useTaskMonitor(active, update, busy);
+  const busyUI = busy || Object.values(active.taskViews ?? {}).some((view) => ["queued", "running"].includes(view.task.status));
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -64,7 +78,7 @@ export function AgentChatPage() {
 
   function chooseProvider(id: string) {
     setProviderId(id);
-    localStorage.setItem("campusmate.providerId", id);
+    localStorage.setItem(`campusmate.providerId:${owner}`, id);
   }
 
   async function handleFiles(files: FileList | File[]) {
@@ -72,63 +86,81 @@ export function AgentChatPage() {
     setAttachments((a) => [...a, ...parsed]);
   }
 
-  async function send() {
+  async function send(retry = false) {
     const text = input.trim();
-    if ((!text && attachments.length === 0) || busy || !profile || !active) return;
+    if ((!text && attachments.length === 0 && !retry) || busyUI || !active || (!backendEnabled() && !profile)) return;
     const docText = attachments.filter((a) => a.kind === "doc" && a.text).map((a) => `\n[附件 ${a.name}]\n${a.text}`).join("");
     const imgMarkers = attachments.filter((a) => a.kind === "image").map((a) => `[图片附件 ${a.name}]`).join(" ");
-    const content = (text + docText + (imgMarkers ? "\n" + imgMarkers : "")).trim();
+    const content = retry ? active.pendingTurn?.content ?? "" : (text + docText + (imgMarkers ? "\n" + imgMarkers : "")).trim();
+    if (!content) return;
+    const pendingTurn = retry && active.pendingTurn ? active.pendingTurn : { turnId: crypto.randomUUID(), content, providerId: provider?.id, reasoning, images: attachments.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) };
     setInput("");
     setAttachments([]);
     setBusy(true);
+    setActivity({sessionId:active.id,startedAt:Date.now(),stageAt:Date.now(),progress:{phase:"preparing"}});
     const history: ChatMessage[] = active.messages.map((m) => ({ role: m.role, content: m.content }));
     update(active.id, (s) => ({
       ...s,
       name: s.name === "新会话" ? autoName(content) : s.name,
-      messages: [...s.messages, { role: "user", content }],
+      pendingTurn: backendEnabled() ? pendingTurn : undefined,
+      messages: retry ? s.messages : [...s.messages, { role: "user", content, turnId: pendingTurn.turnId }],
     }));
+    let acceptedId: string | undefined;
+    let localId: string | undefined;
     try {
       // AC01：配置 VITE_BACKEND_URL 时默认走服务端 Task Runtime（浏览器关闭不影响后台任务）；
       // 未配置时保留浏览器 runChat 作为开发/兼容 fallback。
       if (backendEnabled()) {
+        const controller = new AbortController();
+        requestController.current = controller;
+        const id = await ensureSession({ id: active.backendId ?? backendSessionId(owner, active.id), title: active.name, mode: active.mode });
+        if (!alive.current) return;
+        update(active.id, (s) => ({ ...s, backendId: id }));
         const task = await runTaskViaBackend(
-          { title: content.slice(0, 80), intent: content, sessionId: active.id, images: attachments.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) },
+          { title: content.slice(0, 80), intent: content, sessionId: id, turnId: pendingTurn.turnId, images: pendingTurn.images, providerId: pendingTurn.providerId, reasoning: pendingTurn.reasoning },
           (t) => {
-            update(active.id, (s) => ({ ...s, contextUsed: t.usage?.tokens ?? s.contextUsed ?? 0 }));
+            if (!alive.current) return;
+            update(active.id, (s) => mergeTask(s, t));
+          },
+          { signal: controller.signal,
+            onAccepted: (taskId) => {
+              acceptedId = taskId;
+              if (alive.current) update(active.id, (s) => mergeTask({ ...s, currentTaskId: taskId, pendingTurn: { ...pendingTurn, taskId } }, { id: taskId, userId: owner, title: content.slice(0, 80), sessionId: id, turnId: pendingTurn.turnId, status: "queued", usage: { tokens: 0, toolCalls: 0, wallMs: 0, costUsd: 0 }, createdAt: Date.now() }));
+            },
+            onEvent: (event) => { if (alive.current) update(active.id, (s) => mergeEvent(s, event)); },
+            onConnection: (connection) => { if (alive.current && acceptedId) update(active.id, (s) => { const view = s.taskViews?.[acceptedId!]; return view ? { ...s, taskViews: { ...s.taskViews, [acceptedId!]: { ...view, connection } } } : s; }); },
           },
         );
-        const reply = (task.status === "needs_input" || task.status === "paused")
-          ? "该任务触发了高危操作审批门控，已暂停等待人工批准（如 propose_verification 写入全局核验）。批准后任务可继续；这是安全设计，不是故障。"
-          : (task.result?.summary ?? task.error ?? `任务${task.status}`);
-        update(active.id, (s) => ({
-          ...s,
-          tokens: s.tokens + (task.usage?.tokens ?? 0),
-          messages: [...s.messages, { role: "assistant", content: reply, actions: [], failed: task.status === "failed" }],
-        }));
-        if (task.status === "needs_input") toast.message("任务等待审批/补充信息，可在后端恢复。");
+        if (!alive.current) return;
+        update(active.id, (s) => mergeTask(s, task));
+        if (["needs_input", "paused"].includes(task.status)) toast.message("任务需要处理，请查看执行面板。");
       } else {
-        const out = await runChat({ message: content, history, repository, profile, providerId, mode: active.mode, model: modelName });
+        localId = `local:${crypto.randomUUID()}`;
+        const controller = new AbortController(); requestController.current = controller;
+        let eventSeq = 0;
+        const localTask = { id: localId, userId: owner, title: content.slice(0, 80), turnId: pendingTurn.turnId, status: "running" as const, usage: { tokens: 0, toolCalls: 0, wallMs: 0, costUsd: 0 }, createdAt: Date.now() };
+        update(active.id, (s) => mergeTask({ ...s, currentTaskId: localId }, localTask));
+        const out = await runChat({ message: content, history, repository, profile: profile!, providerId: provider?.id, mode: active.mode, model: modelName, memoryScope: `${owner}:${active.id}`, reasoning, signal: controller.signal, onProgress: progress => { if(alive.current) setActivity(current=>current?.sessionId===active.id ? {...current,progress,stageAt:Date.now()}:current); }, onActivity: (type, payload) => { if (alive.current) update(active.id, (s) => mergeEvent(s, { id: ++eventSeq, taskId: localTask.id, seq: eventSeq, type, payload, createdAt: Date.now() })); } });
+        if (!alive.current) return;
         if (out.needsSetup) setShowSetup(true);
-        update(active.id, (s) => ({
-          ...s,
-          tokens: s.tokens + out.usage.input + out.usage.output,
-          contextUsed: out.contextUsed ?? s.contextUsed ?? 0,
-          contextCap: out.contextCap ?? contextCap,
-          compressed: out.compressed ?? false,
-          pruned: out.pruned ?? false,
-          messages: [...s.messages, { role: "assistant", content: out.reply, actions: out.actions, mock: out.mock }],
-        }));
+        update(active.id, (s) => {
+          const merged = mergeTask(s, { ...localTask, status: out.needsSetup ? "needs_input" : out.mock || out.failed ? "failed" : "succeeded", usage: { ...localTask.usage, tokens: out.usage.input + out.usage.output, wallMs: Date.now() - localTask.createdAt }, result: { summary: out.reply, artifactIds: [], partial: out.mock || out.failed || out.needsSetup, completion: { state: out.mock || out.failed || out.needsSetup ? "partial" : "complete", reason: out.needsSetup ? "missing_information" : "local_development_reply" } }, modelRuntime: { actualModel: out.model }, promptUsage: { inputTokens: out.contextUsed ?? null, contextLimit: provider?.contextLimit ?? null, outputReserve: 8000, source: "estimated" } });
+          return { ...merged, compressed: out.compressed ?? false, pruned: out.pruned ?? false, messages: merged.messages.map((m) => m.taskId === localTask.id ? { ...m, mock: out.mock, failed: out.failed, actions: out.actions } : m) };
+        });
       }
     } catch (e) {
+      if (!alive.current || (e instanceof DOMException && e.name === "AbortError")) return;
+      if (acceptedId) { toast.message("进度连接暂不可用，任务保留在后台，正在重新连接。"); return; }
       // 兜底：runChat 理论上自兜底，此处再防一层，保证 busy 复位且错误可读（绝不 [object Object]）。
       const reason = errorMessage(e);
+      if (localId) { update(active.id, (s) => mergeTask(s, { id: localId!, userId: owner, title: content.slice(0, 80), turnId: pendingTurn.turnId, status: "failed", usage: { tokens: 0, toolCalls: 0, wallMs: 0, costUsd: 0 }, error: reason })); toast.error(reason); return; }
       update(active.id, (s) => ({
         ...s,
-        messages: [...s.messages, { role: "assistant", content: `处理失败（${reason}）。请重发本条重试。`, failed: true }],
+        messages: [...s.messages, { role: "assistant", content: `处理失败（${reason}）。${backendEnabled() ? "可重试提交同一轮次。" : "请重发本条重试。"}`, failed: true }],
       }));
       toast.error(`处理失败：${reason}`);
     } finally {
-      setBusy(false);
+      if (alive.current) { setBusy(false); setActivity(null); }
     }
   }
 
@@ -140,14 +172,14 @@ export function AgentChatPage() {
         // 浏览器原生文件夹对话框：在用户桌面即时弹出，不受服务端会话隔离影响
         const handle = await w.showDirectoryPicker({ mode: "read" });
         setWsPath(handle.name);
-        localStorage.setItem("campusmate.workspace", handle.name);
+        localStorage.setItem(`campusmate.workspace:${owner}`, handle.name);
         toast.success(`工作区已设置：${handle.name}`);
       } else {
         const res = await fetch("/api/workspace/pick");
         const data = await res.json();
         if (data.path) {
           setWsPath(data.path);
-          localStorage.setItem("campusmate.workspace", data.path);
+          localStorage.setItem(`campusmate.workspace:${owner}`, data.path);
           toast.success("工作区已设置");
         } else {
           toast.error("未选择文件夹");
@@ -209,7 +241,7 @@ export function AgentChatPage() {
         <div className="border-b border-border bg-secondary/40 px-4 py-2 text-xs text-secondary-foreground">
           <div className="mx-auto flex max-w-3xl items-center gap-2">
             <span className="flex-1">
-              首次使用：点「选择工作区文件夹」设定本地目录；粘贴/拖拽通知或附件即可解析；输入「去QQ/微信群获取信息」会自动引导配置环境并摄取、更新 Dashboard。
+              描述你的任务，或添加通知与附件开始。执行过程、来源和文档会显示在任务面板；本机资料与群消息需要先连接并授权 Companion。
             </span>
             <button
               className={cn(CONTROL_FEEDBACK, "shrink-0 px-2 py-1")}
@@ -222,8 +254,11 @@ export function AgentChatPage() {
       )}
 
       {/* 无边框消息流 */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6">
+          {busy && activity && activity.sessionId !== active.id && <button onClick={()=>setActiveId(activity.sessionId)} className="text-sm text-primary underline">查看处理进度</button>}
+          {!backendEnabled() && busy && activity?.sessionId === active.id && <AgentActivityCard activity={activity} />}
           {active?.messages.length === 0 && (
             <div className="mt-16 text-center text-sm text-muted-foreground">
               <Bot className="mx-auto mb-3 size-8 text-primary" />
@@ -234,21 +269,24 @@ export function AgentChatPage() {
             <div key={i} className={cn("flex gap-3", m.role === "user" ? "justify-end" : "justify-start")}>
               {m.role === "assistant" && <Bot className="mt-1 size-5 shrink-0 text-primary" />}
               <div className={cn("max-w-[85%] whitespace-pre-wrap text-sm leading-relaxed", m.role === "user" ? "rounded-2xl rounded-br-sm bg-secondary px-4 py-2.5 text-secondary-foreground" : "")}>
-                {m.content}
+                {m.role === "assistant" ? <AssistantMessage content={m.content} /> : m.content}
                 {m.mock && <div className="mt-2"><MockBadge /></div>}
                 {m.failed && <div className="mt-2"><span className="inline-flex items-center rounded-md border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600">执行失败 · 可重发重试</span></div>}
               </div>
               {m.role === "user" && <User className="mt-1 size-5 shrink-0 text-muted-foreground" />}
             </div>
           ))}
-          {busy && <Loader2 className="size-5 animate-spin text-muted-foreground" />}
+          {!busyUI && active.pendingTurn && !active.pendingTurn.taskId && <Button variant="outline" size="sm" onClick={() => send(true)}>重试提交同一轮次</Button>}
           <div ref={endRef} />
         </div>
+      </div>
+      <TaskWorkspace key={active.id} session={active} loadError={monitor.error} onSelect={(id) => update(active.id, (s) => ({ ...s, currentTaskId: id }))} onTask={(task) => update(active.id, (s) => mergeTask(s, task))} onRefresh={monitor.refresh} onContinue={(title) => setInput(`请基于已有记录继续：${title}`)} />
       </div>
 
       {/* 输入区：工作区在输入栏左；模型选择在输入框下、Enter 左；上下文状态 */}
       <div className="border-t border-border bg-background px-4 py-3">
         <div className="mx-auto max-w-3xl">
+          {storageError && <p role="alert" className="mb-2 text-xs text-destructive">{storageError}</p>}
           {attachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
               {attachments.map((a, i) => (
@@ -281,14 +319,14 @@ export function AgentChatPage() {
                 className={cn(CONTROL_FEEDBACK, "flex max-w-56 items-center gap-1 px-2 py-1 text-xs")}
                 title="点击选择工作区文件夹"
                 onClick={pickWorkspace}
-                disabled={picking}
+                disabled={picking || backendEnabled()}
               >
                 {picking ? (
                   <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
                 ) : (
                   <FolderOpen className="size-3.5 shrink-0 text-primary transition-transform group-hover:scale-110" />
                 )}
-                <span className="truncate">{wsPath || workspace.path || "选择工作区文件夹"}</span>
+                <span className="truncate">{backendEnabled() ? "云端文档工作区" : wsPath || "选择本地文件夹"}</span>
               </button>
             )}
             <input
@@ -308,18 +346,26 @@ export function AgentChatPage() {
             >
               <Paperclip className="size-4 text-primary transition-transform group-hover:scale-110" />
             </button>
-            <Select value={providerId} onValueChange={chooseProvider}>
-              <SelectTrigger className={cn("h-8 w-40 text-xs", CONTROL_FEEDBACK)}><SelectValue placeholder="模型" /></SelectTrigger>
+            <Select value={provider?.id ?? ""} onValueChange={chooseProvider}>
+              <SelectTrigger aria-label="模型连接" className={cn("h-8 w-40 text-xs", CONTROL_FEEDBACK)}><SelectValue placeholder="模型" /></SelectTrigger>
               <SelectContent>
                 {providers.map((p: ProviderPublic) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                {providers.length === 0 && <SelectItem value="builtin-deepseek">DeepSeek（内置）</SelectItem>}
+                {providers.length === 0 && <SelectItem value="unconfigured" disabled>请配置模型</SelectItem>}
               </SelectContent>
             </Select>
+            <label className="flex items-center gap-1 text-xs text-muted-foreground">思考
+              <select aria-label="思考强度" className="h-8 rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={reasoning} onChange={(e) => { const value = e.target.value as typeof reasoning; setReasoning(value); localStorage.setItem(`campusmate.reasoning:${owner}`, value); }}>
+                <option value="auto">自动</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option>
+              </select>
+            </label>
+            {!["reasoning_effort", "enable_thinking"].includes(String(provider?.capabilities?.reasoning)) && <span className="text-xs text-muted-foreground">尚未确认该接口的思考控制能力</span>}
+            {providerError && <span className="text-xs text-destructive">模型目录加载失败：{errorMessage(providerError)}</span>}
+            {active.actualModel && <span className="text-xs text-muted-foreground" title={`最近任务配置：${active.configuredModel ?? "未知"}`}>最近返回：{active.actualModel}</span>}
             <span
               className="text-xs text-muted-foreground"
               title={`上下文组成：system+工具定义+历史摘要+近期历史+当前输入+输出预留；模型 ${modelName} 上限 ${contextCap.toLocaleString()} tok；累计用量 ${(active?.tokens ?? 0).toLocaleString()} tok`}
             >
-              上下文 {(active?.contextUsed ?? 0).toLocaleString()} / {contextCap.toLocaleString()} tok
+              窗口输入 {active?.contextUsed === undefined ? "未知" : `${active.promptSource === "estimated" ? "约 " : ""}${active.contextUsed.toLocaleString()}`} / {(backendEnabled() ? active.contextCap : provider?.contextLimit)?.toLocaleString() ?? "上限未知"} tok · 累计 {(active?.tokens ?? 0).toLocaleString()} tok
               {active?.compressed && (
                 <span className="ml-1 rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">已压缩</span>
               )}
@@ -327,9 +373,9 @@ export function AgentChatPage() {
                 <span className="ml-1 rounded bg-info/15 px-1 py-0.5 text-info">工具截断</span>
               )}
             </span>
-            <Button size="sm" className="ml-auto" disabled={busy || (!input.trim() && attachments.length === 0)} onClick={send}>
-              {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-              发送
+            <Button size="sm" className="ml-auto" disabled={busyUI || (!input.trim() && attachments.length === 0)} onClick={() => send()}>
+              {busyUI ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+              {busyUI ? "处理中" : "发送"}
             </Button>
           </div>
         </div>

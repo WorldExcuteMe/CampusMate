@@ -17,6 +17,10 @@ export interface ToolSpec {
 
 // 现有工具的元数据绑定（与 TOOL_EXECUTION_SPEC 评估一致）。
 export const TOOL_SPECS: Record<string, ToolSpec> = {
+  document_create: { name: "document_create", capability: "db.write_user", runtime: ["cloud"], permission: "write_user", requiresApproval: false, idempotent: true, timeoutMs: 10000, sideEffects: "db" },
+  document_inspect: { name: "document_inspect", capability: "db.read", runtime: ["cloud"], permission: "read", requiresApproval: false, idempotent: true, timeoutMs: 10000, sideEffects: "none" },
+  document_export: { name: "document_export", capability: "db.write_user", runtime: ["cloud"], permission: "write_user", requiresApproval: false, idempotent: true, timeoutMs: 60000, sideEffects: "db" },
+  read_artifact: { name: "read_artifact", capability: "db.read", runtime: ["cloud"], permission: "read", requiresApproval: false, idempotent: true, timeoutMs: 10000, sideEffects: "none" },
   web_search: { name: "web_search", capability: "web.search", runtime: ["cloud"], permission: "read", requiresApproval: false, idempotent: true, timeoutMs: 15000, sideEffects: "network" },
   web_fetch: { name: "web_fetch", capability: "web.fetch", runtime: ["cloud"], permission: "read", requiresApproval: false, idempotent: true, timeoutMs: 15000, sideEffects: "network" },
   rag_search: { name: "rag_search", capability: "rag.search", runtime: ["cloud", "local-companion"], permission: "read", requiresApproval: false, idempotent: true, timeoutMs: 15000, sideEffects: "none" },

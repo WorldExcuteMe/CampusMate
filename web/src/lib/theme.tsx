@@ -10,7 +10,7 @@ export interface Appearance {
 }
 
 const KEY = "campusmate.appearance";
-const DEFAULT: Appearance = { theme: "dark", fontSize: 14, stepDensity: "standard", language: "zh" };
+const DEFAULT: Appearance = { theme: "light", fontSize: 14, stepDensity: "standard", language: "zh" };
 
 function load(): Appearance {
   try {
@@ -29,7 +29,7 @@ interface AppearanceCtx {
   resolved: "light" | "dark";
   setAppearance: (p: Partial<Appearance>) => void;
 }
-const Ctx = createContext<AppearanceCtx>({ appearance: DEFAULT, resolved: "dark", setAppearance: () => {} });
+const Ctx = createContext<AppearanceCtx>({ appearance: DEFAULT, resolved: "light", setAppearance: () => {} });
 
 export function AppearanceProvider({ children }: { children: ReactNode }) {
   const [appearance, setA] = useState<Appearance>(load);

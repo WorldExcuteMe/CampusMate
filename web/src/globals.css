@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "../vendor/shadcn-tailwind-4.13.0.css";
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 @utility scrollbar-thin {
   scrollbar-width: thin;
@@ -21,7 +22,7 @@
   --site-type: 1;
   --site-motion: 1;
   --radius: 0.75rem;
-  --background: #f5f6fb;
+  --background: #faf9f6;
   --foreground: #14162e;
   --card: #ffffff;
   --card-foreground: #14162e;
@@ -40,7 +41,7 @@
   --success: #0e9f8a;
   --warning: #b45309;
   --info: #2563eb;
-  --border: #e2e5f0;
+  --border: #e8e6ee;
   --input: #d7dbea;
   --ring: #7a7af0;
   --chart-1: #5b5bd6;
@@ -49,7 +50,7 @@
   --chart-4: #e4577b;
   --chart-5: #3b82f6;
   --chart-6: #8b5cf6;
-  --sidebar: #f0f1f9;
+  --sidebar: #f5f3fa;
   --sidebar-foreground: #14162e;
   --sidebar-primary: #5b5bd6;
   --sidebar-primary-foreground: #ffffff;
@@ -192,12 +193,13 @@ body {
 }
 @utility cm-aurora {
   background:
-    radial-gradient(60rem 30rem at 85% -10%, rgb(var(--glow) / 0.14), transparent 60%),
-    radial-gradient(40rem 24rem at -10% 110%, rgb(45 212 191 / 0.10), transparent 60%),
+    radial-gradient(60rem 30rem at 85% -10%, rgb(var(--glow) / 0.065), transparent 60%),
+    radial-gradient(40rem 24rem at -10% 110%, rgb(45 212 191 / 0.035), transparent 60%),
     var(--background);
 }
 
 @layer base {
+  *, ::before, ::after { border-color: var(--border); }
   button, a { transition-duration: calc(150ms * var(--site-motion)); }
   @media (prefers-reduced-motion: reduce) {
     button, a { transition-duration: 0ms; }

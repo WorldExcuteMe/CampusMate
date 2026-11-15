@@ -33,12 +33,13 @@ export const AGENT_TOOLS: ToolDef[] = [
     type: "function",
     function: {
       name: "search_opportunities",
-      description: "按关键词与类别检索竞赛/实习/科研等机会（来源为官方白名单与公开渠道）。",
+      description: "按关键词与类别检索已存机会。默认只返回未到已知截止日期的机会；查历史或日期不明条目时显式指定 timeState。时效有效不代表来源或资格已核验。",
       parameters: {
         type: "object",
         properties: {
           query: { type: "string" },
           category: { type: "string", description: "competition/internship/research/scholarship/activity/opensource" },
+          timeState: { type: "string", enum: ["active", "expired", "unknown", "archived", "all"], description: "默认 active；明确查历史才用 expired/archived/all，核实日期用 unknown" },
         },
         required: ["query"],
       },
@@ -48,7 +49,7 @@ export const AGENT_TOOLS: ToolDef[] = [
     type: "function",
     function: {
       name: "match_opportunities",
-      description: "结合用户画像对机会做个性化匹配并给出理由。",
+      description: "仅对未到已知截止日期的机会结合用户画像匹配。过期、归档、日期待核实的条目不作为可参与项推荐。匹配不代表资格或来源已核验。",
       parameters: { type: "object", properties: { limit: { type: "number" } } },
     },
   },

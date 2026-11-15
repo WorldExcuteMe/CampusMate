@@ -1,24 +1,28 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { ChevronUp, GraduationCap, LogIn, LogOut, Settings, UserRound } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
-import { repository } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import { signOut, useAuth } from "@/app/auth";
 import { cn } from "@/lib/utils";
 
 // 左下角已登录用户芯片：头像+名字，展开显示画像摘要与设置/退出入口（DSH 左下角用户区理念）。
 export function UserChip() {
+  const repository = useRepository();
   const { session, configured } = useAuth();
   const nav = useNavigate();
-  const { data: profile } = useQuery({ queryKey: ["profile"], queryFn: () => repository.getProfile() });
+  const [open, setOpen] = useState(false);
+  const go = (path: string) => { setOpen(false); nav(path); };
+  const { data: profile } = useQuery({ queryKey: ["profile", session?.user.id ?? "demo"], queryFn: () => repository.getProfile() });
   const name = session?.user?.email?.split("@")[0] || profile?.name || "演示用户";
   const initial = (name || "U").slice(0, 1).toUpperCase();
   const sub = session ? session.user?.email : "Demo · 本地演示数据";
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           className={cn(
@@ -62,20 +66,20 @@ export function UserChip() {
         <div className="flex flex-col p-1.5">
           <button
             className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm hover:bg-muted"
-            onClick={() => nav("/app/profile")}
+            onClick={() => go("/app/profile")}
           >
             <UserRound className="size-4 text-muted-foreground" /> 个人画像
           </button>
           <button
             className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm hover:bg-muted"
-            onClick={() => nav("/app/settings")}
+            onClick={() => go("/app/settings")}
           >
             <Settings className="size-4 text-muted-foreground" /> 设置
           </button>
           {session ? (
             <button
               className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm text-destructive hover:bg-destructive/10"
-              onClick={() => signOut()}
+              onClick={() => { setOpen(false); void signOut(); }}
             >
               <LogOut className="size-4" /> 退出登录
             </button>
@@ -83,7 +87,7 @@ export function UserChip() {
             configured && (
               <button
                 className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm hover:bg-muted"
-                onClick={() => nav("/login")}
+                onClick={() => go("/login")}
               >
                 <LogIn className="size-4 text-muted-foreground" /> 登录 / 注册
               </button>

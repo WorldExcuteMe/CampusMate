@@ -84,6 +84,7 @@ test("appendEvent seq=MAX+1（append-only）", async () => {
   const e = await store.appendEvent({ taskId: "t1", userId: "u1", type: "llm.request" });
   assert.equal(e.seq, 7);
   assert.ok(pool.texts().some((t) => /coalesce\(max\(seq\),0\)\+1/i.test(t)));
+  assert.ok(pool.texts().some((t) => /select id from agent_tasks.*for update/i.test(t)), "同task事件分配需串行化");
 });
 
 test("renewLease 限定 owner+running", async () => {

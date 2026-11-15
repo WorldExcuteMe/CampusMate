@@ -1,6 +1,9 @@
 // Personal Campus Context 数据模型 + Store。结构化业务数据独立建模（不塞进 Memory）。
 // 课程规则与临时调课分表；user_id 隔离；保留来源/导入时间/版本；支持增删改。
 import { randomUUID } from "node:crypto";
+import { localParts, teachingWeek, validateScheme, scheduleKey, type TimeScheme } from "../../../shared/calendar.ts";
+import type { ImportPreview } from "./schedule-import.ts";
+export type { TimeScheme } from "../../../shared/calendar.ts";
 
 export interface InstitutionProfile {
   userId: string;
@@ -26,6 +29,7 @@ export interface AcademicTerm {
   endDate: string;
   totalWeeks: number;
   timezone: string;
+  weekAnchor?: string;
 }
 
 export interface Course {
@@ -66,6 +70,7 @@ export interface ScheduleException {
   scheduleId?: string;   // 关联正常课程规则（不覆盖）
   kind: ExceptionKind;
   date: string;          // YYYY-MM-DD 具体日期
+  sourceDate?: string;   // reschedule: date is target; sourceDate removes the original occurrence.
   weekday?: number;
   startTime?: string;
   endTime?: string;
@@ -96,6 +101,8 @@ export interface ImportJob {
   errorCount: number;
   version: number;
   createdAt: number;
+  preview?: ImportPreview;
+  savedScheduleIds?: string[];
 }
 
 export interface PersonalContextStore {
@@ -112,15 +119,20 @@ export interface PersonalContextStore {
   listSources(userId: string): Promise<InformationSource[]>;
   createImportJob(j: Omit<ImportJob, "id">): Promise<ImportJob>;
   updateImportJob(id: string, patch: Partial<ImportJob>): Promise<ImportJob | null>;
+  getImportJob(userId: string, id: string): Promise<ImportJob | null>;
+  confirmImportJob(userId: string, id: string, allowPartial?: boolean): Promise<CourseSchedule[]>;
+  saveTimeScheme(s: TimeScheme & { userId: string }): Promise<TimeScheme>;
+  listTimeSchemes(userId: string, termId: string): Promise<TimeScheme[]>;
 }
 
 export class InMemoryPersonalContextStore implements PersonalContextStore {
   private profiles = new Map<string, InstitutionProfile>();
   private terms = new Map<string, AcademicTerm>();
-  private schedules = new Map<string, CourseSchedule>();
+  protected schedules = new Map<string, CourseSchedule>();
   private exceptions = new Map<string, ScheduleException>();
   private sources = new Map<string, InformationSource>();
-  private jobs = new Map<string, ImportJob>();
+  protected jobs = new Map<string, ImportJob>();
+  private schemes = new Map<string, TimeScheme>();
 
   async getProfile(userId: string) { return this.profiles.get(userId) ?? null; }
   async setProfile(p: InstitutionProfile) { const next = { ...p, updatedAt: Date.now() }; this.profiles.set(p.userId, next); return next; }
@@ -139,14 +151,27 @@ export class InMemoryPersonalContextStore implements PersonalContextStore {
   async listSources(userId: string) { return [...this.sources.values()].filter((s) => s.userId === userId); }
   async createImportJob(j: Omit<ImportJob, "id">) { const rec = { ...j, id: randomUUID() }; this.jobs.set(rec.id, rec); return rec; }
   async updateImportJob(id: string, patch: Partial<ImportJob>) { const j = this.jobs.get(id); if (!j) return null; const next = { ...j, ...patch, id }; this.jobs.set(id, next); return next; }
+  async getImportJob(userId: string, id: string) { const j = this.jobs.get(id); return j?.userId === userId ? structuredClone(j) : null; }
+  async confirmImportJob(userId: string, id: string, allowPartial = false) {
+    const job = this.jobs.get(id);
+    if (!job || job.userId !== userId || !job.preview) throw new Error("导入预览不存在");
+    if (job.status === "confirmed") return [...this.schedules.values()].filter((s) => job.savedScheduleIds?.includes(s.id));
+    if (job.status !== "previewed" || (job.errorCount && !allowPartial) || !job.preview.schedules.length) throw new Error("请修复错误或明确确认仅导入有效行");
+    const key = scheduleKey;
+    const existing = new Set([...this.schedules.values()].filter((s) => s.userId === userId && s.termId === job.termId).map(key));
+    const out: CourseSchedule[] = [];
+    for (const row of job.preview.schedules) { const k = key(row); if (existing.has(k)) continue; const s = { ...row, id: randomUUID(), userId, termId: job.termId, courseId: "", importedAt: Date.now() }; this.schedules.set(s.id, s); existing.add(k); out.push(s); }
+    this.jobs.set(id, { ...job, status: "confirmed", savedScheduleIds: out.map((s) => s.id) });
+    return structuredClone(out);
+  }
+  async saveTimeScheme(s: TimeScheme & { userId: string }) { validateScheme(s); if (!(await this.listTerms(s.userId)).some((t) => t.id === s.termId && t.institutionId === s.institutionId)) throw new Error("作息学期/学校不匹配"); const next = { ...structuredClone(s), id: randomUUID() }; this.schemes.set(next.id, next); return next; }
+  async listTimeSchemes(userId: string, termId: string) { return structuredClone([...this.schemes.values()].filter((s) => s.userId === userId && s.termId === termId)); }
 }
 
 // 教学周计算：给定学期起始与当前日期 → 当前教学周（1-based）。
 export function currentTeachingWeek(term: AcademicTerm, now: Date): number {
-  const start = new Date(term.startDate + "T00:00:00");
-  const days = Math.floor((now.getTime() - start.getTime()) / 86400000);
-  if (days < 0) return 0;
-  return Math.min(term.totalWeeks, Math.floor(days / 7) + 1);
+  const date = localParts(now, term.timezone).date;
+  return date < term.startDate ? 0 : teachingWeek(term, date);
 }
 
 // 某教学周是否上课（单双周 + 周次范围）。

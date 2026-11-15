@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { repository, isDemo, llmProvider } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import { resetDemo } from "@/lib/data/demo";
 import { useAppearance, type ThemeMode, type StepDensity } from "@/lib/theme";
 import { useSessions } from "@/lib/agent/sessions-context";
@@ -34,6 +34,8 @@ const THEME_CARDS: { id: ThemeMode; label: string; icon: typeof Sun }[] = [
 ];
 
 export function SettingsPage() {
+  const repository = useRepository();
+  const isDemo = repository.mode === "demo";
   const [tab, setTab] = useState<TabId>("account");
   const { appearance, setAppearance } = useAppearance();
   const { session } = useAuth();
@@ -229,7 +231,7 @@ export function SettingsPage() {
               </div>
               <Separator />
               <div className="text-xs text-muted-foreground">
-                <p>数据层：{isDemo ? "Demo（本地演示）" : "Supabase（真实用户）"} · AI Provider：{llmProvider.name}（{llmProvider.mock ? "Mock" : "真实模型"}）</p>
+                <p>数据层：{isDemo ? "Demo（本地演示）" : "Supabase（真实用户）"} · AI：自动选择服务端模型 / Mock，结果按实际来源标识</p>
                 <p className="mt-1">Agent 执行记录 {runs.length} 条{runs[0] ? ` · 最近 ${runs[0].taskType}/${runs[0].status}` : ""}</p>
               </div>
             </div>
@@ -244,7 +246,7 @@ export function SettingsPage() {
               <Separator />
               <div className="flex gap-3 text-sm text-muted-foreground">
                 <ShieldCheck className="size-5 shrink-0 text-success" />
-                <p>聊天记录与简历属敏感个人材料。真实模式下数据按用户隔离（RLS），上传文件存私有 Storage，删除账户级联清除数据与文件。演示模式不采集任何真实个人数据。模型密钥仅存服务端，不落前端。</p>
+                <p>聊天记录与简历属敏感个人材料。真实模式下数据按用户隔离（RLS），聊天记录按账号保存在当前浏览器，当前未实现自助销户或文件私有桶上传。模型密钥仅存服务端，不落前端。</p>
               </div>
             </div>
           )}

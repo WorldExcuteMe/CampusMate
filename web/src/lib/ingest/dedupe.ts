@@ -67,16 +67,15 @@ export const MERGE_THRESHOLD = 0.6;
 export function clusterNotices<T extends NoticeSig>(items: T[], threshold = MERGE_THRESHOLD): T[][] {
   const clusters: T[][] = [];
   for (const it of items) {
-    let placed = false;
-    for (const c of clusters) {
-      // 与簇内任一成员相似即归簇（传递合并：正式通知/小程序/宣传语归一）
-      if (c.some((m) => noticeSimilarity(it, m) >= threshold)) {
-        c.push(it);
-        placed = true;
-        break;
+    const joined = [it];
+    // 新通知可能桥接多个已有簇，必须全部收拢，不能只加入第一个匹配簇。
+    for (let i = clusters.length - 1; i >= 0; i--) {
+      if (clusters[i].some((m) => noticeSimilarity(it, m) >= threshold)) {
+        joined.push(...clusters[i]);
+        clusters.splice(i, 1);
       }
     }
-    if (!placed) clusters.push([it]);
+    clusters.push(joined);
   }
   return clusters;
 }
