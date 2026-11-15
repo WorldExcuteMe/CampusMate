@@ -5,7 +5,8 @@
 - 主代理独立审查同事 PR #5（aa89e3d）并与 T1–T10 基线 6697163 合并，解决 30 处内容冲突。整合分支 `codex/integrate-pr5-main-20261115`，保持双方提交祖先。
 - 保留持久会话、加密 BYOK、真实进度、课表和三格式文档；吸收 RepositoryContext、Markdown、确认/撤销、过期视图、群隔离、原子核验 RPC 及本地开发设施；修复工具失败假成功、伪造结果、兼容核验自报 VERIFIED 和时间边界等缺口。详见 `docs/PR5_INTEGRATION_REVIEW.md` 及 `docs/specs/pr5-main-integration.md`。
 - 本地后端 288/288、前端 218/218、Demo 浏览器 22/22、Runtime 浏览器 5/5、九份迁移 16/16、两侧类型/生产构建/Function 检查及确定性 benchmark 30/30 通过。外部数据库、真实模型和依赖告警仍按审查记录标明边界。
-- 按仓库协作规则，集成 PR 先进入 develop，再以发布 PR 进入 main；两者均需 CI 和另一名成员审批。当前记录表示本地验证完成，远端检查及 main 构建需按实际状态更新，不使用 feature 构建冒充 main 交付。
+- PR #6 已通过远端 CI 并以 20389f3 合入 develop，原 PR #5 同步标记合并；Linux PDF 的 AppArmor 问题通过 CI 浏览器定向 profile 修复。另补 Release 作业最小写权限，匹配仓库只读默认 token。完整记录见审查文档。
+- 最终版沿 develop→main 发布 PR 交付，main 实际 SHA 和构建清单一起记录。因 GitHub 禁止作者自审，用户明确授权只在合并窗口临时调整审批数，CI/main strict 保持，操作后恢复；PR #6 的 develop 已恢复为 1。
 
 ## 2026-11-15 当前实施记录
 

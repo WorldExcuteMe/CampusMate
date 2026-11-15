@@ -54,6 +54,12 @@
 
 PR #6 首次 Linux CI 的前端构建、218 项测试、Function、22 项 Demo 用例通过；Runtime 4/5，PDF 返回打印环境 503，MD/DOCX 已成功。新增 `backend/scripts/check-document-sandbox.ts` 直接探测实际沙箱启动；仅在 GitHub Linux runner 确认 AppArmor userns 限制且启动报相应错误时，为 Playwright 浏览器路径加载定向 profile，再次验证 sandboxed launch。没有关闭 Chromium sandbox 或全局 userns 限制。方案依据 [Chromium 官方说明](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md)，查证日期 2026-11-15。下载用例同时优先报告 HTTP 错误，保留文件魔数/hash/owner 断言；修后 Windows 5/5，Linux 最终结果以最新 CI 为准。
 
+后续 CI 已证实 `No usable sandbox`，定向 profile 后 sandboxed launch、Linux 27 项浏览器、后端全测/迁移/benchmark 均通过：[CI 43656464529](https://github.com/WorldExcuteMe/CampusMate/actions/runs/43656464529)。PR #6 以 `20389f391021db07bf2aadbbdd8a06188d04c22d` 进入 develop，#5 同时被 GitHub 标记合并；合并树与检查通过的 `3efa847` 相同。
+
+发布链另发现仓库 Actions 默认 token 为 read，而 Release 作业需要创建标签及发行资产；补充仅 Release 作业的 `contents: write`，不扩大其他工作流权限，也不改变仓库默认权限。依据 [action-gh-release v2 文档](https://github.com/softprops/action-gh-release/tree/v2#permissions)，查证日期 2026-11-15。旧 main Release 曾在旧去重测试处失败；该测试已随集成修正，不能将历史失败误报为已经发生的权限错误。
+
+GitHub 明确拒绝作者自审；仓库所有者随后显式授权仅在本次合并窗口临时将必需审批数 1→0，保留强制 CI/main strict，成功或失败后均恢复为 1。PR #6 已按此授权执行，develop 已恢复；main 同样只在 CI 全绿的合并窗口调整。没有使用 force push、管理员跳过 CI 或更改其他保护字段。
+
 ## 剩余风险与发布边界
 
 - `npm audit` 记录 10 条上游依赖告警（4 moderate、4 high、2 critical，见本地 pr5-npm-audit.json）；包含现有 Vitest/Tinypool、Zod、Vite 等。未证实是产品可利用漏洞，亦未全部修复，不声称依赖零风险；跨大版本升级应单独评估。[Tinypool advisory](https://github.com/advisories/GHSA-5gmw-xhrv-c9v3)、[Vitest advisory](https://github.com/advisories/GHSA-82fw-gwwq-j7x9)、[Zod advisory](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)，查证日期 2026-11-15。
