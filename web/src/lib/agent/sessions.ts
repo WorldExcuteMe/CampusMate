@@ -6,6 +6,9 @@ export interface SessionMsg {
   failed?: boolean;
   taskId?: string;
   turnId?: string;
+  /** Editing appends a new turn; this links to the original visible message. */
+  editedFrom?: number;
+  imported?: boolean;
 }
 
 export interface ChatSession {
@@ -21,6 +24,10 @@ export interface ChatSession {
   pruned?: boolean;
   archived?: boolean;
   backendId?: string;
+  remoteRevision?: number;
+  remotePending?: boolean;
+  /** Local-only marker; actual drafts/files are isolated in browser IndexedDB. */
+  hasDraft?: boolean;
   pendingTurn?: { turnId: string; content: string; images?: string[]; taskId?: string; providerId?: string; reasoning?: "auto" | "low" | "medium" | "high" };
   promptSource?: "estimated" | "reported" | "unknown";
   actualModel?: string;

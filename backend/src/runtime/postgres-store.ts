@@ -92,7 +92,7 @@ export class PostgresStore implements TaskStore {
 
   async createSessionTask(input: CreateTaskInput & { sessionId: string; turnId: string }, _sessions: SessionStore): Promise<{ task: Task; deduped: boolean }> {
     return this.pool.transaction(async (client) => {
-      const parent = await client.query<Row>("select * from agent_sessions where id=$1 and user_id=$2 for update", [input.sessionId, input.userId]);
+      const parent = await client.query<Row>("select * from agent_sessions where id=$1 and user_id=$2 and deleted_at is null for update", [input.sessionId, input.userId]);
       if (!parent.rows[0]) throw new Error("Session owner forbidden");
       const hash = sessionInputHash(input);
       const existing = await client.query<Row>("select * from agent_tasks where user_id=$1 and session_id=$2 and turn_id=$3", [input.userId, input.sessionId, input.turnId]);

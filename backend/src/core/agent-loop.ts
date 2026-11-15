@@ -11,7 +11,8 @@ import type { GenerationStage } from "./generation-policy.ts";
 import { argumentError } from "./tool-arguments.ts";
 import { toolResultView } from "./task-events.ts";
 import { LeaseLostError } from "./session-context.ts";
-import { toolResultFailed } from "./tool-result.ts";
+import { assessToolOutcomes } from './tool-outcomes.ts';
+import { hasRawToolMarkup, TOOL_PROTOCOL_ERROR } from '../../../shared/tool-protocol.ts';
 
 export class CheckpointWriteError extends Error {
   constructor(cause: unknown) { super("任务历史保存失败，请恢复重试", { cause }); }
@@ -105,7 +106,9 @@ function noteRepeat(repeat: Map<string, number>, name: string, args: Record<stri
 
 export async function runAgentLoop(opts: Parameters<typeof runAgentLoopInternal>[0]): Promise<AgentLoopResult> {
   const result = await runAgentLoopInternal(opts);
-  result.toolErrors = Math.max(opts.resumeToolErrors ?? 0, result.transcript.filter((m) => m.role === "tool" ? toolResultFailed(String(m.content)) : m.role === "user" && typeof m.content === "string" && m.content.startsWith("[工具观测：") && toolResultFailed(m.content.replace(/^\[工具观测：[^\]]+\]\s*/, ""))).length);
+  const outcomes = assessToolOutcomes(result.transcript, opts.resumeToolErrors ?? 0);
+  result.toolErrors = outcomes.count;
+  for (const recovery of outcomes.recovered) await opts.deps.hooks?.onEvent?.('tool.recovered', { ...recovery });
   result.stopReason ??= result.budgetExceeded ? "budget" : result.paused ? "approval" : result.mock || result.error || result.truncated ? "error" : "completed";
   return result;
 }
@@ -137,7 +140,7 @@ async function runAgentLoopInternal(opts: {
     const tool = deps.tools.find((t) => t.function.name === name);
     if (!tool) return JSON.stringify({ error: "工具未在本轮授权范围内" });
     const invalid = argumentError(tool.function.parameters, args);
-    const out = invalid ? JSON.stringify({ error: `工具参数无效：${invalid}` }) : await deps.executeTool(name, args);
+    const out = invalid ? JSON.stringify({ error: `工具参数无效：${invalid}`, class: 'tool_validation' }) : await deps.executeTool(name, args);
     if (out.includes('tool_result_uncertain')) uncertainEffects = true;
     return out;
   };
@@ -171,7 +174,7 @@ async function runAgentLoopInternal(opts: {
     return out;
   };
   const snapshot = (): CheckpointState => ({
-    messages, transcript, stepProgress: {}, repeat: Object.fromEntries(repeat), usage: { ...usage }, pendingApprovals: [],
+    messages, transcript, stepProgress: {}, repeat: Object.fromEntries(repeat), usage: { ...usage }, pendingApprovals: [], toolErrors: assessToolOutcomes(transcript, opts.resumeToolErrors ?? 0).count,
   });
   const checkpoint = async () => {
     try { await hooks.onCheckpoint?.(structuredClone(snapshot())); }
@@ -232,16 +235,25 @@ async function runAgentLoopInternal(opts: {
       addUsage(res.usage);
       await hooks.beforeRequest?.();
       model = res.model;
+      const continuation = res.reasoningContent !== undefined ? { reasoning_content: res.reasoningContent, reasoning_source: res.reasoningSource } : {};
       await emit("llm.response", { round: i, toolCalls: res.toolCalls.length, telemetry });
+      if (hasRawToolMarkup(res.content)) {
+        // Fail closed even for truncated/mixed responses; DSML text isn't a tool
+        // invocation and must never certify a successful write or run by parsing.
+        messages.push({ role: 'assistant', content: TOOL_PROTOCOL_ERROR });
+        transcript.push({ role: 'assistant', content: TOOL_PROTOCOL_ERROR });
+        await checkpoint();
+        return { reply: TOOL_PROTOCOL_ERROR, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: 'invalid_output', error: 'tool_protocol_error' };
+      }
       if (res.truncated) {
         const reply = res.content || "模型输出未完成，保留执行记录待继续。";
-        messages.push({ role: "assistant", content: reply }); transcript.push({ role: "assistant", content: `[未完成草稿] ${reply}` });
+        messages.push({ role: "assistant", content: reply, ...continuation }); transcript.push({ role: "assistant", content: `[未完成草稿] ${reply}`, ...continuation });
         await checkpoint();
         return { reply, actions, usage, model: res.model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, truncated: true, messages, transcript, telemetry };
       }
 
       if (res.toolCalls.length > 0) {
-        const request: ChatMessage = { role: "assistant", content: res.content, tool_calls: res.toolCalls };
+        const request: ChatMessage = { role: "assistant", content: res.content, tool_calls: res.toolCalls, ...continuation };
         messages.push(request);
         transcript.push(structuredClone(request));
         for (const call of res.toolCalls) {
@@ -270,8 +282,8 @@ async function runAgentLoopInternal(opts: {
       }
       const jt = parseJsonTool(res.content, known);
       if (jt) {
-        messages.push({ role: "assistant", content: res.content });
-        transcript.push({ role: "assistant", content: res.content });
+        messages.push({ role: "assistant", content: res.content, ...continuation });
+        transcript.push({ role: "assistant", content: res.content, ...continuation });
         const ordinal = transcript.length - 1;
         const out = await tracedTool(jt.name, jt.args, `json:${ordinal}`, `json:${ordinal}`);
         usage.toolCalls += 1;
@@ -286,7 +298,7 @@ async function runAgentLoopInternal(opts: {
       }
       const warning = uncertainEffects ? "存在操作结果未确认，请核对后用新消息继续。\n\n" : "";
       const finalReply = warning + (res.content.trim() ? res.content : (actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}。` : "（模型未返回内容，请重试或换一种问法）"));
-      transcript.push({ role: "assistant", content: finalReply });
+      transcript.push({ role: "assistant", content: finalReply, ...continuation });
       return { reply: finalReply, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: overBudget(), paused: false, messages, transcript, telemetry, error: uncertainEffects ? warning : undefined };
     }
 

@@ -11,6 +11,17 @@
 
 ## 运行
 
+先在本目录运行 `npm ci`。PDF 及带图表的 Word 还依赖与锁定 Playwright 匹配的 Chromium，`npm ci` 不会替你安装浏览器。在仓库根目录执行：
+
+```bash
+npm run documents:setup
+npm run documents:check
+```
+
+`documents:setup` 使用后端已锁定的 Playwright 下载 Chromium，不升级依赖，也不清理其他版本的浏览器。`documents:check` 使用与产品相同的 Chromium channel 和沙箱设置，实际生成并复读中文、表格、图表的 DOCX/PDF（不调用模型、不连接数据库、不写用户文档）。Linux 首次安装可在 `backend` 下运行 `npm run documents:setup -- --with-deps`，补齐系统库。中文字体使用仓库内已固定哈希的资源，不依赖操作系统安装字体。
+
+渲染器显式使用 `channel: "chromium"`，使可用性检测与真实启动指向同一个固定浏览器，而非检测完整 Chromium、启动时却寻找另一份 headless-shell。保留 `chromiumSandbox: true`；不要用 `--no-sandbox` 掩盖环境故障。Playwright 升级后需重新执行以上命令。说明依据 [Playwright 官方浏览器安装文档](https://playwright.dev/docs/browsers)。
+
 ```bash
 # 一体化（API + Worker 同进程，默认内存 store，可立即演示）
 LLM_API_KEY=sk-... SUPABASE_JWT_SECRET=... PORT=8788 node src/main.ts
@@ -18,7 +29,7 @@ LLM_API_KEY=sk-... SUPABASE_JWT_SECRET=... PORT=8788 node src/main.ts
 # 启用 Postgres 持久化（Phase 2）：设置 DATABASE_URL 或 SUPABASE_DB_PASSWORD+SUPABASE_PROJECT_REF
 DATABASE_URL=postgresql://postgres:PWD@db.REF.supabase.co:5432/postgres node src/main.ts
 
-# 测试（无需安装依赖即可跑单元；pg 已入 dependencies）
+# 测试（先安装依赖及上述文档渲染环境）
 node --test
 
 # 类型检查

@@ -1,5 +1,6 @@
 import type { AgentEvent, AgentTask } from "./api-client";
 import type { ChatSession, SessionMsg } from "./sessions";
+import { hasRawToolMarkup, TOOL_PROTOCOL_ERROR } from '../../../../shared/tool-protocol';
 export const stoppedTask = (status: string) => ["paused", "needs_input", "succeeded", "failed", "cancelled"].includes(status);
 export function taskReason(task: AgentTask, events: AgentEvent[]): string {
   const last = [...events].reverse().find((event) => event.type === "task.needs_input");
@@ -16,6 +17,7 @@ function bounded(records: NonNullable<ChatSession["taskViews"]>) {
   return Object.fromEntries(Object.entries(records).sort(([, a], [, b]) => (b.task.turnSeq ?? 0) - (a.task.turnSeq ?? 0) || (b.task.createdAt ?? 0) - (a.task.createdAt ?? 0)).slice(0, 40));
 }
 export function mergeTask(session: ChatSession, incoming: AgentTask): ChatSession {
+  if (hasRawToolMarkup(incoming.result?.summary ?? '')) incoming = { ...incoming, status: 'failed', error: TOOL_PROTOCOL_ERROR, result: { ...incoming.result!, summary: TOOL_PROTOCOL_ERROR, partial: true, completion: { state: 'partial', reason: 'tool_protocol_error' } } };
   const previous = session.taskViews?.[incoming.id];
   const combined = { ...previous?.task, ...incoming };
   const keys = ["id", "userId", "title", "sessionId", "turnId", "turnSeq", "status", "usage", "budget", "result", "error", "promptUsage", "modelConfig", "modelRuntime", "cancelRequested", "createdAt", "updatedAt"] as const;

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  Send, Bot, User, Pencil, Loader2, FolderOpen, Paperclip, X,
+  Send, Bot, Pencil, Loader2, FolderOpen, Paperclip, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -23,13 +23,12 @@ import { useSessions } from "@/lib/agent/sessions-context";
 import { autoName, backendSessionId } from "@/lib/agent/sessions";
 import { useAuth } from "@/app/auth";
 import { resolveContextCap } from "@/lib/agent/context";
-import { MockBadge } from "@/components/shared";
 import { SetupWizard } from "./SetupWizard";
-import { parseFile, type Attachment } from "@/lib/ingest/files";
+import { useComposerDraft } from '@/lib/agent/composer-drafts-context';
 import { mergeTask, mergeEvent } from "@/lib/agent/task-state";
 import { useTaskMonitor } from "./use-task-monitor";
 import { TaskWorkspace } from "./TaskWorkspace";
-import { AssistantMessage } from "./AssistantMessage";
+import { ChatMessageRow } from './ChatMessageRow';
 import { AgentActivityCard } from "./AgentActivityCard";
 import type { AgentActivity } from "@/lib/agent/progress";
 
@@ -38,19 +37,22 @@ const CONTROL_FEEDBACK =
   "group cursor-pointer rounded-md border border-transparent bg-muted transition-all duration-150 hover:border-ring/40 hover:bg-accent hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.97]";
 
 export function AgentChatPage() {
+  const queryClient = useQueryClient();
+  const refreshedTasks = useRef(new Set<string>());
   const repository = useRepository();
   const { session } = useAuth();
   const owner = session?.user.id ?? "demo";
   const alive = useRef(true);
   const requestController = useRef<AbortController | null>(null);
   useEffect(() => { alive.current = true; return () => { alive.current = false; requestController.current?.abort(); }; }, []);
-  const { active, update, rename, storageError, setActiveId } = useSessions();
-  const [input, setInput] = useState("");
+  const { active, update, rename, storageError, setActiveId, changeMode, initialLoading } = useSessions();
+  const composer = useComposerDraft(active.id);
+  const { text: input, attachments, titleEdit } = composer.draft;
+  const setInput = composer.setText;
   const [busy, setBusy] = useState(false);
   const [activity,setActivity] = useState<AgentActivity | null>(null);
-  const [editing, setEditing] = useState(false);
-  const [nameDraft, setNameDraft] = useState("");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const editing = titleEdit !== undefined;
+  const incompleteAttachments = attachments.some(a => a.status !== 'ready');
   const [showSetup, setShowSetup] = useState(false);
   const [picking, setPicking] = useState(false);
   const [showOnboard, setShowOnboard] = useState(() => !localStorage.getItem("campusmate.onboarded"));
@@ -73,6 +75,19 @@ export function AgentChatPage() {
   const busyUI = busy || Object.values(active.taskViews ?? {}).some((view) => ["queued", "running"].includes(view.task.status));
 
   useEffect(() => {
+    // Some writes may have succeeded even when a later step fails. Refetch real data
+    // after terminal business runs; don't show stale cached lists after navigation.
+    for (const view of Object.values(active.taskViews ?? {})) {
+      if (!["succeeded", "failed", "cancelled"].includes(view.task.status)) continue;
+      if (!view.events.some(e => e.type === "tool.result" && ["save_to_inbox", "create_daily_task", "set_growth_goal", "merge_inbox"].includes(String(e.payload.name)))) continue;
+      const key = `${view.task.id}:${view.task.status}:${view.task.updatedAt ?? ""}`;
+      if (refreshedTasks.current.has(key)) continue;
+      refreshedTasks.current.add(key);
+      for (const name of ["inbox", "tasks", "profile"]) void queryClient.invalidateQueries({ queryKey: [name] });
+    }
+  }, [active.taskViews, queryClient]);
+
+  useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [active?.messages.length, busy]);
 
@@ -82,28 +97,40 @@ export function AgentChatPage() {
   }
 
   async function handleFiles(files: FileList | File[]) {
-    const parsed = await Promise.all(Array.from(files).map(parseFile));
-    setAttachments((a) => [...a, ...parsed]);
+    if (initialLoading) { toast.message('正在恢复会话，请稍候再添加附件。'); return; }
+    if (composer.resolving) { toast.message('正在安全保存草稿，请稍候。'); return; }
+    await composer.addFiles(Array.from(files));
   }
 
-  async function send(retry = false) {
-    const text = input.trim();
-    if ((!text && attachments.length === 0 && !retry) || busyUI || !active || (!backendEnabled() && !profile)) return;
-    const docText = attachments.filter((a) => a.kind === "doc" && a.text).map((a) => `\n[附件 ${a.name}]\n${a.text}`).join("");
-    const imgMarkers = attachments.filter((a) => a.kind === "image").map((a) => `[图片附件 ${a.name}]`).join(" ");
+  async function send(retry = false, edit?: { content: string; ordinal: number }) {
+    if (initialLoading) { toast.message('正在恢复会话，请稍候。'); return; }
+    if (!edit && !retry && (!composer.ready || incompleteAttachments)) { toast.message('请等待附件解析完成，或移除解析失败的附件后再发送。'); return; }
+    if ((!input.trim() && attachments.length === 0 && !edit && !retry) || busyUI || (!backendEnabled() && !profile)) return;
+    let currentDraft = composer.draft;
+    if (!edit && !retry) {
+      const taken = await composer.takeForSend();
+      if (!taken) { toast.message('草稿尚未安全提交，请先处理版本冲突或存储提示。'); return; }
+      currentDraft = taken;
+    }
+    const text = (edit ? edit.content : currentDraft.text).trim();
+    // Editing a historical message must not consume or attach the separate composer draft.
+    const files = edit || retry ? [] : currentDraft.attachments;
+    if ((!text && files.length === 0 && !retry) || busyUI || !active || (!backendEnabled() && !profile)) return;
+    const docText = files.filter((a) => a.kind === "doc" && a.text).map((a) => `\n[附件 ${a.name}]\n${a.text}`).join("");
+    const imgMarkers = files.filter((a) => a.kind === "image").map((a) => `[图片附件 ${a.name}]`).join(" ");
     const content = retry ? active.pendingTurn?.content ?? "" : (text + docText + (imgMarkers ? "\n" + imgMarkers : "")).trim();
     if (!content) return;
-    const pendingTurn = retry && active.pendingTurn ? active.pendingTurn : { turnId: crypto.randomUUID(), content, providerId: provider?.id, reasoning, images: attachments.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) };
-    setInput("");
-    setAttachments([]);
+    const pendingTurn = retry && active.pendingTurn ? active.pendingTurn : { turnId: crypto.randomUUID(), content, providerId: provider?.id, reasoning, images: files.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) };
+    // A normal send already consumed this exact persisted version atomically.
+    // Retrying/editing a historical turn never consumes a newly typed draft.
     setBusy(true);
     setActivity({sessionId:active.id,startedAt:Date.now(),stageAt:Date.now(),progress:{phase:"preparing"}});
     const history: ChatMessage[] = active.messages.map((m) => ({ role: m.role, content: m.content }));
+    if (active.name === '新会话') rename(active.id, autoName(content));
     update(active.id, (s) => ({
       ...s,
-      name: s.name === "新会话" ? autoName(content) : s.name,
       pendingTurn: backendEnabled() ? pendingTurn : undefined,
-      messages: retry ? s.messages : [...s.messages, { role: "user", content, turnId: pendingTurn.turnId }],
+      messages: retry ? s.messages : [...s.messages, { role: "user", content, turnId: pendingTurn.turnId, ...(edit ? { editedFrom: edit.ordinal } : {}) }],
     }));
     let acceptedId: string | undefined;
     let localId: string | undefined;
@@ -113,7 +140,7 @@ export function AgentChatPage() {
       if (backendEnabled()) {
         const controller = new AbortController();
         requestController.current = controller;
-        const id = await ensureSession({ id: active.backendId ?? backendSessionId(owner, active.id), title: active.name, mode: active.mode });
+        const id = await ensureSession({ id: active.backendId ?? backendSessionId(owner, active.id), title: active.name, mode: active.mode }, owner);
         if (!alive.current) return;
         update(active.id, (s) => ({ ...s, backendId: id }));
         const task = await runTaskViaBackend(
@@ -192,9 +219,9 @@ export function AgentChatPage() {
     }
   }
 
-  function saveName() {
-    rename(active.id, nameDraft.trim() || active.name);
-    setEditing(false);
+  async function saveName() {
+    const value = await composer.finishTitle(); // CAS before metadata; Enter+blur commits once
+    if (value !== undefined) rename(active.id, value.trim() || active.name);
   }
 
   return (
@@ -209,15 +236,18 @@ export function AgentChatPage() {
           <input
             autoFocus
             className="flex-1 rounded-md border border-input bg-background px-2 py-1 text-sm"
-            value={nameDraft}
-            onChange={(e) => setNameDraft(e.target.value)}
+            aria-label="会话名称"
+            disabled={composer.resolving}
+            value={titleEdit ?? ''}
+            onChange={(e) => composer.setTitleEdit(e.target.value)}
             onBlur={saveName}
-            onKeyDown={(e) => e.key === "Enter" && saveName()}
+            onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === 'Enter') { e.preventDefault(); saveName(); } if (e.key === 'Escape') { e.preventDefault(); composer.setTitleEdit(undefined); } }}
           />
         ) : (
           <button
             className="flex min-w-0 items-center gap-2 text-sm font-semibold"
-            onClick={() => { setNameDraft(active?.name ?? ""); setEditing(true); }}
+            disabled={initialLoading || !composer.ready || composer.resolving || Boolean(composer.conflict)}
+            onClick={() => composer.setTitleEdit(active?.name ?? '')}
             title="点击重命名"
           >
             <span className="truncate">{active?.name}</span>
@@ -229,7 +259,8 @@ export function AgentChatPage() {
             <button
               key={m}
               className={cn("rounded px-2 py-1", active?.mode === m ? "bg-background shadow-sm" : "text-muted-foreground")}
-              onClick={() => update(active.id, (s) => ({ ...s, mode: m }))}
+              disabled={initialLoading}
+              onClick={() => changeMode(active.id, m)}
             >
               {m === "auto" ? "自动" : "日常"}
             </button>
@@ -265,17 +296,7 @@ export function AgentChatPage() {
               开始一个会话：粘贴群通知、询问机会、或让我创建日常任务。
             </div>
           )}
-          {active?.messages.map((m, i) => (
-            <div key={i} className={cn("flex gap-3", m.role === "user" ? "justify-end" : "justify-start")}>
-              {m.role === "assistant" && <Bot className="mt-1 size-5 shrink-0 text-primary" />}
-              <div className={cn("max-w-[85%] whitespace-pre-wrap text-sm leading-relaxed", m.role === "user" ? "rounded-2xl rounded-br-sm bg-secondary px-4 py-2.5 text-secondary-foreground" : "")}>
-                {m.role === "assistant" ? <AssistantMessage content={m.content} /> : m.content}
-                {m.mock && <div className="mt-2"><MockBadge /></div>}
-                {m.failed && <div className="mt-2"><span className="inline-flex items-center rounded-md border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600">执行失败 · 可重发重试</span></div>}
-              </div>
-              {m.role === "user" && <User className="mt-1 size-5 shrink-0 text-muted-foreground" />}
-            </div>
-          ))}
+          {active?.messages.map((message, i) => <ChatMessageRow key={`${active.id}:${message.role}:${message.turnId ?? message.taskId ?? i}`} message={message} ordinal={i + 1} busy={busyUI} onResend={content => void send(false, { content, ordinal: i + 1 })} />)}
           {!busyUI && active.pendingTurn && !active.pendingTurn.taskId && <Button variant="outline" size="sm" onClick={() => send(true)}>重试提交同一轮次</Button>}
           <div ref={endRef} />
         </div>
@@ -287,17 +308,28 @@ export function AgentChatPage() {
       <div className="border-t border-border bg-background px-4 py-3">
         <div className="mx-auto max-w-3xl">
           {storageError && <p role="alert" className="mb-2 text-xs text-destructive">{storageError}</p>}
+          {composer.error && <p role="alert" className="mb-2 text-xs text-destructive">{composer.error}</p>}
+          {composer.conflict && <section role="alert" aria-label="草稿版本冲突" className="mb-3 space-y-2 rounded-md border border-amber-500/50 bg-amber-50/30 p-3 text-xs dark:bg-amber-950/10">
+            <p className="font-medium">另一标签页修改了同一会话草稿。不会自动覆盖；本页副本和本机最新稿均保留，请选择后再发送。</p>
+            <div className="grid gap-2 sm:grid-cols-2"><div><p>本页草稿</p><pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words">{input.slice(0, 600) || '（无文字）'}</pre><p>{attachments.map(a => a.name).join('、') || '无附件'}</p></div><div><p>本机最新草稿</p><pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words">{composer.conflict.draft.text.slice(0, 600) || '（无文字）'}</pre><p>{composer.conflict.draft.attachments.map(a => a.name).join('、') || '无附件'}</p></div></div>
+            <div className="flex gap-3"><button type="button" className="underline" disabled={composer.saving || composer.resolving || composer.conflict.deleted} onClick={() => void composer.resolve('local')}>保留本页草稿</button><button type="button" className="underline" disabled={composer.saving || composer.resolving || composer.conflict.deleted} onClick={() => void composer.resolve('remote')}>使用本机最新草稿</button></div>
+          </section>}
+          {composer.versions.length > 0 && <details className="mb-2 text-xs"><summary className="cursor-pointer">保留的草稿版本（{composer.versions.length}）</summary><div className="max-h-56 space-y-2 overflow-auto py-2">{composer.versions.map((version, i) => <div key={version.key} data-draft-version={version.key} className="rounded border p-2"><p>{version.source === 'conflict' ? '冲突副本' : '操作前备份'} · {new Date(version.createdAt).toLocaleString()}</p><pre className="max-h-20 overflow-auto whitespace-pre-wrap break-words">{version.draft.text.slice(0, 600) || '（无文字）'}</pre><p>{version.draft.attachments.map(a => a.name).join('、') || '无附件'}</p><button type="button" aria-label={`恢复草稿版本 ${i + 1}`} className="underline" disabled={composer.saving || composer.resolving || composer.conflict?.deleted} onClick={() => void composer.resolve({ version: version.key })}>恢复此版本（当前稿也保留）</button></div>)}</div></details>}
+          {!composer.ready && <p role="status" className="mb-2 text-xs text-muted-foreground">正在恢复本地草稿…</p>}
+          {composer.ready && !composer.error && <p role="status" className="mb-2 text-[10px] text-muted-foreground">{composer.saving ? '草稿正在保存到本机…' : '草稿按会话保存在本机，不跨设备同步'}</p>}
           {attachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
-              {attachments.map((a, i) => (
-                <span key={i} className="flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs">
+              {attachments.map((a) => (
+                <span key={a.id} className="flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs">
                   {a.kind === "image" && a.dataUrl ? (
                     <img src={a.dataUrl} alt={a.name} className="size-6 rounded object-cover" />
                   ) : (
                     <Paperclip className="size-3" />
                   )}
                   <span className="max-w-32 truncate">{a.name}</span>
-                  <button aria-label="移除附件" onClick={() => setAttachments((l) => l.filter((_, j) => j !== i))}>
+                  {a.status === 'parsing' && <span role="status">正在解析…</span>}
+                  {a.status === 'error' && <span role="alert" className="text-destructive">{a.error}</span>}
+                  <button aria-label={`移除附件 ${a.name}`} onClick={() => composer.removeAttachment(a.id)}>
                     <X className="size-3" />
                   </button>
                 </span>
@@ -305,13 +337,14 @@ export function AgentChatPage() {
             </div>
           )}
           <Textarea
+            disabled={initialLoading || !composer.ready || composer.resolving}
             rows={2}
             className="resize-none border-0 bg-muted focus-visible:ring-1"
             placeholder="输入消息 / 粘贴群通知 / 拖拽或粘贴图片文档…（Enter 发送）"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onPaste={(e) => { if (e.clipboardData.files.length) { e.preventDefault(); handleFiles(e.clipboardData.files); } }}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }}
           />
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {active?.mode === "auto" && (
@@ -358,7 +391,7 @@ export function AgentChatPage() {
                 <option value="auto">自动</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option>
               </select>
             </label>
-            {!["reasoning_effort", "enable_thinking"].includes(String(provider?.capabilities?.reasoning)) && <span className="text-xs text-muted-foreground">尚未确认该接口的思考控制能力</span>}
+            {provider?.capabilities?.reasoning === 'deepseek_thinking' ? <span className="text-xs text-muted-foreground" title="当前模型已接入思考与工具调用；低/中/高分别对应官方low/high/max，内部思考不作为聊天正文展示。">DeepSeek 思考已接入</span> : !["reasoning_effort", "enable_thinking"].includes(String(provider?.capabilities?.reasoning)) && <span className="text-xs text-muted-foreground">尚未确认该接口的思考控制能力</span>}
             {providerError && <span className="text-xs text-destructive">模型目录加载失败：{errorMessage(providerError)}</span>}
             {active.actualModel && <span className="text-xs text-muted-foreground" title={`最近任务配置：${active.configuredModel ?? "未知"}`}>最近返回：{active.actualModel}</span>}
             <span
@@ -373,7 +406,7 @@ export function AgentChatPage() {
                 <span className="ml-1 rounded bg-info/15 px-1 py-0.5 text-info">工具截断</span>
               )}
             </span>
-            <Button size="sm" className="ml-auto" disabled={busyUI || (!input.trim() && attachments.length === 0)} onClick={() => send()}>
+            <Button size="sm" className="ml-auto" disabled={initialLoading || !composer.ready || composer.resolving || Boolean(composer.conflict) || incompleteAttachments || busyUI || (!input.trim() && attachments.length === 0)} onClick={() => send()}>
               {busyUI ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
               {busyUI ? "处理中" : "发送"}
             </Button>

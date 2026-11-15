@@ -49,8 +49,8 @@ export interface TaskInput { title: string; intent?: string; sessionId?: string;
 export async function createTask(input: TaskInput): Promise<{ taskId: string; status: string }> {
   return req("/v1/tasks", { method: "POST", body: JSON.stringify(input) });
 }
-export async function ensureSession(input: { id: string; title: string; mode: "auto" | "daily" }): Promise<string> {
-  return (await req<{ session: { id: string } }>("/v1/sessions", { method: "POST", body: JSON.stringify(input) })).session.id;
+export async function ensureSession(input: { id: string; title: string; mode: "auto" | "daily" }, owner?: string): Promise<string> {
+  return (await req<{ session: { id: string } }>("/v1/sessions", { method: "POST", body: JSON.stringify(input), ...(owner ? { headers: { 'X-Session-Owner': owner } } : {}) })).session.id;
 }
 export async function getTask(id: string): Promise<AgentTask> {
   return (await req<{ task: AgentTask }>(`/v1/tasks/${id}`)).task;

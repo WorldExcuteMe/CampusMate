@@ -28,7 +28,7 @@ export class DocumentService {
   async inspect(userId: string, id: string) { const a = await this.owned(userId, id), ast = a.inline as DocumentAst; return { artifactId: a.id, revision: a.revision, sourceSha256: a.sha256, schemaValid: true, blocks: ast.blocks.length, sources: ast.sources.length, availableFormats: this.formats(ast), note: "结构检查不等于事实和视觉验收" }; }
   async export(userId: string, id: string, format: DocumentFormat): Promise<StoredArtifact> {
     const source = await this.owned(userId, id), ast = source.inline as DocumentAst;
-    if (!this.formats(ast).includes(format)) throw new DocumentRenderUnavailable("该格式所需的固定浏览器或中文字体不可用");
+    if (!this.formats(ast).includes(format)) throw new DocumentRenderUnavailable("该格式未启用，或所需固定浏览器/中文字体不可用；请在仓库根目录运行 npm run documents:setup 和 npm run documents:check");
     const documentId = uuid(sha256(`${id}:${format}:${RENDERER_VERSION}`));
     const existing = async () => (await this.artifacts.listByTask(userId, source.taskId)).find((a) => a.kind === "document-export" && a.documentId === documentId);
     const cached = await existing(); if (cached) return cached;

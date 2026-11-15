@@ -23,7 +23,7 @@ export function assertSecret(secret: EncryptedSecret | undefined): void {
   }
 }
 export function messageEnvelope(input: AppendSessionMessage) {
-  return { role: input.role, content: input.content, ...(input.tool_calls ? { tool_calls: input.tool_calls } : {}), ...(input.tool_call_id ? { tool_call_id: input.tool_call_id } : {}) };
+  return { role: input.role, content: input.content, ...(input.tool_calls ? { tool_calls: input.tool_calls } : {}), ...(input.tool_call_id ? { tool_call_id: input.tool_call_id } : {}), ...(input.role === 'assistant' && input.reasoning_content !== undefined ? { reasoning_content: input.reasoning_content, reasoning_source: input.reasoning_source } : {}) };
 }
 export function sameJson(first: unknown, second: unknown): boolean {
   return canonicalJson(first) === canonicalJson(second);

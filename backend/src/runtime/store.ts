@@ -27,6 +27,7 @@ export interface CreateTaskInput {
 }
 
 export interface TaskStore {
+  sessionTransaction?<T>(sessionId: string, fn: () => Promise<T>): Promise<T>;
   createTask(input: CreateTaskInput): Promise<Task>;
   createSessionTask?(input: CreateTaskInput & { sessionId: string; turnId: string }, sessions: SessionStore): Promise<{ task: Task; deduped: boolean }>;
   resumeSessionTask?(id: string, userId: string, budget?: Budget): Promise<Task>;
@@ -67,7 +68,7 @@ export class InMemoryStore implements TaskStore {
   private eventId = 0;
   private sessionTails = new Map<string, Promise<void>>();
 
-  private async sessionTransaction<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  async sessionTransaction<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.sessionTails.get(sessionId) ?? Promise.resolve();
     let release!: () => void;
     const tail = new Promise<void>((resolve) => { release = resolve; });
@@ -78,7 +79,7 @@ export class InMemoryStore implements TaskStore {
 
   async createSessionTask(input: CreateTaskInput & { sessionId: string; turnId: string }, sessions: SessionStore): Promise<{ task: Task; deduped: boolean }> {
     return this.sessionTransaction(input.sessionId, async () => {
-      if (!await sessions.get(input.userId, input.sessionId)) throw new Error("Session owner forbidden");
+      const parent = await sessions.get(input.userId, input.sessionId); if (!parent || parent.deletedAt) throw new Error("Session owner forbidden");
       const hash = sessionInputHash(input);
       const turns = [...this.tasks.values()].filter((t) => t.userId === input.userId && t.sessionId === input.sessionId);
       const existing = turns.find((t) => t.turnId === input.turnId);

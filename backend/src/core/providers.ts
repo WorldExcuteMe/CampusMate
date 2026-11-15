@@ -17,9 +17,10 @@ export interface PublicProvider {
 function capabilities(input: unknown): Record<string, unknown> {
   const data = input && typeof input === "object" ? input as Record<string, unknown> : {};
   const result: Record<string, unknown> = {};
-  const enums: Record<string, unknown[]> = { tools: ["native", "json", "none", "unknown"], vision: [true, false, "unknown"], streaming: [true, false, "unknown"], temperature: [true, false, "unknown"], reasoning: ["reasoning_effort", "enable_thinking", "thinking_budget", "none", "unknown"], outputParameter: ["max_tokens", "max_completion_tokens", "unknown"] };
+  const enums: Record<string, unknown[]> = { tools: ["native", "json", "none", "unknown"], vision: [true, false, "unknown"], streaming: [true, false, "unknown"], temperature: [true, false, "unknown"], reasoning: ["deepseek_thinking", "reasoning_effort", "enable_thinking", "thinking_budget", "none", "unknown"], outputParameter: ["max_tokens", "max_completion_tokens", "unknown"] };
   for (const [key, values] of Object.entries(enums)) result[key] = values.includes(data[key]) ? data[key] : "unknown";
   if (typeof data.streamUsage === "boolean") result.streamUsage = data.streamUsage;
+  if (data.thinking === false) result.thinking = false;
   if (Number.isSafeInteger(data.maxOutputTokens) && Number(data.maxOutputTokens) >= 256) result.maxOutputTokens = Number(data.maxOutputTokens);
   return result;
 }

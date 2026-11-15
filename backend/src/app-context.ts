@@ -23,6 +23,8 @@ import { PostgresSessionStore } from "./runtime/postgres-session-store.ts";
 import { PostgresProviderStore } from "./runtime/postgres-provider-store.ts";
 import { PostgresArtifactStore } from "./runtime/postgres-artifact-store.ts";
 import { ProviderService } from "./core/providers.ts";
+import type { BusinessStore } from './core/business-tools.ts';
+import { PostgresBusinessStore } from './runtime/postgres-business-store.ts';
 
 export interface AppContext {
   store: TaskStore;
@@ -38,6 +40,7 @@ export interface AppContext {
   providers: ProviderService;
   artifactStore: ArtifactStore;
   documents: DocumentService;
+  businessStore?: BusinessStore;
   storeKind: "postgres" | "memory";
   dispose: () => Promise<void>;
 }
@@ -70,6 +73,7 @@ export function buildContext(env: Record<string, string | undefined>, options: {
     providers: new ProviderService(providerStore, env, options.providerFetch),
     artifactStore,
     documents: new DocumentService(artifactStore, { pdfEnabled: env.DOCUMENT_PDF_ENABLED !== "0" }),
+    businessStore: pool ? new PostgresBusinessStore(pool) : undefined,
     storeKind: pool ? "postgres" : "memory",
     dispose: async () => { if (pool && !options.pool) await pool.end(); },
   };

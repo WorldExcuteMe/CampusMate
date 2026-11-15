@@ -1,6 +1,8 @@
 // Backend API（Node http，零框架依赖）。JWT 校验 + owner 隔离 + CORS。
 // 不在请求内跑 Agent Loop：提交即写 queued 返回 taskId，Worker 异步认领。
 import http from "node:http";
+import { SessionManagementError, publicConversation, validateLegacyMessages } from '../core/session-management.ts';
+import { hasRawToolMarkup, TOOL_PROTOCOL_ERROR } from '../../../shared/tool-protocol.ts';
 import type { TaskStore } from "../runtime/store.ts";
 import type { ApprovalStore } from "../runtime/approval.ts";
 import type { CapabilityRegistry } from "../core/capability.ts";
@@ -44,6 +46,9 @@ export interface ApiDeps {
 
 
 function taskView(task: import("../core/types.ts").Task) {
+  // Historical false-success records remain unchanged for audit, but must not be
+  // presented as completed or re-executed automatically by clients.
+  if (hasRawToolMarkup(task.result?.summary ?? '')) task = { ...task, status: 'failed', error: TOOL_PROTOCOL_ERROR, result: { ...task.result!, summary: TOOL_PROTOCOL_ERROR, partial: true, completion: { state: 'partial', reason: 'tool_protocol_error' } } };
   const { id, userId, title, sessionId, turnId, turnSeq, status, usage, budget, result, error, promptUsage, modelConfig, modelRuntime, cancelRequested, createdAt, updatedAt } = task;
   return { id, userId, title, sessionId, turnId, turnSeq, status, usage, budget, result, error, promptUsage, modelConfig, modelRuntime, cancelRequested, createdAt, updatedAt };
 }
@@ -75,8 +80,8 @@ export function createApiServer(deps: ApiDeps): http.Server {
   const cors = deps.corsOrigin ?? "*";
   return http.createServer(async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", cors);
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Session-Owner");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
     const url = new URL(req.url ?? "/", "http://local");
@@ -92,6 +97,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
       const claims = verifySupabaseJwt(token, jwtSecret);
       if (!claims) return json(res, 401, { error: "unauthorized" });
       const uid = claims.sub;
+      if (path.startsWith('/v1/sessions') && req.headers['x-session-owner'] && req.headers['x-session-owner'] !== uid) return json(res, 403, { error: '会话身份已切换，请重新操作' });
 
       if (deps.providers) {
         if (path === "/v1/providers" && req.method === "GET") return json(res, 200, { providers: await deps.providers.list(uid) });
@@ -114,14 +120,27 @@ export function createApiServer(deps: ApiDeps): http.Server {
           return json(res, 201, { session });
         }
         if (req.method === "GET" && path === "/v1/sessions") return json(res, 200, { sessions: await sessions.list(uid) });
+        const manageMatch = path.match(/^\/v1\/sessions\/([^/]+)(\/(history|import))?$/);
+        if (manageMatch) {
+          const id = manageMatch[1]; requireUuid(id);
+          if (!manageMatch[2] && req.method === 'PATCH') { const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024); return json(res, 200, { session: await sessions.patch(uid, id, { expectedRevision: body.expectedRevision, ...(body.title !== undefined ? { title: body.title } : {}), ...(body.mode !== undefined ? { mode: body.mode } : {}), ...(body.archived !== undefined ? { archived: body.archived } : {}) }) }); }
+          if (!manageMatch[2] && req.method === 'DELETE') { const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024); return json(res, 200, { session: await sessions.remove(uid, id, body.expectedRevision) }); }
+          if (manageMatch[3] === 'import' && req.method === 'POST') { const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024); await sessions.importLegacy(uid, id, validateLegacyMessages(body.messages)); return json(res, 200, { ok: true }); }
+          if (manageMatch[3] === 'history' && req.method === 'GET') {
+            const parent = await sessions.get(uid, id); if (!parent || parent.deletedAt) return json(res, 404, { error: 'session not found' });
+            const tasks = (await store.listTasksByUser(uid)).filter(t => t.sessionId === id).sort((a, b) => (a.turnSeq ?? 0) - (b.turnSeq ?? 0) || a.createdAt - b.createdAt);
+            return json(res, 200, { session: parent, messages: publicConversation(tasks, await sessions.listMessages(uid, id), await sessions.legacyHistory(uid, id)), tasks: tasks.map(taskView) });
+          }
+        }
         const sessionMatch = path.match(/^\/v1\/sessions\/([^/]+)\/(messages|tasks)$/);
         if (req.method === "GET" && sessionMatch) {
           requireUuid(sessionMatch[1]);
-          if (!await sessions.get(uid, sessionMatch[1])) return json(res, 404, { error: "session not found" });
+          const parent = await sessions.get(uid, sessionMatch[1]); if (!parent || parent.deletedAt) return json(res, 404, { error: "session not found" });
           if (sessionMatch[2] === "tasks") return json(res, 200, { tasks: (await store.listTasksByUser(uid)).filter((t) => t.sessionId === sessionMatch[1]).sort((a, b) => (b.turnSeq ?? 0) - (a.turnSeq ?? 0) || b.createdAt - a.createdAt).slice(0, 40).map(taskView) });
           const after = Number(url.searchParams.get("afterSeq") ?? 0);
           if (!Number.isSafeInteger(after) || after < 0) return json(res, 400, { error: "invalid afterSeq" });
-          return json(res, 200, { messages: await sessions.listMessages(uid, sessionMatch[1], after) });
+          // Opaque model continuation stays on the server, not in browser history.
+          return json(res, 200, { messages: (await sessions.listMessages(uid, sessionMatch[1], after)).map(({ reasoning_content: _privateReasoning, reasoning_source: _providerScope, ...message }) => message) });
         }
       }
 
@@ -131,7 +150,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         if (body.intent !== undefined && typeof body.intent !== "string") return json(res, 400, { error: "invalid_intent" });
         if (body.sessionId !== undefined) {
           requireUuid(body.sessionId);
-          if (deps.sessionStore && !await deps.sessionStore.get(uid, body.sessionId)) return json(res, 404, { error: "session not found" });
+          if (deps.sessionStore) { const parent = await deps.sessionStore.get(uid, body.sessionId); if (!parent || parent.deletedAt) return json(res, 404, { error: "session not found" }); }
         }
         if (body.turnId !== undefined) requireUuid(body.turnId);
         if (body.providerId !== undefined && typeof body.providerId !== "string") return json(res, 400, { error: "providerId must be a string" });
@@ -178,7 +197,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         if (!task) return json(res, 404, { error: "task not found" });
         if (task.userId !== uid) return json(res, 403, { error: "forbidden" }); // 跨用户隔离
 
-        if (req.method === "GET" && !sub) return json(res, 200, { task });
+        if (req.method === "GET" && !sub) return json(res, 200, { task: taskView(task) });
         if (req.method === "GET" && sub === "/events") {
           const after = Number(url.searchParams.get("after") ?? 0);
           return json(res, 200, { events: await store.listEvents(id, after) });
@@ -337,6 +356,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
 
       return json(res, 404, { error: "not found" });
     } catch (err) {
+      if (err instanceof SessionManagementError) return json(res, err.status, { error: err.message });
       if (err instanceof DocumentRenderUnavailable) return json(res, 503, { error: err.message });
       if (err instanceof ProviderError) return json(res, err.status, { error: err.message });
       if (err instanceof ApiInputError) return json(res, err.status, { error: err.message });

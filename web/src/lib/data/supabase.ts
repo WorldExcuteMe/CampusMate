@@ -300,6 +300,7 @@ function rowToInbox(r: any): InboxItem {
     createdAt: r.created_at,
     demo: false,
     extractionMock: r.extraction_mock ?? true,
+    mergedFrom: r.merged_from ?? [],
   };
 }
 function rowToTask(r: any): Task {

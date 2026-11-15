@@ -48,7 +48,7 @@ const navItem = (active: boolean) =>
 
 export function Layout() {
   const { session, configured } = useAuth();
-  const { sessions, activeId, setActiveId, create, remove, archive, restore } = useSessions();
+  const { sessions, activeId, setActiveId, create, remove, archive, restore, syncError, syncing, initialLoading, refresh } = useSessions();
   const nav = useNavigate();
   const loc = useLocation();
   const [expand, setExpand] = useState(loc.pathname.startsWith("/app/agent"));
@@ -180,6 +180,7 @@ export function Layout() {
           </div>
         )}
 
+        {(initialLoading || syncing || syncError) && <div role={syncError ? 'alert' : 'status'} className="shrink-0 border-b px-4 py-2 text-xs"><span>{syncError ?? (initialLoading ? '正在从后端恢复会话…' : '正在保存会话更改…')}</span>{syncError && <button type="button" className="ml-2 underline" onClick={refresh}>重试同步</button>}</div>}
         <main ref={contentRef} className="cm-aurora scrollbar-thin min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain p-4 md:p-8">
           <Outlet />
         </main>

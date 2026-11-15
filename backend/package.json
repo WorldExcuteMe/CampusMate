@@ -11,7 +11,9 @@
     "api": "node src/main-api.ts",
     "worker": "node src/main-worker.ts",
     "test": "node --test",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "documents:setup": "playwright install --no-remove chromium",
+    "documents:check": "node scripts/check-document-sandbox.ts"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.16",

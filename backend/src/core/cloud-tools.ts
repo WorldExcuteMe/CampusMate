@@ -3,14 +3,17 @@
 import type { ToolDef } from "./types.ts";
 import { errorMessage } from "./errors.ts";
 import { safeFetch, htmlToText } from "./ssrf.ts";
+import { searchPublicWeb } from './web-search.ts';
 import type { EvidenceStore } from "./evidence.ts";
 import type { OpportunityStore } from "./opportunity-store.ts";
 import { sanitizeProposedStatus, type VerificationStatus } from "./verification.ts";
 import type { ArtifactStore } from "./storage-contracts.ts";
 import { DocumentService, saveFetchedSource } from "./document-service.ts";
 import type { DocumentBlock } from "../../../shared/document.ts";
+import { BUSINESS_TOOLS, BUSINESS_TOOL_NAMES, type BusinessStore, type BusinessToolName } from './business-tools.ts';
 
 export const CLOUD_TOOLS: ToolDef[] = [
+  ...BUSINESS_TOOLS,
   { type: "function", function: { name: "document_create", description: "创建通用文档并保存真实产物。blocks只接受heading(level,text)、paragraph(text,claimType,sourceIds)、list(items)、table(headers,rows)、image(data PNG/JPEG,alt)、chart(title,labels,values)、reference(sourceId)。外部事实须用web_fetch返回的sourceId，不可自填已核实来源。长文先分章节准备再创建；可用previousArtifactId追加同任务的新版本。", parameters: { type: "object", properties: { title: { type: "string" }, blocks: { type: "array", items: { type: "object" } }, sourceIds: { type: "array", items: { type: "string" } }, previousArtifactId: { type: "string" } }, required: ["title", "blocks"] } } },
   { type: "function", function: { name: "document_inspect", description: "读取本人文档的结构、版本、来源及可用导出格式。结构检查不代表内容事实/视觉均已验收。", parameters: { type: "object", properties: { artifactId: { type: "string" } }, required: ["artifactId"] } } },
   { type: "function", function: { name: "document_export", description: "把已保存文档真实导出为MD/DOCX/PDF，重开核对并缓存文件，返回字节哈希和授权下载路径。缺环境会明确报错；只有成功后才能声称可下载。", parameters: { type: "object", properties: { artifactId: { type: "string" }, format: { type: "string", enum: ["md", "docx", "pdf"] } }, required: ["artifactId", "format"] } } },
@@ -61,7 +64,7 @@ export const CLOUD_TOOLS: ToolDef[] = [
           organizer: { type: "string" },
           description: { type: "string" },
           conditions: { type: "array", items: { type: "string" } },
-          deadline: { type: "string", description: "YYYY-MM-DD 或 null" },
+          deadline: { type: ["string", "null"], description: "YYYY-MM-DD；未知用null或省略，不要猜测日期" },
           sourceUrl: { type: "string" },
         },
         required: ["title"],
@@ -78,9 +81,14 @@ export const CLOUD_TOOLS: ToolDef[] = [
   },
 ];
 
-export interface CloudToolCtx { taskId: string; userId: string; evidenceStore?: EvidenceStore; opportunityStore?: OpportunityStore; artifactStore?: ArtifactStore; documents?: DocumentService; }
+export interface CloudToolCtx { taskId: string; userId: string; evidenceStore?: EvidenceStore; opportunityStore?: OpportunityStore; artifactStore?: ArtifactStore; documents?: DocumentService; businessStore?: BusinessStore; }
 
 export async function executeCloudTool(name: string, args: Record<string, unknown>, ctx?: CloudToolCtx): Promise<string> {
+  if (BUSINESS_TOOL_NAMES.includes(name as BusinessToolName)) {
+    if (!ctx?.businessStore) return JSON.stringify({ error: '业务持久化服务未配置，需要 Postgres；未保存任何更改。' });
+    try { return JSON.stringify(await ctx.businessStore.execute(name as BusinessToolName, args, { userId: ctx.userId, taskId: ctx.taskId })); }
+    catch { return JSON.stringify({ error: '业务操作未能确认成功：请检查标题、日期、分类和本人数据访问权限，核实保存结果后重试。' }); }
+  }
   if (["document_create", "document_inspect", "document_export"].includes(name)) {
     const documents = ctx?.documents ?? (ctx?.artifactStore ? new DocumentService(ctx.artifactStore) : undefined);
     if (!ctx || !documents) return JSON.stringify({ error: "文档持久化服务不可用" });
@@ -101,42 +109,8 @@ export async function executeCloudTool(name: string, args: Record<string, unknow
     return JSON.stringify({ artifactId: artifact.id, sha256: artifact.sha256, offset, text: text.slice(offset, offset + limit), nextOffset: offset + limit < text.length ? offset + limit : null, totalChars: text.length });
   }
   if (name === "web_search") {
-    // 搜索引擎用 Bing 中国（DDG 在国内网络不可达会挂起）。fetch 自带 12s 超时，先于 Worker 15s 兜底自 abort。
-    try {
-      const query = String(args.query ?? "");
-      const limit = Math.min(Math.max(Number(args.limit ?? 6) || 6, 1), 10);
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 12000);
-      let html: string;
-      try {
-        const r = await fetch(`https://cn.bing.com/search?q=${encodeURIComponent(query)}&count=${limit + 2}`, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-          },
-          signal: ctrl.signal,
-        });
-        html = await r.text();
-      } finally {
-        clearTimeout(timer);
-      }
-      const strip = (s: string) => s
-        .replace(/<[^>]+>/g, "")
-        .replace(/&ensp;/g, " ").replace(/&#0183;/g, "·").replace(/&quot;/g, '"')
-        .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
-        .replace(/\s+/g, " ").trim();
-      const results: { title: string; url: string; snippet: string }[] = [];
-      const re = /<h2><a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a><\/h2>(?:<div class="b_caption"><p[^>]*>([\s\S]*?)<\/p>)?/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(html)) && results.length < limit) {
-        const url = m[1];
-        if (!/^https?:/.test(url)) continue;
-        results.push({ title: strip(m[2]), url, snippet: strip(m[3] ?? "") });
-      }
-      return JSON.stringify({ engine: "bing", results });
-    } catch (e) {
-      return JSON.stringify({ error: `web_search 失败：${errorMessage(e)}`, results: [] });
-    }
+    const limit = Math.min(Math.max(Number(args.limit ?? 6) || 6, 1), 10);
+    return JSON.stringify(await searchPublicWeb(String(args.query ?? ''), limit));
   }
   if (name === "web_fetch") {
     try {
@@ -177,6 +151,9 @@ export async function executeCloudTool(name: string, args: Record<string, unknow
     if (!ctx?.opportunityStore) return JSON.stringify({ error: "机会存储未启用" });
     const title = String(args.title ?? "").trim();
     if (!title) return JSON.stringify({ error: "title 必填" });
+    const rawDeadline = typeof args.deadline === 'string' ? args.deadline.trim() : args.deadline;
+    const deadline = rawDeadline == null || rawDeadline === '' ? null : rawDeadline;
+    if (deadline !== null && (typeof deadline !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(deadline) || !Number.isFinite(Date.parse(deadline + 'T00:00:00Z')) || new Date(deadline + 'T00:00:00Z').toISOString().slice(0, 10) !== deadline)) return JSON.stringify({ error: '截止日期须为真实的YYYY-MM-DD日期，未知请用null或省略', class: 'tool_validation', field: 'deadline' });
     const rec = await ctx.opportunityStore.create({
       userId: ctx.userId,
       title,
@@ -184,7 +161,7 @@ export async function executeCloudTool(name: string, args: Record<string, unknow
       organizer: args.organizer ? String(args.organizer) : undefined,
       description: args.description ? String(args.description) : undefined,
       conditions: Array.isArray(args.conditions) ? (args.conditions as unknown[]).map(String) : undefined,
-      deadline: args.deadline ? String(args.deadline) : null,
+      deadline: deadline as string | null,
       sourceUrl: args.sourceUrl ? String(args.sourceUrl) : undefined,
     });
     return JSON.stringify({ ok: true, opportunity: rec, note: "已写入机会雷达，用户可在 Radar 页查看。" });
