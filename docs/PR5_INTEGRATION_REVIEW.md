@@ -47,10 +47,12 @@
 | Deno 2.9.6 check 两个 Function 入口 | 通过 | pr5-function-check.log |
 | 九份组合迁移 | 16/16，MIGRATION_VALIDATED | pr5-migration.log |
 | Demo Playwright | 22/22 | pr5-demo-e2e.log |
-| Runtime Playwright | 5/5；身份→推荐→策划书、三格式下载、课表确认、旧任务恢复、BYOK、三宽明暗 | pr5-runtime-e2e.log |
+| Runtime Playwright | 5/5；身份→推荐→策划书、三格式下载、课表确认、旧任务恢复、BYOK、三宽明暗 | pr6-runtime-final.log（补充下载错误诊断后重验） |
 | 确定性 benchmark smoke | 30/30，BENCHMARK_PASS | pr5-benchmark.log；夹具结果，不代表真实 LLM 成功率、耗时或费用 |
 
 旧浏览器用例同步了中文文案、模型选择器可访问名称及规范会话存储键；保留真实行为断言。完成/撤销测试改为点击后等待异步保存；未把产品过期规则改弱来通过测试。
+
+PR #6 首次 Linux CI 的前端构建、218 项测试、Function、22 项 Demo 用例通过；Runtime 4/5，PDF 返回打印环境 503，MD/DOCX 已成功。新增 `backend/scripts/check-document-sandbox.ts` 直接探测实际沙箱启动；仅在 GitHub Linux runner 确认 AppArmor userns 限制且启动报相应错误时，为 Playwright 浏览器路径加载定向 profile，再次验证 sandboxed launch。没有关闭 Chromium sandbox 或全局 userns 限制。方案依据 [Chromium 官方说明](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md)，查证日期 2026-11-15。下载用例同时优先报告 HTTP 错误，保留文件魔数/hash/owner 断言；修后 Windows 5/5，Linux 最终结果以最新 CI 为准。
 
 ## 剩余风险与发布边界
 

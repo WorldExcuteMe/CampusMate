@@ -33,11 +33,15 @@ test("身份→推荐→策划书：真实任务、工具进度、刷新、预�
   await expect(page.getByRole("article", {name:"文档正文"})).toContainText("背景与问题");
   await expect(page.getByRole("article", {name:"文档正文"})).toContainText("参考来源");
   for (const format of ["MD", "DOCX", "PDF"]) {
-    const response = page.waitForResponse(r => r.url().includes("/download") && r.url().includes(format.toLowerCase()));
-    const download = page.waitForEvent("download");
-    await page.getByRole("button",{name:`下载 ${format}`,exact:true}).click();
-    const res = await response, file = await download, bytes = await fs.readFile((await file.path())!);
-    expect(res.ok()).toBeTruthy();
+    const response = page.waitForResponse(r => r.url().includes("/download") && r.url().includes(format.toLowerCase())).then(async res => {
+      expect(res.ok(), `${format} download HTTP ${res.status()}: ${res.ok() ? "" : await res.text()}`).toBeTruthy();
+      return res;
+    });
+    const [res, file] = await Promise.all([
+      response, page.waitForEvent("download", { timeout: 30_000 }),
+      page.getByRole("button",{name:`下载 ${format}`,exact:true}).click(),
+    ]);
+    const bytes = await fs.readFile((await file.path())!);
     expect(createHash("sha256").update(bytes).digest("hex")).toBe(res.headers()["x-file-sha256"]);
     if (format === "DOCX") expect(bytes.subarray(0,2).toString()).toBe("PK");
     if (format === "PDF") expect(bytes.subarray(0,5).toString()).toBe("%PDF-");

@@ -30,6 +30,9 @@ jobs:
           CAMPUSMATE_E2E_OUTPUT: ${{ runner.temp }}/campusmate-e2e-demo
       - name: Install runtime integration dependencies
         run: npm --prefix ../backend ci
+      - name: Check sandboxed document renderer
+        working-directory: backend
+        run: node scripts/check-document-sandbox.ts
       - name: Runtime browser integration (scripted model, no remote credentials)
         run: npx playwright test -c playwright.integration.config.ts
         env:
@@ -65,6 +68,8 @@ jobs:
         run: npm run typecheck
       - name: Install document renderer Chromium
         run: npx playwright install --with-deps chromium
+      - name: Check sandboxed document renderer
+        run: node scripts/check-document-sandbox.ts
       - name: Backend Tests (unit/integration/security/recovery)
         run: npm test -- --test-concurrency=1
       - name: Migration Validation (PGlite real engine)
