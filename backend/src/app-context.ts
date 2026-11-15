@@ -1,6 +1,9 @@
 // 共享装配：API 与 Worker 独立进程复用同一套 Core/Contracts/Store。
 // 生产守卫：NODE_ENV=production 必须有 DATABASE_URL（Postgres），否则明确失败，绝不静默降级 InMemory。
 import { createApiServer } from "./api/server.ts";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { DocumentService } from "./core/document-service.ts";
 import { InMemoryStore, type TaskStore } from "./runtime/store.ts";
 import { PostgresStore } from "./runtime/postgres-store.ts";
@@ -50,7 +53,10 @@ export function buildContext(env: Record<string, string | undefined>, options: {
   const conn = connectionStringFromEnv(env);
   const isProd = env.NODE_ENV === "production";
   if (isProd && !conn && !options.pool) throw new ProductionDbRequiredError();
-  const pool = options.pool ?? (conn ? new PgPool(conn) : undefined);
+  const pool = options.pool ?? (conn ? new PgPool(conn, {
+    proxyUrl: env.DATABASE_PROXY_URL,
+    ...(env.DATABASE_SSL_CA_FILE ? { ssl: { rejectUnauthorized: true, ca: readFileSync(path.resolve(fileURLToPath(new URL("../", import.meta.url)), env.DATABASE_SSL_CA_FILE), "utf8") } } : {}),
+  }) : undefined);
   const store: TaskStore = pool ? new PostgresStore(pool) : new InMemoryStore();
   const artifactStore: ArtifactStore = pool ? new PostgresArtifactStore(pool) : new MemoryArtifactStore(store);
   const providerStore: ProviderStore = pool ? new PostgresProviderStore(pool) : new MemoryProviderStore();

@@ -1,5 +1,7 @@
 // SQL 执行抽象 + pg 适配器。PostgresStore 依赖此接口，便于单元测试注入 fake、生产用 pg.Pool。
 import pg from "pg";
+import type { ConnectionOptions } from "node:tls";
+import { DatabaseProxyStream } from "./db-proxy.ts";
 
 export interface SqlResult<T = Record<string, unknown>> { rows: T[]; rowCount: number; }
 export interface SqlClient {
@@ -17,13 +19,15 @@ export function transactionPool(client: SqlClient): SqlPool {
 
 export class PgPool implements SqlPool {
   private pool: pg.Pool;
-  constructor(connectionString: string, opts?: { max?: number; ssl?: boolean; connectionTimeoutMillis?: number }) {
+  constructor(connectionString: string, opts?: { max?: number; ssl?: boolean | ConnectionOptions; proxyUrl?: string; connectionTimeoutMillis?: number }) {
+    if (typeof opts?.ssl === "object" && ["sslmode", "sslcert", "sslkey", "sslrootcert"].some(key => new URL(connectionString).searchParams.has(key))) throw new Error("数据库连接串 SSL 参数不能与显式 CA 配置混用，请保留一种配置方式");
     this.pool = new pg.Pool({
       connectionString,
       max: opts?.max ?? 5,
       connectionTimeoutMillis: opts?.connectionTimeoutMillis ?? 8000,
-      // Supabase 直连需 SSL；本地测试可关。
-      ssl: opts?.ssl === false ? undefined : { rejectUnauthorized: false },
+      // Remote connections verify the server. Local test instances may explicitly disable SSL.
+      ssl: opts?.ssl === false ? false : typeof opts?.ssl === "object" ? opts.ssl : { rejectUnauthorized: true },
+      ...(opts?.proxyUrl ? { stream: () => new DatabaseProxyStream(opts.proxyUrl!, opts.connectionTimeoutMillis ?? 8000) } : {}),
     });
   }
   async query<T = Record<string, unknown>>(text: string, params?: unknown[]): Promise<SqlResult<T>> {

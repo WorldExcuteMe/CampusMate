@@ -1,5 +1,14 @@
 # CampusMate · project.md
 
+## 2026-11-15 云端持久化运行接入
+
+- 用户因 WSL 内存占用明确选择复用原云端 Supabase。主代理单独完成，分支 `codex/local-persistent-runtime-20261115`，基于已发布 main d22efc9；本次不 push、不合并 main。
+- 已补 PgPool 显式 HTTP(S) CONNECT 与可信 CA 接线，保持 TLS 证书/主机名验证。Windows 原生代理可达；原有云 Auth/账号保持，刷新当前公开 JWKS，服务器主密钥保留在私有配置。
+- 云旧 schema 核对并加密备份/解密读回后，登记已有基线并在单事务中应用其余 8 份迁移，共九条原生历史。再次执行 applied=[]，原资料记录未变；36 张 public 表 RLS 开启。
+- 已实测真实云的供应商/默认项/会话/消息/任务/文件跨 API 进程重启读回、密钥解密和 API/RLS owner 隔离；诊断只用虚构 key，Worker 暂停期间无模型调用，夹具已清理后恢复正式 Worker。
+- 本地 5176 页面、8787 开发代理、8788 Postgres API/Worker 已运行；新增本机忽略入口 `.local/start-campusmate.ps1`，日常不需要常驻 WSL。原有其他 WSL 服务未停止。
+- 新增代理回归 4/4、后端类型检查通过；完整后端 293 项为 292 pass / 0 fail / 1 外部 TEST_DATABASE_URL skip。此 skip 独立于上述真实云实测。当前浏览器 Demo，真实账号下保存和 AMD 连通仍待用户登录验收。详见 `docs/CLOUD_RUNTIME_SETUP.md` 和 `docs/specs/cloud-persistent-development.md`。
+
 ## 2026-11-15 PR #5 集成审查
 
 - 主代理独立审查同事 PR #5（aa89e3d）并与 T1–T10 基线 6697163 合并，解决 30 处内容冲突。整合分支 `codex/integrate-pr5-main-20261115`，保持双方提交祖先。
