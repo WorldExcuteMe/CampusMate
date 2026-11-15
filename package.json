@@ -1,0 +1,14 @@
+{
+  "name": "campusmate-dev-environment",
+  "private": true,
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "db:start": "node scripts/local-supabase.mjs start",
+    "db:stop": "node scripts/local-supabase.mjs stop",
+    "db:status": "node scripts/local-supabase.mjs status",
+    "db:env": "node scripts/local-supabase.mjs env",
+    "db:verify": "node scripts/verify-local-db.mjs",
+    "db:verify-reports": "node scripts/verify-verification-save.mjs"
+  },
+  "devDependencies": { "supabase": "3.1.0" }
+}

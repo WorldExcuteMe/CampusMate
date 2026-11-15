@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
-import { repository } from "@/app/config";
+import { useRepository } from "@/app/auth";
 import { EmptyState, PageHeader, VerifyBadge } from "@/components/shared";
 
 export function TrustPage() {
+  const repository = useRepository();
   const { data: reports = [] } = useQuery({
     queryKey: ["reports"],
     queryFn: () => repository.listReports(),

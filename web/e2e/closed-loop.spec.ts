@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
 
-const EVIDENCE = "C:/Users/Asus/CodeBuddy/campusmate-evidence";
+const EVIDENCE = process.env.CAMPUSMATE_E2E_OUTPUT ?? path.join(os.tmpdir(), "campusmate-demo-e2e", "screenshots");
+test.beforeAll(async()=>{await fs.mkdir(EVIDENCE,{recursive:true});});
 
 const NOTICE = `关于举办2026年校园程序设计大赛的通知
 主办单位：教务处
@@ -31,7 +35,7 @@ test("第一条业务闭环：导入→提取→确认→待办→Dashboard→�
   await expect(page.getByText(/处理：.*程序设计大赛/)).toBeVisible();
 });
 
-test("URL 抓取防护与风险分类可见", async ({ page }) => {
+test("风险通知提取与分类可见", async ({ page }) => {
   await page.goto("/app/inbox/new");
   await page.getByPlaceholder("粘贴校园通知文本…").fill("兼职刷单，先交保证金200元，稳赚高额回报");
   await page.getByRole("button", { name: "AI 提取" }).click();
@@ -61,9 +65,49 @@ test("日常任务专区：群通知清洗+时间提取+导入", async ({ page }
 test("会话页与供应商设置页可达", async ({ page }) => {
   await page.goto("/app/agent");
   await expect(page.getByPlaceholder(/输入消息/)).toBeVisible();
-  await expect(page.getByText("上下文", { exact: false })).toBeVisible();
+  await expect(page.getByText("窗口输入", { exact: false })).toBeVisible();
   await page.screenshot({ path: `${EVIDENCE}/11-agent-chat.png`, fullPage: true });
   await page.goto("/app/settings");
   await expect(page.getByText("模型供应商", { exact: true })).toBeVisible();
   await page.screenshot({ path: `${EVIDENCE}/12-provider-settings.png`, fullPage: true });
+});
+
+test("日常任务可完成与撤销完成，刷新后状态持久化", async ({ page }) => {
+  await page.goto("/app/daily");
+  const checkbox = page.getByRole("checkbox", { name: /参加班会/ });
+  await expect(checkbox).not.toBeChecked();
+  await checkbox.click();
+  await expect(checkbox).toBeChecked();
+  await page.reload();
+  await expect(checkbox).toBeChecked();
+  await checkbox.click();
+  await expect(checkbox).not.toBeChecked();
+  await page.reload();
+  await expect(checkbox).not.toBeChecked();
+  await page.goto("/app");
+  await expect(page.getByText("参加班会（辅导员通知）", { exact: true })).toBeVisible();
+});
+
+
+test("服务端模型提取：真实来源标记、保存与刷新持久化", async ({ page }) => {
+  await page.route("**/api/providers", (route) => route.fulfill({ json: {
+    providers: [{ id: "fixture", name: "测试模型", hasKey: true, protocol: "openai", model: "fixture", baseUrl: "https://fixture.invalid" }], mutable: false,
+  } }));
+  await page.route("**/api/llm", (route) => route.fulfill({ json: {
+    choices: [{ message: { content: JSON.stringify({
+      title: "模型提取回归通知", category: "competition", org: "测试学校", summary: "测试摘要",
+      deadline: "2026-11-25", conditions: [], materials: [], cost: null, location: null,
+      sourceUrl: null, evidenceExcerpt: "模型提取回归通知", confidence: 0.9,
+    }) } }], model: "fixture-model",
+  } }));
+  await page.goto("/app/inbox/new");
+  await page.getByPlaceholder("粘贴校园通知文本…").fill("模型提取回归通知");
+  await page.getByRole("button", { name: "AI 提取" }).click();
+  await expect(page.getByText("真实模型提取", { exact: true })).toBeVisible();
+  await expect(page.getByText("MOCK · 规则提取", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "确认保存", exact: true }).click();
+  await expect(page).toHaveURL(/\/app\/inbox\/[0-9a-f-]{36}$/);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "模型提取回归通知" })).toBeVisible();
+  await expect(page.getByText("MOCK · 规则提取", { exact: true })).toHaveCount(0);
 });

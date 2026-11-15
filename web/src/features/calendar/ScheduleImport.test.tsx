@@ -1,0 +1,22 @@
+import { afterEach, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+const api = vi.hoisted(() => ({ import: vi.fn() }));
+vi.mock("@/lib/agent/api-client", () => ({ backendEnabled: () => true, importSchedule: api.import, createTerm: vi.fn(), saveTimeScheme: vi.fn() }));
+import { ScheduleImport } from "./ScheduleImport";
+afterEach(cleanup);
+it("上传只生成预览，明确确认后保存job并使课表查询失效", async () => {
+  const client = new QueryClient(), invalidate = vi.spyOn(client, "invalidateQueries");
+  const term = { id: "term", name: "秋季", institutionId: "a", startDate: "2026-09-07", endDate: "2027-01-24", totalWeeks: 20, timezone: "Asia/Shanghai" };
+  const preview = { jobId: "preview-job", confirmed: false, preview: { schedules: [{ courseName: "高数", weekday: 1, startTime: "08:00", endTime: "09:40", startWeek: 1, endWeek: 16, weekPattern: "every" }], errors: [], duplicates: 0, conflicts: [] } };
+  api.import.mockImplementation(async (input) => input.confirm ? { ...preview, confirmed: true, saved: 1 } : preview);
+  render(<QueryClientProvider client={client}><ScheduleImport term={term} onTerm={vi.fn()} /></QueryClientProvider>);
+  fireEvent.click(screen.getByText("导入课表与设置作息"));
+  const file = new File(["csv"], "课程.csv", { type: "text/csv" }); Object.defineProperty(file, "text", { value: async () => "csv" });
+  fireEvent.change(screen.getByLabelText("选择课表文件"), { target: { files: [file] } }); fireEvent.click(screen.getByText("生成预览"));
+  expect(await screen.findByText("高数")).toBeVisible(); expect(api.import).toHaveBeenCalledTimes(1);
+  expect(api.import.mock.calls[0][0].confirm).toBeUndefined();
+  fireEvent.click(screen.getByText("确认添加课表")); await screen.findByText("已确认导入 1 条课程");
+  expect(api.import.mock.calls[1][0]).toEqual({ confirm: true, jobId: "preview-job", allowPartial: false });
+  await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["schedules"] }));
+});

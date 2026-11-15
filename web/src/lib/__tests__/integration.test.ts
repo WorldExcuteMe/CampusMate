@@ -3,9 +3,19 @@ import { DemoRepository, resetDemo } from "../data/demo";
 import { runInboxPipeline } from "../agent/orchestrator";
 import { MockProvider } from "../llm/mock";
 import { uid } from "../data/types";
+import { demoInbox } from "@/demo/seed";
 
 describe("integration: agent + repository 闭环", () => {
   beforeEach(() => resetDemo());
+
+  it("first write after reset never mutates shared seed arrays", async () => {
+    const count = demoInbox.length;
+    const repo = new DemoRepository();
+    await repo.createInbox({ ...demoInbox[0], id: uid() });
+    expect(demoInbox).toHaveLength(count);
+    resetDemo();
+    expect(await repo.listInbox()).toHaveLength(count);
+  });
 
   it("导入→提取→确认→建任务→Dashboard 可读", async () => {
     const repo = new DemoRepository();

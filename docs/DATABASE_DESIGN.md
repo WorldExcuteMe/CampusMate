@@ -55,3 +55,6 @@ opportunities 1─N plans（可选）
 
 `0001_init.sql`：扩展 pgcrypto、16 表、索引、外键、RLS 策略、白名单与 demo 种子（seed 单独 `seed.sql`，仅 demo/参考数据）。
 后续变更一律新增编号 migration，不改历史文件。
+## 0002 修复升级
+
+`0002_profiles_and_provenance.sql`：新注册用户自动创建 profiles，已有用户缺行补齐（不覆盖资料）；新增 inbox_items.extraction_mock 与 agent_runs.provider/is_mock。前端实体及运行记录统一 UUID。先迁移后部署新前端；该文件本次仅编写，未在云端执行。

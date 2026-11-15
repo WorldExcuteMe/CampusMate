@@ -1,5 +1,5 @@
-import { getProvider, resolveConfig, type LlmProvider } from "@/lib/llm";
-import { getRepository, type Repository } from "@/lib/data";
+import type { LlmProvider } from "@/lib/llm/types";
+import { configureAiAuth } from "@/lib/llm/transport";
 import { createSupabaseClient } from "@/lib/data/supabase";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -16,15 +16,13 @@ export const supabaseClient: SupabaseClient | null = isDemo
   ? null
   : createSupabaseClient(appConfig.supabaseUrl!, appConfig.supabaseAnonKey!);
 
-// 会话绑定：AuthProvider 登录后切换为 SupabaseRepository（按 auth.uid 隔离）。
-export let repository: Repository = getRepository({});
+configureAiAuth(async () => {
+  if (!supabaseClient) return null;
+  const { data, error } = await supabaseClient.auth.getSession();
+  if (error) throw error;
+  return data.session?.access_token ?? null;
+});
 
-export function setRepository(r: Repository): void {
-  repository = r;
-}
-
-// 浏览器端始终使用明确标识的 Mock Provider；真实模型经服务端代理/Edge Function，
-// API Key 不落前端（见 docs/AGENT_DESIGN.md / SECURITY.md）。
-export const llmProvider: LlmProvider = getProvider(
-  resolveConfig({ LLM_PROVIDER: "mock" }),
-);
+// Model credentials never enter the browser; each result reports real provenance.
+// Lazy import breaks the config -> provider -> Task API -> config initialization cycle.
+export const llmProvider: LlmProvider = { name: "auto", mock: false, async extractNotice(req) { const { BrowserProvider } = await import("@/lib/llm/browser"); return new BrowserProvider().extractNotice(req); } };

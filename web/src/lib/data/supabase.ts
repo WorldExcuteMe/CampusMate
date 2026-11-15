@@ -16,15 +16,30 @@ export function createSupabaseClient(url: string, anonKey: string): SupabaseClie
 
 export class SupabaseRepository implements Repository {
   readonly mode = "supabase" as const;
-  constructor(private db: SupabaseClient, private userId: string) {}
+  readonly storageScope: string;
+  constructor(private db: SupabaseClient, private userId: string) {
+    this.storageScope = `supabase:${userId}`;
+  }
 
   async getProfile(): Promise<Profile> {
-    const { data, error } = await this.db
+    let { data, error } = await this.db
       .from("profiles")
       .select("*")
       .eq("id", this.userId)
-      .single();
+      .maybeSingle();
     if (error) throw error;
+    // Also supports existing deployments before the signup trigger is migrated.
+    // DO NOTHING on conflicts: never overwrite a profile created by another tab.
+    if (!data) {
+      const created = await this.db.from("profiles").upsert(
+        { id: this.userId },
+        { onConflict: "id", ignoreDuplicates: true },
+      );
+      if (created.error) throw created.error;
+      const found = await this.db.from("profiles").select("*").eq("id", this.userId).single();
+      if (found.error) throw found.error;
+      data = found.data;
+    }
     return {
       id: data.id,
       name: data.name ?? "",
@@ -50,7 +65,7 @@ export class SupabaseRepository implements Repository {
       bio: p.bio,
     });
     if (error) throw error;
-    return p;
+    return { ...p, id: this.userId };
   }
   async listInbox(): Promise<InboxItem[]> {
     const { data, error } = await this.db
@@ -80,9 +95,10 @@ export class SupabaseRepository implements Repository {
       extracted: item.extracted,
       classification: item.classification,
       status: item.status,
+      extraction_mock: item.extractionMock ?? true,
     });
     if (error) throw error;
-    return item;
+    return { ...item, userId: this.userId, demo: false };
   }
   async updateInbox(id: string, patch: Partial<InboxItem>): Promise<InboxItem> {
     const row: Record<string, unknown> = {};
@@ -121,7 +137,7 @@ export class SupabaseRepository implements Repository {
       time_text: task.timeText ?? null,
     });
     if (error) throw error;
-    return task;
+    return { ...task, userId: this.userId, demo: false };
   }
   async updateTask(id: string, patch: Partial<Task>): Promise<Task> {
     const row: Record<string, unknown> = {};
@@ -184,21 +200,45 @@ export class SupabaseRepository implements Repository {
     if (error) throw error;
     return data ? rowToReport(data) : null;
   }
+  async createReport(r: VerificationReport): Promise<VerificationReport> {
+    const { data, error } = await this.db.rpc("save_verification_report", {
+      p_report: {
+        id: r.id,
+        opportunity_id: r.opportunityId,
+        status: r.status,
+        summary: r.summary,
+        findings: r.findings,
+        evidence: r.evidence.map(e => ({
+          source_url: e.sourceUrl, source_type: e.sourceType, excerpt: e.excerpt,
+          retrieved_at: e.retrievedAt, supports: e.supports, confidence: e.confidence,
+        })),
+      },
+    });
+    if (error?.code === "PGRST202") throw new Error("核验保存接口未就绪，请先应用数据库迁移后重试");
+    if (error) throw error;
+    if (!data || data.id !== r.id || data.opportunity_id !== r.opportunityId || data.status !== r.status
+      || !Array.isArray(data.evidence_items) || data.evidence_items.length !== r.evidence.length) {
+      throw new Error("核验报告保存结果不完整，请刷新确认后重试");
+    }
+    return rowToReport(data);
+  }
   async logActivity(e: ActivityEvent): Promise<void> {
-    await this.db.from("activity_events").insert({
+    const { error } = await this.db.from("activity_events").insert({
       id: e.id,
       user_id: this.userId,
       event_type: e.eventType,
       entity_type: e.entityType,
       entity_id: e.entityId,
     });
+    if (error) throw error;
   }
   async listActivity(): Promise<ActivityEvent[]> {
-    const { data } = await this.db
+    const { data, error } = await this.db
       .from("activity_events")
       .select("*")
       .eq("user_id", this.userId)
       .order("created_at", { ascending: false });
+    if (error) throw error;
     return (data ?? []).map((r) => ({
       id: r.id,
       userId: r.user_id,
@@ -209,7 +249,7 @@ export class SupabaseRepository implements Repository {
     }));
   }
   async logAgentRun(run: AgentRun): Promise<void> {
-    await this.db.from("agent_runs").insert({
+    const { error } = await this.db.from("agent_runs").insert({
       id: run.id,
       user_id: this.userId,
       task_type: run.taskType,
@@ -217,16 +257,20 @@ export class SupabaseRepository implements Repository {
       started_at: run.startedAt,
       completed_at: run.completedAt,
       model: run.model,
+      provider: run.provider,
+      is_mock: run.mock,
       token_usage: run.tokenUsage,
       error: run.error ?? null,
     });
+    if (error) throw error;
   }
   async listAgentRuns(): Promise<AgentRun[]> {
-    const { data } = await this.db
+    const { data, error } = await this.db
       .from("agent_runs")
       .select("*")
       .eq("user_id", this.userId)
       .order("started_at", { ascending: false });
+    if (error) throw error;
     return (data ?? []).map((r) => ({
       id: r.id,
       taskType: r.task_type,
@@ -234,8 +278,8 @@ export class SupabaseRepository implements Repository {
       startedAt: r.started_at,
       completedAt: r.completed_at,
       model: r.model,
-      provider: r.model,
-      mock: false,
+      provider: r.provider ?? "unknown",
+      mock: r.is_mock ?? false,
       tokenUsage: r.token_usage ?? { input: 0, output: 0 },
       error: r.error ?? undefined,
     }));
@@ -255,6 +299,7 @@ function rowToInbox(r: any): InboxItem {
     status: r.status,
     createdAt: r.created_at,
     demo: false,
+    extractionMock: r.extraction_mock ?? true,
   };
 }
 function rowToTask(r: any): Task {
