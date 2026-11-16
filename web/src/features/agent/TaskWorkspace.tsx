@@ -19,24 +19,26 @@ function sources(value: unknown): { url: string; host: string }[] {
   return value.slice(0, 3).flatMap((raw) => { try { const url = new URL(String(raw)); return ["http:", "https:"].includes(url.protocol) ? [{ url: url.toString(), host: url.hostname }] : []; } catch { return []; } });
 }
 
-export function TaskWorkspace({ session, onSelect, onTask, onRefresh, onContinue, loadError }: { session: ChatSession; onSelect: (id: string) => void; onTask: (task: AgentTask) => void; onRefresh: () => void; onContinue: (title: string) => void; loadError?: string }) {
+export function TaskWorkspace({ session, sending = false, onSelect, onTask, onRefresh, onContinue, loadError }: { session: ChatSession; sending?: boolean; onSelect: (id: string) => void; onTask: (task: AgentTask) => void; onRefresh: () => void; onContinue: (title: string) => void; loadError?: string }) {
   const views = Object.values(session.taskViews ?? {}).sort((a, b) => (b.task.turnSeq ?? 0) - (a.task.turnSeq ?? 0) || (b.task.createdAt ?? 0) - (a.task.createdAt ?? 0));
   const view = views.find((v) => v.task.id === session.currentTaskId) ?? views[0];
+  const submitting = sending && Boolean(session.pendingTurn && !session.pendingTurn.taskId);
   const [expanded, setExpanded] = useState(() => typeof window === "undefined" || window.innerWidth >= 1024);
   const unfinished = view && ["queued", "running"].includes(view.task.status) ? [...view.events].reverse().find((event) => event.type === "tool.called" && !view.events.some((end) => end.seq > event.seq && end.type === "tool.result" && end.payload.callInstanceId === event.payload.callInstanceId)) : undefined;
   return <aside aria-label="任务执行面板" className="border-t border-border bg-muted/20 lg:w-80 lg:shrink-0 lg:border-l lg:border-t-0">
     <details open={expanded} onToggle={(e) => setExpanded(e.currentTarget.open)} className="h-full">
-      <summary className="cursor-pointer px-4 py-3 text-sm font-semibold">执行进度 <span className="ml-2 text-xs font-normal text-muted-foreground">{unfinished ? tools[String(unfinished.payload.name)] ?? "执行工具中" : view ? statuses[view.task.status] : "等待新任务"}</span></summary>
+      <summary className="cursor-pointer px-4 py-3 text-sm font-semibold">执行进度 <span className="ml-2 text-xs font-normal text-muted-foreground">{submitting ? "正在提交新任务" : unfinished ? tools[String(unfinished.payload.name)] ?? "执行工具中" : view ? statuses[view.task.status] : "等待新任务"}</span></summary>
       <div className="max-h-80 space-y-4 overflow-y-auto px-4 pb-5 lg:max-h-[calc(100dvh-18rem)]">
+        {submitting && <p role="status" className="text-xs leading-5 text-primary">正在提交，尚未收到后端确认；以下为已有任务记录。</p>}
         {loadError && <div role="alert" className="text-xs text-destructive">任务状态加载失败：{loadError}<Button size="sm" variant="ghost" onClick={onRefresh}>重试加载</Button></div>}
         {views.length > 1 && <select aria-label="查看任务记录" className="h-9 w-full rounded-md border bg-background px-2 text-xs" value={view?.task.id ?? ""} onChange={(e) => onSelect(e.target.value)}>{views.map(({ task }) => <option key={task.id} value={task.id}>{statuses[task.status]} · {task.title}</option>)}</select>}
-        {view ? <TaskDetails key={view.task.id} view={view} onTask={onTask} onRefresh={onRefresh} onContinue={onContinue} /> : <p className="text-xs leading-6 text-muted-foreground">发送消息后，这里会显示排队、资料检索、工具结果和产物检查。</p>}
+        {view ? <TaskDetails key={view.task.id} view={view} resumeBlocked={view.task.status === "failed" && views.some(v => v.task.id !== view.task.id && ((v.task.turnSeq ?? 0) > (view.task.turnSeq ?? 0) || !(v.task.turnSeq && view.task.turnSeq) && (v.task.createdAt ?? 0) > (view.task.createdAt ?? 0)))} onTask={onTask} onRefresh={onRefresh} onContinue={onContinue} /> : <p className="text-xs leading-6 text-muted-foreground">发送消息后，这里会显示排队、资料检索、工具结果和产物检查。</p>}
       </div>
     </details>
   </aside>;
 }
 
-function TaskDetails({ view, onTask, onRefresh, onContinue }: { view: NonNullable<ChatSession["taskViews"]>[string]; onTask: (task: AgentTask) => void; onRefresh: () => void; onContinue: (title: string) => void }) {
+function TaskDetails({ view, resumeBlocked, onTask, onRefresh, onContinue }: { view: NonNullable<ChatSession["taskViews"]>[string]; resumeBlocked: boolean; onTask: (task: AgentTask) => void; onRefresh: () => void; onContinue: (title: string) => void }) {
   const { task, events } = view;
   const local = task.id.startsWith("local:");
   const reason = taskReason(task, events), active = ["queued", "running"].includes(task.status);
@@ -75,8 +77,9 @@ function TaskDetails({ view, onTask, onRefresh, onContinue }: { view: NonNullabl
     {pendingApprovals.map((approval) => <div key={approval.id} className="rounded-xl border border-amber-300/50 bg-amber-50/30 p-3 text-xs dark:bg-amber-950/10"><p className="font-medium">等待审批 · {tools[approval.toolName] ?? approval.toolName}</p><p className="mt-1 leading-5 text-muted-foreground">{approval.risk}</p><div className="mt-2 flex gap-2"><Button size="sm" disabled={Boolean(action)} onClick={() => act("approval", async () => { await decideApproval(approval.id, "approved"); await resumeTask(task.id); })}>批准并继续</Button><Button size="sm" variant="outline" disabled={Boolean(action)} onClick={() => act("approval", async () => { await decideApproval(approval.id, "rejected"); await resumeTask(task.id); })}>拒绝</Button></div></div>)}
     {approvals.error && <p role="alert" className="text-xs text-destructive">审批加载失败：{errorMessage(approvals.error)}</p>}
     {reason === "budget_exceeded" && task.status === "paused" && <form className="space-y-2 rounded-xl border p-3" onSubmit={(e) => { e.preventDefault(); void act("resume", async () => { await resumeTask(task.id, { tokens, toolCalls: calls, wallMs: minutes * 60000, costUsd: task.budget?.costUsd ?? 0.5 }); }); }}><p className="text-xs font-medium">调整此任务总预算</p><Label htmlFor="task-token-budget">Token上限</Label><Input id="task-token-budget" type="number" min="1" max="4000000" value={tokens} onChange={(e) => setTokens(Number(e.target.value))} /><Label htmlFor="task-tool-budget">工具次数</Label><Input id="task-tool-budget" type="number" min="1" max="200" value={calls} onChange={(e) => setCalls(Number(e.target.value))} /><Label htmlFor="task-time-budget">执行时长（分钟）</Label><Input id="task-time-budget" type="number" min="1" max="60" value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} /><Button type="submit" size="sm" disabled={Boolean(action)}>调整预算并恢复</Button></form>}
+    {resumeBlocked && <p className="text-xs leading-5 text-muted-foreground">后续对话已开始，请用新消息继续；原任务记录已保留。</p>}
     {!local && <div className="flex flex-wrap gap-2">
-      {(["paused", "failed"].includes(task.status) || task.status === "needs_input" && !approvals.isPending && !pendingApprovals.length) && reason !== "budget_exceeded" && reason !== "missing_information" && <Button size="sm" variant="outline" disabled={Boolean(action)} onClick={() => act("resume", async () => { await resumeTask(task.id); })}>恢复任务</Button>}
+      {!resumeBlocked && (["paused", "failed"].includes(task.status) || task.status === "needs_input" && !approvals.isPending && !pendingApprovals.length) && reason !== "budget_exceeded" && reason !== "missing_information" && <Button size="sm" variant="outline" disabled={Boolean(action)} onClick={() => act("resume", async () => { await resumeTask(task.id); })}>恢复任务</Button>}
       {["queued", "running", "paused", "needs_input"].includes(task.status) && <Button size="sm" variant="ghost" disabled={Boolean(action) || task.cancelRequested} onClick={() => act("cancel", async () => { if (!await cancelTask(task.id)) throw new Error("此任务当前无法取消"); })}>取消任务</Button>}
       {["failed", "paused", "needs_input"].includes(task.status) && <Button size="sm" variant="ghost" onClick={() => onContinue(task.title)}>用新消息继续</Button>}
     </div>}

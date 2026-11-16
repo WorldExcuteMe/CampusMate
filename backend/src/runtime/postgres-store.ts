@@ -15,6 +15,10 @@ import { assertTurnLease, turnMessages } from "../core/session-context.ts";
 import { sessionMessages, sessionTurnLimit, type SessionHistoryQuery, type SessionTurn } from "./session-history.ts";
 
 type Row = Record<string, unknown>;
+// Status/lease/UI reads must not transfer base64 input. Execution uses full getTask/claimNext.
+const TASK_STATE_COLUMNS = `id,user_id,goal_id,session_id,turn_id,turn_seq,input_hash,transcript_committed,
+  prompt_usage,model_config,model_runtime,title,intent,status,priority,lease_owner,lease_expires_at,heartbeat_at,
+  attempt,max_attempts,budget,usage,last_checkpoint_id,cancel_requested,result,error,created_at,updated_at`;
 
 function toMs(v: unknown): number | null {
   if (v == null) return null;
@@ -151,8 +155,8 @@ export class PostgresStore implements TaskStore {
     return task;
   }
 
-  async getTask(id: string): Promise<Task | null> {
-    const r = await readQuery(this.pool, `select * from agent_tasks where id=$1`, [id]);
+  async getTask(id: string, options?: { includeImages?: boolean }): Promise<Task | null> {
+    const r = await readQuery(this.pool, `select ${options?.includeImages === false ? TASK_STATE_COLUMNS : "*"} from agent_tasks where id=$1`, [id]);
     return r.rows[0] ? rowToTask(r.rows[0]) : null;
   }
 
@@ -210,6 +214,13 @@ export class PostgresStore implements TaskStore {
   }
   async listTasksByUser(userId: string): Promise<Task[]> {
     const r = await readQuery(this.pool, `select * from agent_tasks where user_id=$1 order by created_at desc`, [userId]);
+    return r.rows.map(rowToTask);
+  }
+  async listSessionTasks(userId: string, sessionId: string): Promise<Task[]> {
+    // Do not load unrelated sessions or multi-megabyte base64 images merely to
+    // render progress, check a turn's model snapshot, or build prior outcomes.
+    const r = await readQuery(this.pool, `select ${TASK_STATE_COLUMNS}
+      from agent_tasks where user_id=$1 and session_id=$2 order by turn_seq desc,created_at desc`, [userId, sessionId]);
     return r.rows.map(rowToTask);
   }
 

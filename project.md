@@ -1,5 +1,11 @@
 # CampusMate · project.md
 
+## 2026-11-16 真实内部浏览器回归
+
+- 分支 `codex/platform-reliability-20261116`，主代理执行。真实Gemma+云Supabase+平台界面复现“成功但来源错误”，修正主题/正文判断、摘要隔离与一次纠正、检查点真实提示、旧failed恢复入口。
+- 临时逐句计时发现当前会话操作误读全账号历史图片，单次查询41.56秒；按owner+session查询且不加载图片，原图执行入口保留。本轮POST约5.97秒，另修提交中进度与窗口提示一致性；不把单样本当稳定性能。
+- 原问题high检索、同会话零搜索追问、不可解析指定源失败、蓝桥杯检索、附件上传真实视觉调用、旧记录入口与刷新均实际操作；后端355通过/1外部DB跳过，前端221通过，类型与构建通过。详见[报告](docs/REAL_PLATFORM_REGRESSION.md)及[规格](docs/specs/real-platform-regression.md)。未改main、认证、密钥和旧记录。
+
 ## 2026-11-15 云端任务恢复与可靠摘要
 
 - 当前分支 `codex/cloud-task-resilience-20261115`；修复真实 PG 建连超时的有界恢复、回滚原错、坏连接/Client error、Worker 存储暂停与空闲认领恢复。显式审阅的纯只读查询可恢复一次，写入和事务不重放，TLS/owner/密钥保持；本机改用原项目 IPv4 Session Pooler，数据库不走 CONNECT。

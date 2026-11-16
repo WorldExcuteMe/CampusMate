@@ -34,6 +34,7 @@ it("用户选择high后提交真实task请求，模型和窗口显示使用后�
   expect(bodies[0]).not.toHaveProperty("history");
   await waitFor(() => expect(screen.getByText(/最近返回：actual-gemma/)).toBeVisible());
   expect(screen.getByText(/窗口输入 100 \/ 64,000/)).toBeVisible();
+  expect(screen.getByText(/窗口输入 100 \/ 64,000/).getAttribute("title")).toContain("actual-gemma 上限 64,000");
 });
 it("刷新后从后端会话关联重新读取事件及结果，不新建任务或重复计量", async () => {
   localStorage.setItem("campusmate.onboarded", "1"); vi.stubEnv("VITE_BACKEND_URL", "http://backend.test"); Element.prototype.scrollIntoView = vi.fn();

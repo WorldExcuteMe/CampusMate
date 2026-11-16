@@ -32,10 +32,12 @@ export interface TaskStore {
   resumeSessionTask?(id: string, userId: string, budget?: Budget): Promise<Task>;
   saveTurnProgress?(input: TurnProgress, sessions: SessionStore): Promise<Task>;
   finishSessionTurn?(input: TurnProgress & { patch: Partial<Task> }, sessions: SessionStore): Promise<Task>;
-  getTask(id: string): Promise<Task | null>;
+  getTask(id: string, options?: { includeImages?: boolean }): Promise<Task | null>;
   pauseTaskIfOwned?(input: { taskId: string; userId: string; workerId: string; attempt: number; now: number; error: string }): Promise<boolean>;
   updateTask(id: string, patch: Partial<Task>): Promise<Task>;
   listTasksByUser(userId: string): Promise<Task[]>;
+  // Session metadata only; image inputs remain available through getTask.
+  listSessionTasks(userId: string, sessionId: string): Promise<Task[]>;
   listSessionHistory(query: SessionHistoryQuery): Promise<import("../core/types.ts").ChatMessage[]>;
   claimNext(opts: { workerId: string; leaseTtlMs: number; now: number }): Promise<Task | null>;
   renewLease(id: string, workerId: string, leaseTtlMs: number, now: number): Promise<boolean>;
@@ -157,8 +159,10 @@ export class InMemoryStore implements TaskStore {
     return task;
   }
 
-  async getTask(id: string): Promise<Task | null> {
-    return this.tasks.get(id) ?? null;
+  async getTask(id: string, options?: { includeImages?: boolean }): Promise<Task | null> {
+    const task = this.tasks.get(id) ?? null;
+    if (!task || options?.includeImages !== false) return task;
+    const { images: _images, ...state } = task; return state;
   }
 
   async updateTask(id: string, patch: Partial<Task>): Promise<Task> {
@@ -183,6 +187,9 @@ export class InMemoryStore implements TaskStore {
   }
   async listTasksByUser(userId: string): Promise<Task[]> {
     return [...this.tasks.values()].filter((t) => t.userId === userId).sort((a, b) => b.createdAt - a.createdAt);
+  }
+  async listSessionTasks(userId: string, sessionId: string): Promise<Task[]> {
+    return (await this.listTasksByUser(userId)).filter(t => t.sessionId === sessionId).map(({ images: _images, ...task }) => task);
   }
 
   // 原子认领：queued 或 lease 过期的 running，按 priority↑ createdAt↑。单线程 JS 内原子；Postgres 用 FOR UPDATE SKIP LOCKED。

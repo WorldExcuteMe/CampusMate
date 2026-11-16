@@ -22,7 +22,6 @@ import { listProviders, type ProviderPublic, type ChatMessage } from "@/lib/llm/
 import { useSessions } from "@/lib/agent/sessions-context";
 import { autoName, backendSessionId } from "@/lib/agent/sessions";
 import { useAuth } from "@/app/auth";
-import { resolveContextCap } from "@/lib/agent/context";
 import { MockBadge } from "@/components/shared";
 import { SetupWizard } from "./SetupWizard";
 import { parseFile, type Attachment } from "@/lib/ingest/files";
@@ -68,7 +67,7 @@ export function AgentChatPage() {
   const endRef = useRef<HTMLDivElement>(null);
   const provider = providers.find((p: ProviderPublic) => p.id === providerId) ?? providers.find((p) => p.isDefault) ?? providers[0];
   const modelName = provider?.model || "未知模型";
-  const contextCap = resolveContextCap(modelName);
+  const contextCap = (backendEnabled() ? active.contextCap : provider?.contextLimit) ?? null;
   const monitor = useTaskMonitor(active, update, busy);
   const busyUI = busy || Object.values(active.taskViews ?? {}).some((view) => ["queued", "running"].includes(view.task.status));
 
@@ -280,7 +279,7 @@ export function AgentChatPage() {
           <div ref={endRef} />
         </div>
       </div>
-      <TaskWorkspace key={active.id} session={active} loadError={monitor.error} onSelect={(id) => update(active.id, (s) => ({ ...s, currentTaskId: id }))} onTask={(task) => update(active.id, (s) => mergeTask(s, task))} onRefresh={monitor.refresh} onContinue={(title) => setInput(`请基于已有记录继续：${title}`)} />
+      <TaskWorkspace key={active.id} session={active} sending={busy} loadError={monitor.error} onSelect={(id) => update(active.id, (s) => ({ ...s, currentTaskId: id }))} onTask={(task) => update(active.id, (s) => mergeTask(s, task))} onRefresh={monitor.refresh} onContinue={(title) => setInput(`请基于已有记录继续：${title}`)} />
       </div>
 
       {/* 输入区：工作区在输入栏左；模型选择在输入框下、Enter 左；上下文状态 */}
@@ -363,9 +362,9 @@ export function AgentChatPage() {
             {active.actualModel && <span className="text-xs text-muted-foreground" title={`最近任务配置：${active.configuredModel ?? "未知"}`}>最近返回：{active.actualModel}</span>}
             <span
               className="text-xs text-muted-foreground"
-              title={`上下文组成：system+工具定义+历史摘要+近期历史+当前输入+输出预留；模型 ${modelName} 上限 ${contextCap.toLocaleString()} tok；累计用量 ${(active?.tokens ?? 0).toLocaleString()} tok`}
+              title={`上下文组成：system+工具定义+历史摘要+近期历史+当前输入+输出预留；模型 ${active.actualModel ?? modelName} 上限 ${contextCap?.toLocaleString() ?? "未知"} tok；累计用量 ${(active?.tokens ?? 0).toLocaleString()} tok`}
             >
-              窗口输入 {active?.contextUsed === undefined ? "未知" : `${active.promptSource === "estimated" ? "约 " : ""}${active.contextUsed.toLocaleString()}`} / {(backendEnabled() ? active.contextCap : provider?.contextLimit)?.toLocaleString() ?? "上限未知"} tok · 累计 {(active?.tokens ?? 0).toLocaleString()} tok
+              窗口输入 {active?.contextUsed === undefined ? "未知" : `${active.promptSource === "estimated" ? "约 " : ""}${active.contextUsed.toLocaleString()}`} / {contextCap?.toLocaleString() ?? "上限未知"} tok · 累计 {(active?.tokens ?? 0).toLocaleString()} tok
               {active?.compressed && (
                 <span className="ml-1 rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">已压缩</span>
               )}

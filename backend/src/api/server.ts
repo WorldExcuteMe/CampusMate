@@ -118,7 +118,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         if (req.method === "GET" && sessionMatch) {
           requireUuid(sessionMatch[1]);
           if (!await sessions.get(uid, sessionMatch[1])) return json(res, 404, { error: "session not found" });
-          if (sessionMatch[2] === "tasks") return json(res, 200, { tasks: (await store.listTasksByUser(uid)).filter((t) => t.sessionId === sessionMatch[1]).sort((a, b) => (b.turnSeq ?? 0) - (a.turnSeq ?? 0) || b.createdAt - a.createdAt).slice(0, 40).map(taskView) });
+          if (sessionMatch[2] === "tasks") return json(res, 200, { tasks: (await store.listSessionTasks(uid, sessionMatch[1])).sort((a, b) => (b.turnSeq ?? 0) - (a.turnSeq ?? 0) || b.createdAt - a.createdAt).slice(0, 40).map(taskView) });
           const after = Number(url.searchParams.get("afterSeq") ?? 0);
           if (!Number.isSafeInteger(after) || after < 0) return json(res, 400, { error: "invalid afterSeq" });
           return json(res, 200, { messages: await sessions.listMessages(uid, sessionMatch[1], after) });
@@ -135,7 +135,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         }
         if (body.turnId !== undefined) requireUuid(body.turnId);
         if (body.providerId !== undefined && typeof body.providerId !== "string") return json(res, 400, { error: "providerId must be a string" });
-        const prior = body.sessionId && body.turnId ? (await store.listTasksByUser(uid)).find((t) => t.sessionId === body.sessionId && t.turnId === body.turnId) : undefined;
+        const prior = body.sessionId && body.turnId ? (await store.listSessionTasks(uid, body.sessionId)).find((t) => t.turnId === body.turnId) : undefined;
         const requestedProvider = body.providerId === "builtin-deepseek" ? "builtin" : body.providerId;
         const sameSelection = prior && (!requestedProvider || prior.modelConfig?.providerId === requestedProvider);
         const selectedConfig = sameSelection ? prior.modelConfig : deps.providers && (requestedProvider !== undefined || (await deps.providers.list(uid)).length > 0) ? await deps.providers.snapshot(uid, requestedProvider) : undefined;
@@ -174,7 +174,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
       if (taskMatch) {
         const id = taskMatch[1];
         const sub = taskMatch[2];
-        const task = await store.getTask(id);
+        const task = await store.getTask(id, { includeImages: false });
         if (!task) return json(res, 404, { error: "task not found" });
         if (task.userId !== uid) return json(res, 403, { error: "forbidden" }); // 跨用户隔离
 
@@ -196,7 +196,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
             try {
               const events = await store.listEvents(id, seq);
               for (const event of events) { send("task_event", event, event.seq); seq = event.seq; }
-              const current = await store.getTask(id);
+              const current = await store.getTask(id, { includeImages: false });
               if (!current) { cleanup(); res.end(); return; }
               const snapshot = JSON.stringify(taskView(current));
               if (snapshot !== lastStatus) { send("task_status", taskView(current)); lastStatus = snapshot; }

@@ -1,5 +1,6 @@
 import { errorMessage } from "./errors.ts";
 import { abortable, responseText } from "./llm-stream.ts";
+import { informationTopic, matchesTopic } from "./source-match.ts";
 interface SearchResult { title: string; url: string; snippet: string; }
 const decode = (s: string) => s.replace(/&(?:ensp|nbsp);/g, " ").replace(/&#0183;/g, "·").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
 const strip = (s: string) => decode(s.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
@@ -13,17 +14,8 @@ function parseResults(html: string): SearchResult[] {
   }
   return results;
 }
-function entityFocus(query: string): string | undefined {
-  // A conservative Chinese-entity fallback, not a hard-coded competition/site.
-  // Preserve the original query in the result so the model can see the change.
-  const quoted = /["“]([^"”]{4,})["”]/.exec(query)?.[1];
-  return quoted ?? query.match(/[\u3400-\u9fff]{4,}/g)?.sort((a,b) => b.length-a.length)[0];
-}
 function relevant(results: SearchResult[], focus?: string) {
-  if (!focus || !/[\u3400-\u9fff]/.test(focus)) return results;
-  const text = focus.replace(/\s/g, ""), grams = [...new Set(Array.from({ length: text.length - 1 }, (_, i) => text.slice(i, i + 2)))];
-  const minimum = Math.max(2, Math.ceil(grams.length * 0.35));
-  return results.filter(result => { const text = result.title + " " + result.snippet; return grams.filter(gram => text.includes(gram)).length >= minimum; });
+  return results.filter(result => matchesTopic(focus, result.title + " " + result.snippet));
 }
 export async function searchWeb(query: string, limit = 6) {
   const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 12000);
@@ -37,7 +29,7 @@ export async function searchWeb(query: string, limit = 6) {
       if (!res.ok) { void res.body?.cancel().catch(() => {}); throw new Error(`搜索引擎 HTTP ${res.status}`); }
       return parseResults(await responseText(res, ctrl.signal, 2_000_000));
     };
-    const focus = entityFocus(query);
+    const focus = informationTopic(query);
     let results = relevant(await search(query), focus);
     const fallback = focus ? `"${focus}"` : undefined;
     if (!results.length && fallback && fallback !== query.trim() && !ctrl.signal.aborted) results = relevant(await search(fallback), focus);

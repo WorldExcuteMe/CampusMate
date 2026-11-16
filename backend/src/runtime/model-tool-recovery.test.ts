@@ -81,12 +81,14 @@ test("R10 resume reconciles observed read failure without clearing unaccounted p
   }
 });
 test("R11 ordinary information gathering switches to a bounded synthesis after actual source retrieval",async()=>{
+  const stages: unknown[] = [];
   let requests=0;const readTools:ToolDef[]=[{type:"function",function:{name:"web_fetch",description:"fixture",parameters:{type:"object"}}}];
-  const result=await runAgentLoop({system:"fixture",user:"收集全国大学生物联网设计竞赛的信息",deps:{stage:"simple",tools:readTools,budget:{tokens:20000,wallMs:60000,toolCalls:10,costUsd:1},transport:{chat:async opts=>{
+  const result=await runAgentLoop({system:"fixture",user:"收集全国大学生物联网设计竞赛的信息",deps:{stage:"simple",hooks:{onEvent:(type,payload)=>{if(type==="llm.request")stages.push(payload.stage);}},tools:readTools,budget:{tokens:20000,wallMs:60000,toolCalls:10,costUsd:1},transport:{chat:async opts=>{
     requests++;if(requests===2){assert.equal(opts.tools?.length,0);assert.equal(opts.stage,"summary");assert(Number(opts.maxOutputTokens)<=1024);assert(JSON.stringify(opts.messages).includes("摘要阶段"));}
     return {content:requests===2?"已核对的摘要，来源 https://example.org/source":"",toolCalls:requests===1?[{id:"fetch",type:"function",function:{name:"web_fetch",arguments:'{"url":"https://example.org/source"}'}}]:[],usage:{input:1,output:1},model:"fixture"};
-  }},executeTool:async()=>'{"status":200,"url":"https://example.org/source","text":"真实取得的网页"}'}});
+  }},executeTool:async()=>'{"status":200,"url":"https://example.org/source","text":"全国大学生物联网设计竞赛参赛通知正文"}'}});
   assert.equal(requests,2);assert.equal(result.stopReason,"completed");assert.equal(result.toolErrors,0);
+  assert.deepEqual(stages,["simple","summary"]);
 });
 for(const user of ["收集资料并保存机会","收集详细资料形成长文报告"]) test(`R11 preserves explicit multi-step or long work: ${user}`,async()=>{
   let requests=0;const readTools:ToolDef[]=[{type:"function",function:{name:"web_fetch",description:"fixture",parameters:{type:"object"}}}];
@@ -99,7 +101,24 @@ for(const user of ["收集资料并保存机会","收集详细资料形成长文
 test("R11 synthesis never executes a further model-emitted tool call",async()=>{
   let requests=0,executed=0;const readTools:ToolDef[]=[{type:"function",function:{name:"web_fetch",description:"fixture",parameters:{type:"object"}}}];
   const result=await runAgentLoop({system:"fixture",user:"收集竞赛信息",deps:{tools:readTools,budget:{tokens:20000,wallMs:60000,toolCalls:10,costUsd:1},transport:{chat:async()=>({content:"",toolCalls:[{id:`fetch-${++requests}`,type:"function",function:{name:"web_fetch",arguments:'{"url":"https://example.org/source"}'}}],usage:{input:1,output:1},model:"fixture"})},executeTool:async()=>{executed++;return '{"status":200,"url":"https://example.org/source","text":"source"}';}}});
-  assert.equal(result.stopReason,"invalid_output");assert.equal(executed,1);assert.equal(requests,2);
+  assert.equal(result.stopReason,"invalid_output");assert.equal(executed,1);assert.equal(requests,3);
+  assert.equal(result.error,"summary_incomplete");assert.match(result.reply,/摘要/);assert(!result.reply.includes("尚未执行相应操作"));
+});
+
+test("summary isolates tool history and repairs a leaked call once without executing it", async () => {
+  let requests = 0, executed = 0;
+  const result = await runAgentLoop({ system: "fixture", user: "收集竞赛信息", deps: {
+    tools: [{ type: "function", function: { name: "web_fetch", description: "fixture", parameters: { type: "object" } } }],
+    budget: { tokens: 20000, wallMs: 60000, toolCalls: 10, costUsd: 1 },
+    transport: { chat: async opts => {
+      requests++;
+      if (requests > 1) { assert.equal(opts.tools?.length, 0); assert(!opts.messages.some(m => m.role === "tool" || m.tool_calls?.length)); assert(JSON.stringify(opts.messages).includes("source material")); }
+      return { content: requests === 2 ? '{"tool":"web_fetch","args":{"url":"https://example.org/other"}}' : requests === 3 ? "根据材料的摘要 https://example.org/source" : "",
+        toolCalls: requests === 1 ? [{ id: "c", type: "function", function: { name: "web_fetch", arguments: '{"url":"https://example.org/source"}' } }] : [], usage: { input: 1, output: 1 }, model: "fixture" };
+    } },
+    executeTool: async () => { executed++; return '{"status":200,"url":"https://example.org/source","text":"source material"}'; },
+  } });
+  assert.equal(result.stopReason, "completed"); assert.equal(requests, 3); assert.equal(executed, 1); assert.equal(result.usage.tokens, 6);
 });
 test("R11 executor binds actual read provenance even when model only quotes an inaccessible homepage",async()=>{
   let requests=0;const tools:ToolDef[]=[{type:"function",function:{name:"web_fetch",description:"fixture",parameters:{type:"object"}}}];

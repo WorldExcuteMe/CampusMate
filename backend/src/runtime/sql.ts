@@ -71,7 +71,7 @@ export class PgPool implements SqlPool {
       }
       catch (error) {
         if (!isDatabaseConnectionError(error)) throw error;
-        if (attempt >= 1) throw new StorageUnavailableError(error);
+        if (attempt >= 1) throw new StorageUnavailableError(error, "acquire");
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
@@ -114,7 +114,7 @@ export class PgPool implements SqlPool {
       await new Promise(resolve => setTimeout(resolve, 100));
       try { return await this.query<T>(text, params); }
       catch (retryError) {
-        if (isDatabaseConnectionError(retryError)) throw new StorageUnavailableError(retryError);
+        if (isDatabaseConnectionError(retryError)) throw new StorageUnavailableError(retryError, "read");
         throw retryError;
       }
     }

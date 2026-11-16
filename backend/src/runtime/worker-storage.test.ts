@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Worker } from "./worker.ts";
 import { InMemoryStore } from "./store.ts";
+import { StorageUnavailableError } from "../core/errors.ts";
 
 test("storage outage after a saved checkpoint pauses rather than failing model acceptance", async () => {
   const store = new InMemoryStore();
@@ -73,4 +74,22 @@ test("heartbeat storage outage pauses instead of reporting cancellation", async 
   });
   await worker.tick(); assert.equal((await store.getTask(task.id))?.status, "paused");
   assert((await store.listEvents(task.id)).some(e => e.payload.reason === "storage_unavailable"));
+  assert.equal(await store.latestCheckpoint(task.id), null);
+  assert(!((await store.getTask(task.id))?.error ?? "").includes("已保留检查点"));
+});
+
+test("failed checkpoint write is recognized through its wrapper and cannot claim durable state", async () => {
+  const store = new InMemoryStore(); const task = await store.createTask({ userId: "fixture", title: "x" });
+  store.writeCheckpoint = async () => { throw new StorageUnavailableError(Object.assign(new Error("secret connection URL must never enter events"), { code: "ECONNRESET" }), "acquire"); };
+  const worker = new Worker({ store, workerId: "w", heartbeatMs: 1000000,
+    tools: [{ type: "function", function: { name: "web_search", description: "search", parameters: { type: "object" } } }],
+    buildSystem: () => "s", executeTool: async () => '{"results":[]}',
+    transport: { async chat() { return { content: "", toolCalls: [{ id: "c", type: "function" as const, function: { name: "web_search", arguments: "{}" } }], model: "contract", usage: { input: 1, output: 1 } }; } },
+  });
+  await worker.tick();
+  const current = (await store.getTask(task.id))!; assert.equal(current.status, "paused");
+  assert.match(current.error!, /尚无已保存/);
+  const event = (await store.listEvents(task.id)).find(e => e.type === "task.needs_input")!;
+  assert.equal(event.payload.checkpointPersisted, false); assert.deepEqual(event.payload.storage, { phase: "acquire", code: "ECONNRESET" });
+  assert(!JSON.stringify(event).includes("secret connection"));
 });

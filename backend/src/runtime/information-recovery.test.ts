@@ -72,3 +72,17 @@ test("static university articles are preferred over a failure-prone dynamic entr
   const { result, fetched } = await run("收集竞赛的信息", false, 10, { staticArticle: true });
   assert.deepEqual(fetched, ["https://school.example.edu/notice.htm"]); assert.equal(result.toolErrors, 0);
 });
+
+test("a matching search title with an unrelated HTTP 200 body cannot authorize summary", async () => {
+  let requests = 0; const stages: (string | undefined)[] = [];
+  const result = await runAgentLoop({ system: "fixture", user: "收集全国大学生物联网设计竞赛的信息", deps: { tools,
+    budget: { tokens: 30000, wallMs: 60000, toolCalls: 10, costUsd: 1 },
+    transport: { async chat(request) {
+      stages.push(request.stage); requests++;
+      return { content: requests > 1 ? "已完成，某部委指导。" : "", toolCalls: requests === 1 ? [{ id: "s", type: "function" as const, function: { name: "web_search", arguments: "{}" } }] : [], usage: { input: 1, output: 1 }, model: "fixture" };
+    } }, executeTool: async name => name === "web_search"
+      ? '{"results":[{"url":"https://example.edu/notice","title":"全国大学生物联网设计竞赛通知"}]}'
+      : '{"status":200,"url":"https://example.edu/notice","text":"国家大学生就业服务平台 全国大学生招聘登录入口"}',
+  } });
+  assert(!stages.includes("summary")); assert.equal(result.error, "source_unavailable"); assert(!result.reply.includes("部委"));
+});

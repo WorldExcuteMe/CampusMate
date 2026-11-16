@@ -50,15 +50,29 @@ export function errorMessage(err: unknown): string {
   return clip(String(err));
 }
 
-// Only connection acquisition failed: no SQL has been submitted on this attempt.
+// These errors can also arise on an explicitly retryable pure repository read.
 export class StorageUnavailableError extends Error {
-  constructor(cause: unknown) {
-    super("数据库连接暂时不可用，执行记录已保留，请稍后恢复任务", { cause });
+  readonly phase: "acquire" | "read" | "unknown";
+  constructor(cause: unknown, phase: "acquire" | "read" | "unknown" = "unknown") {
+    super("数据库连接暂时不可用，请稍后恢复任务", { cause });
     this.name = "StorageUnavailableError";
+    this.phase = phase;
+  }
+}
+export function storageFailureDetails(err: unknown): { phase: string; code: string } | undefined {
+  const seen = new Set<unknown>(); let current = err;
+  for (let i = 0; i < 6 && current instanceof Error && !seen.has(current); i++) {
+    seen.add(current);
+    if (current instanceof StorageUnavailableError || current.name === "StorageUnavailableError") {
+      const code = (current.cause as { code?: unknown })?.code;
+      return { phase: current instanceof StorageUnavailableError ? current.phase : "unknown",
+        code: typeof code === "string" && ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "EHOSTUNREACH", "ENETUNREACH", "57P01", "57P02", "57P03", "53300"].includes(code) ? code : "CONNECTION_UNAVAILABLE" };
+    }
+    current = current.cause;
   }
 }
 export function isStorageUnavailable(err: unknown): boolean {
-  return err instanceof StorageUnavailableError || (err instanceof Error && err.name === "StorageUnavailableError");
+  return storageFailureDetails(err) !== undefined;
 }
 
 export class LlmTransportError extends Error {
