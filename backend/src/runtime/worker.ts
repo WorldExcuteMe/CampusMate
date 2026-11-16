@@ -186,7 +186,7 @@ export class Worker {
         let session = await this.sessions.get(task.userId, task.sessionId);
         if (!session) throw new Error("Session owner forbidden");
         const rows = await this.sessions.listMessages(task.userId, task.sessionId);
-        const tasks = await store.listTasksByUser(task.userId);
+        const tasks = await (store.listTasksBySession ? store.listTasksBySession(task.userId,task.sessionId!) : store.listTasksByUser(task.userId));
         priorOutcomes = tasks.filter((t) => t.sessionId === task.sessionId && t.id !== task.id && (task.turnSeq === undefined ? t.createdAt <= task.createdAt : (t.turnSeq ?? 0) < task.turnSeq)).slice(-12).map((t) => `${t.title}：${t.status}（已结束的目标不要自动重做）`).join("\n");
         history = sessionHistory(rows, tasks, task);
         identity = identityContext(rows, tasks, task);

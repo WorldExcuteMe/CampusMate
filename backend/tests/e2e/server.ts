@@ -27,6 +27,7 @@ await ctx.personalContext.createTerm({userId:OWNER,institutionId:"fixture-school
 const sourceUrl = "https://school.example/competition";
 const sourceId = "S" + createHash("sha256").update(sourceUrl).digest("hex").slice(0,10);
 const metrics: {model:string; reasoning:unknown; stage:string; identity:boolean}[] = [];
+const historyFixtures=new Map<string,string[]>();
 const profile = {id:OWNER,name:"界面测试同学",major:"",grade:"",interests:[],skills:[],goals:[],time_budget_hours:8,bio:"离线虚构身份"};
 const inbox=["离线夹具：校园创新竞赛项目征集与团队报名材料说明","离线夹具：图书馆开源交流活动"].map((title,index)=>({id:randomUUID(),user_id:OWNER,raw_text:title+"\n这是虚构的界面验收材料，仅用于检查通知层级、原文预览和长标题换行，不代表真实活动。",source_type:"text",source_url:null,created_at:new Date().toISOString(),status:"pending_review",extracted:{title,summary:"先核对报名条件与材料，再安排下一步行动。",org:"界面验收示例学校",category:index?"activity":"competition",deadline:addDays(today,4),location:"示例校区",requirements:[],materials:["项目策划书","团队信息"],riskFlags:[],missingFields:[],conditions:[]},classification:{class:index?"worth_watching":"high_value",priorityScore:index?60:85,priorityReason:"测试材料与项目目标相关，请核对原文。",riskSignals:[]}}));
 const jwt = (id:string) => {
@@ -45,6 +46,22 @@ const fixture = http.createServer(async (req,res) => {
   const url = new URL(req.url!,ORIGIN);
   try {
     if(url.pathname === "/fixture/metrics") return json(res,200,{metrics,today});
+    if(url.pathname==='/fixture/history' && req.method==='POST') {
+      const input=await body(req);
+      if(input.op==='update') {
+        const ids=historyFixtures.get(input.id);if(!ids)return json(res,404,{error:'Unknown fixture'});
+        const task=await ctx.store.getTask(ids.at(-1)!);
+        await ctx.store.updateTask(task!.id,{result:{summary:'分页最后回答已更新',artifactIds:[]},usage:{tokens:86,toolCalls:0,wallMs:0,costUsd:0}});
+        return json(res,200,{ok:true});
+      }
+      const session=await ctx.sessionStore.create({userId:OWNER,title:'分页验收80轮'}),ids:string[]=[];
+      for(let i=0;i<80;i++) {
+        const task=await ctx.store.createTask({userId:OWNER,sessionId:session.id,turnId:randomUUID(),turnSeq:i+1,title:`分页轮${i}`,intent:`分页问题${i}`});
+        await ctx.store.updateTask(task.id,{status:'running'});
+        await ctx.store.updateTask(task.id,{status:'succeeded',transcriptCommitted:true,result:{summary:`分页回答${i}`,artifactIds:[]},usage:{tokens:i,toolCalls:0,wallMs:0,costUsd:0}});ids.push(task.id);
+      }
+      historyFixtures.set(session.id,ids);return json(res,200,{id:session.id,title:session.title});
+    }
     if(url.pathname === "/auth/v1/token") {
       const input=await body(req); if(input.email !== "fixture@campusmate.test" || input.password !== "fixture-only-password") return json(res,400,{msg:"Fixture credentials required"});
       return json(res,200,{access_token:jwt(OWNER),refresh_token:"fixture-refresh",token_type:"bearer",expires_in:3600,user:{id:OWNER,aud:"authenticated",role:"authenticated",email:input.email,app_metadata:{provider:"email"},user_metadata:{},created_at:new Date().toISOString()}});

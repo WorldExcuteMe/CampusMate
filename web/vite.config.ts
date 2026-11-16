@@ -13,5 +13,6 @@ export default defineConfig({
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   server: { host: "127.0.0.1", proxy, fs: { allow: [fileURLToPath(new URL("..", import.meta.url))] } },
   preview: { host: "127.0.0.1", proxy },
+  worker: { format: 'es' },
   build: { outDir: "dist" },
 });

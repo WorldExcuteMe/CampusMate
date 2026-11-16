@@ -36,6 +36,8 @@ export interface TaskStore {
   getTask(id: string): Promise<Task | null>;
   updateTask(id: string, patch: Partial<Task>): Promise<Task>;
   listTasksByUser(userId: string): Promise<Task[]>;
+  listTasksBySession?(userId: string, sessionId: string, limit?: number): Promise<Task[]>;
+  findSessionTurn?(userId: string, sessionId: string, turnId: string): Promise<Task | null>;
   listSessionHistory(query: SessionHistoryQuery): Promise<import("../core/types.ts").ChatMessage[]>;
   claimNext(opts: { workerId: string; leaseTtlMs: number; now: number }): Promise<Task | null>;
   renewLease(id: string, workerId: string, leaseTtlMs: number, now: number): Promise<boolean>;
@@ -184,6 +186,11 @@ export class InMemoryStore implements TaskStore {
   async listTasksByUser(userId: string): Promise<Task[]> {
     return [...this.tasks.values()].filter((t) => t.userId === userId).sort((a, b) => b.createdAt - a.createdAt);
   }
+  async listTasksBySession(userId: string, sessionId: string, limit?: number): Promise<Task[]> {
+    const rows = [...this.tasks.values()].filter(t => t.userId === userId && t.sessionId === sessionId).sort((a,b) => b.createdAt-a.createdAt || (b.turnSeq??0)-(a.turnSeq??0) || b.id.localeCompare(a.id));
+    return structuredClone(limit === undefined ? rows : rows.slice(0, limit));
+  }
+  async findSessionTurn(userId: string, sessionId: string, turnId: string) { return structuredClone([...this.tasks.values()].find(t => t.userId === userId && t.sessionId === sessionId && t.turnId === turnId) ?? null); }
 
   // 原子认领：queued 或 lease 过期的 running，按 priority↑ createdAt↑。单线程 JS 内原子；Postgres 用 FOR UPDATE SKIP LOCKED。
   async claimNext(opts: { workerId: string; leaseTtlMs: number; now: number }): Promise<Task | null> {

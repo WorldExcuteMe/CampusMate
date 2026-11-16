@@ -4,6 +4,7 @@ import { supabaseClient } from "@/app/config";
 import type { Opportunity } from "@/lib/data/types";
 
 export interface AgentTask {
+  historyRevision?: string;
   id: string; userId: string; title: string; intent?: string;
   status: "queued" | "running" | "needs_input" | "paused" | "succeeded" | "failed" | "cancelled";
   usage: { tokens: number; toolCalls: number; wallMs: number; costUsd: number };

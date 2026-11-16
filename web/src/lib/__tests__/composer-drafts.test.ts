@@ -2,6 +2,7 @@ import { expect, it, vi } from 'vitest';
 import { ComposerDraftStore, type ComposerDraft, type DraftPersistence } from '../agent/composer-drafts';
 import type { Attachment } from '../ingest/files';
 import { memoryDraftPersistence } from '@/test-utils/draft-persistence';
+import { ATTACHMENT_LIMITS as L, AttachmentPolicyError } from '../ingest/limits';
 function disk() {
   const storage = memoryDraftPersistence(); vi.spyOn(storage, 'write'); vi.spyOn(storage, 'remove');
   return storage;
@@ -73,4 +74,103 @@ it('损坏的历史草稿不导致页面崩溃，也不拿空记录覆盖原始�
   const { store } = fixture('alice', storage); await store.load('A');
   expect(store.snapshot('A').draft.attachments).toEqual([]); expect(store.snapshot('A').error).not.toBeNull();
   store.setText('A', '暂存内容'); await store.flush('A'); expect(storage.write).not.toHaveBeenCalled();
+});
+
+const imageFiles = (count: number) => Array.from({ length: count }, (_, i) => new File(['image'], `image-${i}.png`, { type: 'image/png' }));
+const imageParser = async (file: File): Promise<Attachment> => file.type.startsWith('image/') ? { name: file.name, kind: 'image', dataUrl: 'data:image/png;base64,Zml4dHVyZQ==' } : parser(file);
+it('一次选6张图片整批拒绝，不解析、不持久化、不改动已有文字', async () => {
+  const parse = vi.fn(imageParser), { store, storage } = fixture('alice', disk(), parse);
+  await store.load('A'); store.setText('A', '保留文字'); await store.flush('A');
+  const writes = vi.mocked(storage.write).mock.calls.length;
+  await expect(store.addFiles('A', imageFiles(6))).rejects.toThrow(/最多 4 张图片.*6 张/);
+  expect(parse).not.toHaveBeenCalled(); expect(storage.write).toHaveBeenCalledTimes(writes);
+  expect(store.snapshot('A').draft).toEqual({ text: '保留文字', attachments: [] });
+});
+it('累计图片含解析中附件；超限混合选择全部拒绝，移除后可补足4张并完整发送', async () => {
+  const gate = deferred<Attachment>(), parse = vi.fn(() => gate.promise), { store } = fixture('alice', disk(), parse);
+  await store.addFiles('A', imageFiles(3));
+  await expect(store.addFiles('A', [new File(['doc'], 'notice.txt'), ...imageFiles(2)])).rejects.toThrow(/当前共 5 张/);
+  expect(store.snapshot('A').draft.attachments).toHaveLength(3);
+  expect(parse).toHaveBeenCalledTimes(3);
+  store.removeAttachment('A', store.snapshot('A').draft.attachments[0].id);
+  await store.addFiles('A', imageFiles(2));
+  gate.resolve({ name: 'image.png', kind: 'image', dataUrl: 'data:image/png;base64,Zml4dHVyZQ==' });
+  await vi.waitFor(() => expect(store.snapshot('A').draft.attachments.every(a => a.status === 'ready')).toBe(true));
+  expect((await store.takeForSend('A'))?.attachments).toHaveLength(4);
+});
+it('并发粘贴/拖拽不能绕过累计上限，文档不占图片名额', async () => {
+  const { store } = fixture('alice', disk(), imageParser);
+  const result = await Promise.allSettled([store.addFiles('A', imageFiles(3)), store.addFiles('A', imageFiles(2))]);
+  expect(result.map(r => r.status)).toEqual(['fulfilled', 'rejected']);
+  await store.addFiles('A', [new File(['doc'], 'notice.txt'), ...imageFiles(1)]);
+  await vi.waitFor(() => expect(store.snapshot('A').draft.attachments.every(a => a.status === 'ready')).toBe(true));
+  const sent = await store.takeForSend('A');
+  expect(sent?.attachments.filter(a => a.kind === 'image')).toHaveLength(4);
+  expect(sent?.attachments.filter(a => a.kind === 'doc')).toHaveLength(1);
+});
+it('旧版超限草稿恢复后发送被拦截，文字和图片不被清空；手动移除后可发送', async () => {
+  const storage = disk();
+  const original: ComposerDraft = { text: '旧草稿', attachments: imageFiles(5).map((f, i) => ({ id: `old-${i}`, name: f.name, kind: 'image', status: 'ready', dataUrl: 'data:image/png;base64,Zml4dHVyZQ==' })) };
+  await storage.write('alice', 'A', original, 0, 'seed', 'seed');
+  const { store } = fixture('alice', storage); await store.load('A');
+  expect(await store.takeForSend('A')).toBeUndefined();
+  expect(store.snapshot('A').error).toMatch(/最多 4 张图片/);
+  expect(store.snapshot('A').draft).toEqual(original);
+  expect((await storage.read('alice', 'A')).current.draft).toEqual(original);
+  store.removeAttachment('A', 'old-4');
+  expect((await store.takeForSend('A'))?.attachments).toHaveLength(4);
+});
+
+it('混入不支持文件、超大文件或超数量时整批不解析，保留原稿', async () => {
+  const parse = vi.fn(parser), { store } = fixture('alice', disk(), parse);
+  await store.load('A'); store.setText('A', '原稿');
+  await expect(store.addFiles('A', [new File(['valid'], 'ok.txt'), new File(['bad'], 'app.exe')])).rejects.toThrow(/不支持/);
+  await expect(store.addFiles('A', [new File([new Uint8Array(L.fileBytes + 1)], 'large.txt')])).rejects.toThrow(/5MB/);
+  await expect(store.addFiles('A', Array.from({ length: 9 }, () => new File(['x'], 'tiny.txt')))).rejects.toThrow(/最多8个/);
+  expect(parse).not.toHaveBeenCalled(); expect(store.snapshot('A').draft).toEqual({ text: '原稿', attachments: [] });
+});
+it('累计大小包含解析完附件，刷新后大小元数据不丢，不能分次绕过', async () => {
+  const storage = disk(), { store } = fixture('alice', storage, parser);
+  await store.addFiles('A', [new File([new Uint8Array(L.fileBytes)], 'one.txt'), new File([new Uint8Array(L.fileBytes)], 'two.txt')]);
+  await vi.waitFor(() => expect(store.snapshot('A').draft.attachments.every(a => a.status === 'ready')).toBe(true)); await store.flush('A');
+  const restored = fixture('alice', storage, parser).store; await restored.load('A');
+  await expect(restored.addFiles('A', [new File(['x'], 'three.txt')])).rejects.toThrow(/合计超过10MB/);
+  expect(restored.snapshot('A').draft.attachments).toHaveLength(2);
+});
+it('异步文档累计超20万字符保留可移除错误，不把过长正文存为ready或发送', async () => {
+  const { store } = fixture('alice', disk(), async file => ({ name: file.name, kind: 'doc', text: 'x'.repeat(L.textChars) }));
+  await store.load('A'); store.setText('A', '保留文字');
+  await store.addFiles('A', ['a.txt', 'b.txt', 'c.txt'].map(name => new File(['source'], name)));
+  await vi.waitFor(() => expect(store.snapshot('A').draft.attachments.some(a => a.status === 'error')).toBe(true));
+  const attachments = store.snapshot('A').draft.attachments;
+  expect(attachments.filter(a => a.status === 'ready')).toHaveLength(2);
+  expect(attachments.find(a => a.status === 'error')?.error).toMatch(/合计超过20万/);
+  expect(attachments.find(a => a.status === 'error')?.file).toBeInstanceOf(File);
+  expect(await store.takeForSend('A')).toBeUndefined(); expect(store.snapshot('A').draft.text).toBe('保留文字');
+});
+it('超限旧文本草稿不清空，政策错误明确展示而非含糊解析失败', async () => {
+  const storage = disk(), original: ComposerDraft = { text: '保留', attachments: [{ id: 'old', kind: 'doc', name: 'old.txt', status: 'ready', text: 'x'.repeat(L.textChars + 1) }] };
+  await storage.write('alice', 'A', original, 0, 'seed', 'seed');
+  const { store } = fixture('alice', storage); await store.load('A');
+  expect(await store.takeForSend('A')).toBeUndefined(); expect(store.snapshot('A').error).toMatch(/10万字符/);
+  expect(store.snapshot('A').draft).toEqual(original);
+  const other = fixture('alice', disk(), async () => { throw new AttachmentPolicyError('PDF超过50页，请拆分'); }).store;
+  await other.addFiles('A', [new File(['pdf'], 'too-many.pdf')]);
+  await vi.waitFor(() => expect(other.snapshot('A').draft.attachments[0].error).toMatch(/PDF超过50页/));
+});
+
+it('移除附件与离开账号会取消解析；原始待解析File仍可在重新进入时恢复', async () => {
+  const signals: AbortSignal[] = [];
+  const parse = vi.fn((_file: File, signal?: AbortSignal) => new Promise<Attachment>((_resolve, reject) => {
+    signals.push(signal!); signal!.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')), { once: true });
+  }));
+  const { store } = fixture('alice', disk(), parse);
+  await store.addFiles('A', [new File(['source'], 'one.txt')]); await vi.waitFor(() => expect(signals).toHaveLength(1));
+  store.removeAttachment('A', store.snapshot('A').draft.attachments[0].id);
+  expect(signals[0].aborted).toBe(true);
+  await store.addFiles('A', [new File(['source'], 'two.txt')]); await vi.waitFor(() => expect(signals).toHaveLength(2));
+  store.deactivate(); expect(signals[1].aborted).toBe(true);
+  expect(store.snapshot('A').draft.attachments[0]).toMatchObject({ status: 'parsing', file: expect.any(File) });
+  store.activate(); await vi.waitFor(() => expect(signals).toHaveLength(3));
+  store.deactivate(); await store.flush('A');
 });

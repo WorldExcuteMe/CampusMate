@@ -19,8 +19,9 @@ function bounded(records: NonNullable<ChatSession["taskViews"]>) {
 export function mergeTask(session: ChatSession, incoming: AgentTask): ChatSession {
   if (hasRawToolMarkup(incoming.result?.summary ?? '')) incoming = { ...incoming, status: 'failed', error: TOOL_PROTOCOL_ERROR, result: { ...incoming.result!, summary: TOOL_PROTOCOL_ERROR, partial: true, completion: { state: 'partial', reason: 'tool_protocol_error' } } };
   const previous = session.taskViews?.[incoming.id];
+  if (previous?.task.historyRevision && incoming.historyRevision && BigInt(incoming.historyRevision)<BigInt(previous.task.historyRevision)) return session;
   const combined = { ...previous?.task, ...incoming };
-  const keys = ["id", "userId", "title", "sessionId", "turnId", "turnSeq", "status", "usage", "budget", "result", "error", "promptUsage", "modelConfig", "modelRuntime", "cancelRequested", "createdAt", "updatedAt"] as const;
+  const keys = ["id", "userId", "title", "sessionId", "turnId", "turnSeq", "status", "usage", "budget", "result", "error", "promptUsage", "modelConfig", "modelRuntime", "cancelRequested", "createdAt", "updatedAt", "historyRevision"] as const;
   const task = Object.fromEntries(keys.filter((key) => combined[key] !== undefined).map((key) => [key, combined[key]])) as unknown as AgentTask;
   const events = previous?.events ?? [];
   const taskViews = bounded({ ...session.taskViews, [task.id]: { ...previous, task, events, lastSeq: previous?.lastSeq ?? 0 } });
@@ -31,8 +32,11 @@ export function mergeTask(session: ChatSession, incoming: AgentTask): ChatSessio
   const messages = [...session.messages];
   const index = messages.findIndex((m) => m.role === "assistant" && m.taskId === task.id);
   const user = task.turnId ? messages.findIndex((m) => m.role === "user" && m.turnId === task.turnId) : -1;
-  if (index >= 0) messages[index] = reply;
-  else if (user >= 0) messages.splice(user + 1, 0, reply);
+  // The task monitor can see more tasks than the loaded history page. Cache
+  // their execution state, but never append orphan replies or recount usage.
+  if (session.historyPage && index<0 && user<0) return { ...next,taskTokenUsage:{...session.taskTokenUsage,[task.id]:task.usage?.tokens??0} };
+  if (index >= 0) messages[index] = { ...messages[index], ...reply };
+  else if (user >= 0) messages.splice(user + 1, 0, { ...reply, ...(messages[user].historyKey ? { historyKey: messages[user].historyKey, historyOrder: messages[user].historyOrder, historyVersion: messages[user].historyVersion } : {}) });
   else messages.push(reply);
   const total = task.usage?.tokens ?? 0;
   const baseline = session.taskTokenUsage?.[task.id] ?? (index >= 0 ? total : 0);

@@ -74,6 +74,7 @@ export interface Task {
   error?: string;
   createdAt: number;
   updatedAt: number;
+  historyRevision?: string;
 }
 
 export interface Step {

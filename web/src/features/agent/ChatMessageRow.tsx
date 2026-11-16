@@ -26,7 +26,7 @@ export function ChatMessageRow({ message, ordinal, busy, onResend }: { message: 
       if (alive.current) setCopyState('copied');
     } catch { if (alive.current) setCopyState('failed'); }
   }
-  return <div className={cn('group/message flex gap-3', user ? 'justify-end' : 'justify-start')}>
+  return <div data-task-id={message.taskId} data-message-role={message.role} data-message-key={message.historyKey??message.turnId??message.taskId??ordinal} className={cn('group/message flex gap-3', user ? 'justify-end' : 'justify-start')}>
     {!user && <Bot className="mt-1 size-5 shrink-0 text-primary" />}
     <div className={cn('min-w-0 max-w-[85%]', editing && 'w-full')}>
       {editing && user ? <form aria-label={`编辑第 ${ordinal} 条消息`} className="space-y-2 rounded-xl border border-primary/30 bg-muted/40 p-3" onSubmit={event => { event.preventDefault(); const text = draft.trim(); if (!text || busy) return; setEditing(false); onResend(text); }}>
@@ -37,7 +37,7 @@ export function ChatMessageRow({ message, ordinal, busy, onResend }: { message: 
       </form> : <>
         <div className={cn('whitespace-pre-wrap text-sm leading-relaxed', user ? 'rounded-2xl rounded-br-sm bg-secondary px-4 py-2.5 text-secondary-foreground' : '')}>
           {user ? message.content : <AssistantMessage content={message.content} />}
-          {message.editedFrom && <p className="mt-2 text-xs text-muted-foreground">由第 {message.editedFrom} 条消息编辑后重发</p>}
+          {message.editedFrom && <p title={`编辑时位于当时已加载记录的第 ${message.editedFrom} 条`} className="mt-2 text-xs text-muted-foreground">由历史消息编辑后重发</p>}
           {message.imported && <p className="mt-2 text-xs text-muted-foreground">历史导入记录 · 未重放操作</p>}
           {message.mock && <div className="mt-2"><MockBadge /></div>}
           {message.failed && <div className="mt-2"><span className="inline-flex items-center rounded-md border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600">执行失败 · 可重发重试</span></div>}

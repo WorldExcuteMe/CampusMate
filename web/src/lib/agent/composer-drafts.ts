@@ -1,4 +1,5 @@
 import { parseFile, type Attachment } from '@/lib/ingest/files';
+import { attachmentSetError, attachmentSendError, validateAttachmentFile, AttachmentPolicyError } from '../ingest/limits';
 import { createDraftPersistence, emptyDraft, sameDraft, validDraft, type DraftPersistence, type DraftRecord, type DraftVersion, type DraftWrite } from './draft-persistence';
 export { createDraftPersistence } from './draft-persistence';
 export type { DraftPersistence } from './draft-persistence';
@@ -8,7 +9,7 @@ export interface DraftSnapshot { draft: ComposerDraft; ready: boolean; saving: b
 export const draftHasContent = (draft: ComposerDraft) => Boolean(draft.text.length || draft.attachments.length || draft.titleEdit !== undefined);
 interface Entry {
   snapshot: DraftSnapshot; storageId: string; load?: Promise<void>; queue: Promise<void>; revision: number; savedRevision: number;
-  base: number; branch: string; readFailed: boolean; jobs: Set<string>; refresh?: Promise<void>; resolution?: Promise<unknown>;
+  base: number; branch: string; readFailed: boolean; jobs: Set<string>; controllers: Map<string, AbortController>; refresh?: Promise<void>; resolution?: Promise<unknown>;
 }
 export class ComposerDraftStore {
   private accepting = true;
@@ -17,26 +18,28 @@ export class ComposerDraftStore {
   private stopChanges?: () => void;
   private writer = crypto.randomUUID();
   constructor(private owner: string, private exists: (id: string) => boolean, private mark: (id: string, hasDraft: boolean) => void,
-    private persistence: DraftPersistence = createDraftPersistence(), private parse: (file: File) => Promise<Attachment> = parseFile, private storageKey: (id: string) => string = id => id) {}
+    private persistence: DraftPersistence = createDraftPersistence(), private parse: (file: File, signal?: AbortSignal) => Promise<Attachment> = parseFile, private storageKey: (id: string) => string = id => id) {}
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   activate() {
     this.accepting = true; this.stopChanges?.();
     this.stopChanges = this.persistence.subscribe?.(this.owner, notice => { if (notice.writer !== this.writer) for (const [id, e] of this.entries) if (e.storageId === notice.sessionId) void this.refresh(id); });
+    for (const [id, entry] of this.entries) if (entry.snapshot.ready) this.startParses(id, entry.snapshot.draft);
   }
-  deactivate() { this.accepting = false; this.stopChanges?.(); this.stopChanges = undefined; }
+  deactivate() { this.accepting = false; this.stopChanges?.(); this.stopChanges = undefined; for (const entry of this.entries.values()) for (const controller of entry.controllers.values()) controller.abort(); }
   private notify() { for (const listener of this.listeners) listener(); }
   private markEntry(id: string, entry: Entry) { this.mark(id, draftHasContent(entry.snapshot.draft) || entry.snapshot.versions.some(v => draftHasContent(v.draft))); }
   private entry(id: string) {
     let entry = this.entries.get(id);
     if (!entry) {
       let storageId = id; try { storageId = this.storageKey(id); } catch { /* local-only fallback */ }
-      entry = { snapshot: { draft: emptyDraft(), ready: false, saving: false, resolving: false, error: null, versions: [] }, storageId, queue: Promise.resolve(), revision: 0, savedRevision: 0, base: 0, branch: crypto.randomUUID(), readFailed: false, jobs: new Set() }; this.entries.set(id, entry);
+      entry = { snapshot: { draft: emptyDraft(), ready: false, saving: false, resolving: false, error: null, versions: [] }, storageId, queue: Promise.resolve(), revision: 0, savedRevision: 0, base: 0, branch: crypto.randomUUID(), readFailed: false, jobs: new Set(), controllers: new Map() }; this.entries.set(id, entry);
     }
     return entry;
   }
   snapshot = (id: string) => this.entry(id).snapshot;
   private current(id: string, entry: Entry) { return this.accepting && this.exists(id) && this.entries.get(id) === entry; }
-  private startParses(id: string, draft: ComposerDraft) { for (const attachment of draft.attachments) if (attachment.status === 'parsing') this.process(id, attachment); }
+  private cancelRemoved(entry: Entry, draft: ComposerDraft) { for (const [id, controller] of entry.controllers) if (!draft.attachments.some(a => a.id === id)) controller.abort(); }
+  private startParses(id: string, draft: ComposerDraft) { this.cancelRemoved(this.entry(id), draft); for (const attachment of draft.attachments) if (attachment.status === 'parsing') this.process(id, attachment); }
   load(id: string): Promise<void> {
     const entry = this.entry(id); if (entry.load) return entry.load;
     entry.load = (async () => {
@@ -88,6 +91,7 @@ export class ComposerDraftStore {
     const entry = this.entry(id); if (!entry.snapshot.ready || entry.snapshot.resolving) return;
     const draft = update(entry.snapshot.draft), sequence = ++entry.revision;
     entry.snapshot = { ...entry.snapshot, draft, saving: !entry.readFailed };
+    this.cancelRemoved(entry, draft);
     this.markEntry(id, entry); this.notify(); this.save(id, entry, draft, sequence);
   }
   async refresh(id: string) {
@@ -117,6 +121,10 @@ export class ComposerDraftStore {
       await entry.queue;
       if (!this.current(id, entry) || entry.snapshot.conflict || entry.readFailed) return;
       const original = entry.snapshot.draft;
+      // Older/restored drafts may predate the picker limit. Keep the entire
+      // draft intact instead of consuming it and letting the API reject it.
+      const imageError = kind === 'send' ? attachmentSendError(original.text, original.attachments) : undefined;
+      if (imageError) { entry.snapshot = { ...entry.snapshot, error: imageError }; this.notify(); return; }
       if (kind === 'send' && !original.text.trim() && !original.attachments.length) return;
       if (kind === 'send' && original.attachments.some(a => a.status !== 'ready') || kind === 'title' && original.titleEdit === undefined) return;
       const next = kind === 'send' ? { ...original, text: '', attachments: [] } : { ...original, titleEdit: undefined };
@@ -142,24 +150,45 @@ export class ComposerDraftStore {
     entry.resolution = action; return action;
   }
   clearComposer(id: string) { this.change(id, draft => ({ ...draft, text: '', attachments: [] })); }
-  removeAttachment(id: string, attachmentId: string) { this.change(id, draft => ({ ...draft, attachments: draft.attachments.filter(a => a.id !== attachmentId) })); }
+  removeAttachment(id: string, attachmentId: string) { this.change(id, draft => ({ ...draft, attachments: draft.attachments.filter(a => a.id !== attachmentId) })); this.entries.get(id)?.controllers.get(attachmentId)?.abort(); }
   async addFiles(id: string, files: File[]) {
     await this.load(id); const entry = this.entry(id); if (!this.current(id, entry) || entry.snapshot.resolving) return;
-    const attachments: DraftAttachment[] = files.map(file => ({ id: crypto.randomUUID(), name: file.name, kind: file.type.startsWith('image/') ? 'image' : 'doc', status: 'parsing', file }));
+    // Reject the whole selection before parsing/persisting, including mixed
+    // selections, repeated paste/drop and files already being parsed.
+    const attachments: DraftAttachment[] = files.map(file => ({ id: crypto.randomUUID(), name: file.name, kind: validateAttachmentFile(file) === 'image' ? 'image' : 'doc', sizeBytes: file.size, status: 'parsing', file }));
+    const error = attachmentSetError([...entry.snapshot.draft.attachments, ...attachments]);
+    if (error) throw new AttachmentPolicyError(error);
     this.change(id, draft => ({ ...draft, attachments: [...draft.attachments, ...attachments] }));
     for (const attachment of attachments) this.process(id, attachment);
   }
   private process(id: string, attachment: DraftAttachment) {
     const entry = this.entry(id); if (entry.jobs.has(attachment.id)) return; entry.jobs.add(attachment.id);
-    const replace = async (value: DraftAttachment) => {
+    const controller = new AbortController(); entry.controllers.set(attachment.id, controller);
+    const replace = async (value: DraftAttachment, validate = true) => {
       if (entry.resolution) await entry.resolution;
       if (!this.current(id, entry) || !entry.snapshot.draft.attachments.some(a => a.id === attachment.id)) return;
-      this.change(id, draft => ({ ...draft, attachments: draft.attachments.map(a => a.id === attachment.id ? value : a) }));
+      this.change(id, draft => {
+        const attachments = draft.attachments.map(a => a.id === attachment.id ? value : a);
+        const error = validate ? attachmentSetError(attachments) : undefined;
+        if (error) throw new AttachmentPolicyError(error);
+        return { ...draft, attachments };
+      });
     };
-    void Promise.resolve().then(() => attachment.file ? this.parse(attachment.file) : Promise.reject(new Error('File missing'))).then(parsed => replace({ ...parsed, id: attachment.id, status: 'ready' })).catch(() => replace({ id: attachment.id, name: attachment.name, kind: attachment.kind, status: 'error', error: '附件解析失败，请移除后重新添加；不会发送不完整附件。' })).finally(() => entry.jobs.delete(attachment.id));
+    void Promise.resolve().then(() => {
+      if (!this.current(id, entry) || !entry.snapshot.draft.attachments.some(a => a.id === attachment.id)) return undefined;
+      const error = attachmentSetError(entry.snapshot.draft.attachments); if (error) throw new AttachmentPolicyError(error);
+      if (!attachment.file) throw new Error('File missing');
+      validateAttachmentFile(attachment.file); return this.parse(attachment.file, controller.signal);
+    }).then(parsed => { if (parsed && !controller.signal.aborted) return replace({ ...parsed, sizeBytes: attachment.file!.size, id: attachment.id, status: 'ready' }); })
+      .catch(error => { if (!controller.signal.aborted) return replace({ ...attachment, status: 'error', error: error instanceof AttachmentPolicyError ? error.message : '附件解析失败，请检查文件格式后重新添加；不会发送不完整附件。' }, false); })
+      .finally(() => {
+        entry.jobs.delete(attachment.id); entry.controllers.delete(attachment.id);
+        if (controller.signal.aborted && this.current(id, entry)) { const pending = entry.snapshot.draft.attachments.find(a => a.id === attachment.id && a.status === 'parsing'); if (pending) this.process(id, pending); }
+      });
   }
   remove(id: string, storageId?: string) {
     const entry = this.entries.get(id); this.entries.delete(id);
+    for (const controller of entry?.controllers.values() ?? []) controller.abort();
     const target = storageId ?? entry?.storageId ?? this.storageKey(id);
     void (entry?.queue ?? Promise.resolve()).catch(() => {}).then(async () => { await entry?.resolution; await this.persistence.remove(this.owner, target, this.writer); if (target !== id) await this.persistence.remove(this.owner, id, this.writer); }).catch(() => {}); this.notify();
   }

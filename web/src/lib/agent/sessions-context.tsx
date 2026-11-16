@@ -27,6 +27,8 @@ interface SessionsState {
   syncError: string | null;
   syncing: boolean;
   initialLoading: boolean;
+  loadingOlder: boolean;
+  loadOlder: () => void;
   refresh: () => void;
   changeMode: (id: string, mode: 'auto' | 'daily') => void;
 }
@@ -70,6 +72,8 @@ function OwnerSessionsProvider({ children, owner }: { children: ReactNode; owner
     syncError: cloud.error,
     syncing: cloud.syncing,
     initialLoading: cloud.initialLoading,
+    loadingOlder: cloud.loadingOlder,
+    loadOlder: () => { void cloud.loadOlder(activeId); },
     refresh: cloud.refresh,
     changeMode: (id, mode) => setSessions(list => list.map(s => s.id === id ? { ...s, mode } : s)),
     create: () => {

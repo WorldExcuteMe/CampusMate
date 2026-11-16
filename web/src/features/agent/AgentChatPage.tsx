@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -31,6 +31,8 @@ import { TaskWorkspace } from "./TaskWorkspace";
 import { ChatMessageRow } from './ChatMessageRow';
 import { AgentActivityCard } from "./AgentActivityCard";
 import type { AgentActivity } from "@/lib/agent/progress";
+import { IMAGE_LIMIT_HINT, imageLimitError } from '../../../../shared/attachments';
+import { ATTACHMENT_ACCEPT, ATTACHMENT_LIMIT_DETAILS, ATTACHMENT_LIMIT_HINT, attachmentSendError, composeAttachmentText } from '@/lib/ingest/limits';
 
 // 统一控件鼠标反馈：悬停边框+阴影+图标放大、聚焦环、按压缩放
 const CONTROL_FEEDBACK =
@@ -45,7 +47,22 @@ export function AgentChatPage() {
   const alive = useRef(true);
   const requestController = useRef<AbortController | null>(null);
   useEffect(() => { alive.current = true; return () => { alive.current = false; requestController.current?.abort(); }; }, []);
-  const { active, update, rename, storageError, setActiveId, changeMode, initialLoading } = useSessions();
+  const { active, update, rename, storageError, setActiveId, changeMode, initialLoading, loadingOlder, loadOlder } = useSessions();
+  const previousEnd=useRef<{id:string;count:number;key:string}|undefined>(undefined);
+  const messageScroll=useRef<HTMLDivElement>(null);
+  const olderAnchor=useRef<{id:string;element:Element;top:number}|undefined>(undefined);
+  function requestOlder() {
+    const container=messageScroll.current, top=container?.getBoundingClientRect().top??0;
+    const element=container && [...container.querySelectorAll('[data-message-key]')].find(el=>el.getBoundingClientRect().bottom>top);
+    if(element)olderAnchor.current={id:active.id,element,top:element.getBoundingClientRect().top};
+    loadOlder();
+  }
+  useLayoutEffect(()=>{
+    const anchor=olderAnchor.current;
+    if(!anchor || loadingOlder)return;
+    if(anchor.id===active.id && anchor.element.isConnected && messageScroll.current) messageScroll.current.scrollTop+=anchor.element.getBoundingClientRect().top-anchor.top;
+    olderAnchor.current=undefined;
+  },[active.id,active.messages.length,loadingOlder]);
   const composer = useComposerDraft(active.id);
   const { text: input, attachments, titleEdit } = composer.draft;
   const setInput = composer.setText;
@@ -88,7 +105,11 @@ export function AgentChatPage() {
   }, [active.taskViews, queryClient]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    const last=active.messages.at(-1), key=last?`${last.historyKey??last.taskId??last.turnId??last.content.slice(0,40)}:${last.role}`:'';
+    const previous=previousEnd.current;
+    // Prepending a history page must not drag the reader back to the bottom.
+    if (!(previous?.id===active.id && active.messages.length>previous.count && previous.key===key)) endRef.current?.scrollIntoView({ behavior: "smooth" });
+    previousEnd.current={id:active.id,count:active.messages.length,key};
   }, [active?.messages.length, busy]);
 
   function chooseProvider(id: string) {
@@ -99,11 +120,17 @@ export function AgentChatPage() {
   async function handleFiles(files: FileList | File[]) {
     if (initialLoading) { toast.message('正在恢复会话，请稍候再添加附件。'); return; }
     if (composer.resolving) { toast.message('正在安全保存草稿，请稍候。'); return; }
-    await composer.addFiles(Array.from(files));
+    try { await composer.addFiles(Array.from(files)); }
+    catch (error) { toast.error(error instanceof Error ? error.message : '附件未添加，请重试。'); }
   }
 
   async function send(retry = false, edit?: { content: string; ordinal: number }) {
     if (initialLoading) { toast.message('正在恢复会话，请稍候。'); return; }
+    const imageError = imageLimitError(edit ? 0 : retry ? active.pendingTurn?.images?.length ?? 0 : attachments.filter(a => a.kind === 'image').length);
+    if (imageError) { toast.error(imageError); return; }
+    const pending = active.pendingTurn;
+    const sendError = attachmentSendError(edit?.content ?? (retry ? pending?.content ?? '' : input), edit ? [] : retry ? (pending?.images ?? []).map((dataUrl, index) => ({ name: `重试图片${index + 1}`, kind: 'image' as const, dataUrl })) : attachments);
+    if (sendError) { toast.error(sendError); return; }
     if (!edit && !retry && (!composer.ready || incompleteAttachments)) { toast.message('请等待附件解析完成，或移除解析失败的附件后再发送。'); return; }
     if ((!input.trim() && attachments.length === 0 && !edit && !retry) || busyUI || (!backendEnabled() && !profile)) return;
     let currentDraft = composer.draft;
@@ -116,9 +143,7 @@ export function AgentChatPage() {
     // Editing a historical message must not consume or attach the separate composer draft.
     const files = edit || retry ? [] : currentDraft.attachments;
     if ((!text && files.length === 0 && !retry) || busyUI || !active || (!backendEnabled() && !profile)) return;
-    const docText = files.filter((a) => a.kind === "doc" && a.text).map((a) => `\n[附件 ${a.name}]\n${a.text}`).join("");
-    const imgMarkers = files.filter((a) => a.kind === "image").map((a) => `[图片附件 ${a.name}]`).join(" ");
-    const content = retry ? active.pendingTurn?.content ?? "" : (text + docText + (imgMarkers ? "\n" + imgMarkers : "")).trim();
+    const content = retry ? active.pendingTurn?.content ?? "" : composeAttachmentText(text, files);
     if (!content) return;
     const pendingTurn = retry && active.pendingTurn ? active.pendingTurn : { turnId: crypto.randomUUID(), content, providerId: provider?.id, reasoning, images: files.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) };
     // A normal send already consumed this exact persisted version atomically.
@@ -286,8 +311,9 @@ export function AgentChatPage() {
 
       {/* 无边框消息流 */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={messageScroll} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6">
+          {active.historyPage?.hasMore && <button type="button" className="self-center rounded-md border px-3 py-1 text-xs text-muted-foreground disabled:opacity-50" disabled={loadingOlder} onClick={requestOlder}>{loadingOlder?'正在加载更早消息…':'加载更早消息'}</button>}
           {busy && activity && activity.sessionId !== active.id && <button onClick={()=>setActiveId(activity.sessionId)} className="text-sm text-primary underline">查看处理进度</button>}
           {!backendEnabled() && busy && activity?.sessionId === active.id && <AgentActivityCard activity={activity} />}
           {active?.messages.length === 0 && (
@@ -296,7 +322,7 @@ export function AgentChatPage() {
               开始一个会话：粘贴群通知、询问机会、或让我创建日常任务。
             </div>
           )}
-          {active?.messages.map((message, i) => <ChatMessageRow key={`${active.id}:${message.role}:${message.turnId ?? message.taskId ?? i}`} message={message} ordinal={i + 1} busy={busyUI} onResend={content => void send(false, { content, ordinal: i + 1 })} />)}
+          {active?.messages.map((message, i) => <ChatMessageRow key={`${active.id}:${message.role}:${message.historyKey ?? message.turnId ?? message.taskId ?? i}`} message={message} ordinal={i + 1} busy={busyUI} onResend={content => void send(false, { content, ordinal: i + 1 })} />)}
           {!busyUI && active.pendingTurn && !active.pendingTurn.taskId && <Button variant="outline" size="sm" onClick={() => send(true)}>重试提交同一轮次</Button>}
           <div ref={endRef} />
         </div>
@@ -366,19 +392,20 @@ export function AgentChatPage() {
               ref={fileRef}
               type="file"
               multiple
-              accept="image/*,.pdf,.docx,.txt,.md"
+              accept={ATTACHMENT_ACCEPT}
               className="hidden"
               onChange={(e) => { if (e.target.files) handleFiles(e.target.files); e.target.value = ""; }}
             />
             <button
               type="button"
               aria-label="添加附件"
-              title="添加图片/文档附件"
+              title={`添加图片/文档附件（${IMAGE_LIMIT_HINT}）`}
               onClick={() => fileRef.current?.click()}
               className={cn(CONTROL_FEEDBACK, "flex size-8 items-center justify-center")}
             >
               <Paperclip className="size-4 text-primary transition-transform group-hover:scale-110" />
             </button>
+            <details className="text-[10px] text-muted-foreground"><summary className="cursor-pointer">{IMAGE_LIMIT_HINT} · {ATTACHMENT_LIMIT_HINT}</summary><p className="max-w-md py-1 text-xs">{ATTACHMENT_LIMIT_DETAILS}</p></details>
             <Select value={provider?.id ?? ""} onValueChange={chooseProvider}>
               <SelectTrigger aria-label="模型连接" className={cn("h-8 w-40 text-xs", CONTROL_FEEDBACK)}><SelectValue placeholder="模型" /></SelectTrigger>
               <SelectContent>

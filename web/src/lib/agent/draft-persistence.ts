@@ -21,7 +21,7 @@ export function sameDraft(a: ComposerDraft, b: ComposerDraft) {
   // Never infer Blob equality from filename/size. Ready attachments contain exact
   // text/dataURL bytes and IDs; pending blobs conservatively cause a conflict.
   if ([...a.attachments, ...b.attachments].some(item => item.file)) return false;
-  const values = (d: ComposerDraft) => [d.text, d.titleEdit ?? null, d.attachments.map(x => [x.id, x.name, x.kind, x.status, x.text ?? null, x.dataUrl ?? null, x.error ?? null])];
+  const values = (d: ComposerDraft) => [d.text, d.titleEdit ?? null, d.attachments.map(x => [x.id, x.name, x.kind, x.status, x.sizeBytes ?? null, x.text ?? null, x.dataUrl ?? null, x.error ?? null])];
   return JSON.stringify(values(a)) === JSON.stringify(values(b));
 }
 function record(value: any): DraftRecord {

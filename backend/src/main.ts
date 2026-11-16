@@ -12,7 +12,7 @@ const ctx = buildContext(env);
 const { store, approvals, companion, evidenceStore, capabilityRegistry, memoryStore, opportunityStore, storeKind } = ctx;
 const port = Number(env.PORT ?? 8788);
 
-const server = createApiServer({ store, jwtSecret: env.SUPABASE_JWT_SECRET ?? "", storeKind, approvals, capabilityRegistry, companion, personalContext: ctx.personalContext, opportunityStore, sessionStore: ctx.sessionStore, providers: ctx.providers, artifactStore: ctx.artifactStore, documents: ctx.documents });
+const server = createApiServer({ store, jwtSecret: env.SUPABASE_JWT_SECRET ?? "", storeKind, approvals, capabilityRegistry, companion, personalContext: ctx.personalContext, opportunityStore, sessionStore: ctx.sessionStore, providers: ctx.providers, artifactStore: ctx.artifactStore, documents: ctx.documents, sessionFeed: ctx.sessionFeed });
 // Companion 出站 WSS：设备令牌经 COMPANION_TOKENS（JSON: {token:{userId,capabilities,grantedScopes}}）授权。
 const companionTokens: Record<string, { userId: string; capabilities: string[]; grantedScopes: Record<string, unknown> }> = (() => { try { return JSON.parse(env.COMPANION_TOKENS ?? "{}"); } catch { return {}; } })();
 const companionServer = new CompanionServer(server, {

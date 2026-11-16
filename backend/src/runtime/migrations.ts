@@ -13,6 +13,7 @@ export const MIGRATION_PATHS = [
   "supabase/migrations/20261114171524_campusmate_calendar.sql",
   "supabase/migrations/20261115090000_campusmate_business_tools.sql",
   "supabase/migrations/20261115110000_campusmate_session_management.sql",
+  "supabase/migrations/20261116090000_campusmate_history_paging.sql",
 ] as const;
 
 export async function readMigrations() {

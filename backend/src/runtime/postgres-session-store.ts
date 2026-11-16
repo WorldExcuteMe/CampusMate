@@ -16,8 +16,8 @@ export class PostgresSessionStore implements SessionStore {
     await this.pool.query("insert into agent_sessions(id,user_id,title,mode) values($1,$2,$3,$4) on conflict(id) do nothing", [id, input.userId, input.title ?? "新会话", input.mode ?? "auto"]);
     const found = await this.get(input.userId, id); if (!found) throw new Error("Session owner forbidden"); if (found.deletedAt) throw new SessionManagementError('会话已删除，请新建会话'); return found;
   }
-  async get(userId: string, id: string) { requireUuid(id); const r = await this.pool.query<DbRow>("select * from agent_sessions where id=$1 and user_id=$2", [id, userId]); return r.rows[0] ? session(r.rows[0]) : null; }
-  async list(userId: string) { const r = await this.pool.query<DbRow>("select * from agent_sessions where user_id=$1 order by updated_at desc,id", [userId]); return r.rows.map(session); }
+  async get(userId: string, id: string) { requireUuid(id); const r = await this.pool.query<DbRow>("select id,user_id,title,mode,summary,summary_through_seq,created_at,updated_at,archived,deleted_at,revision from agent_sessions where id=$1 and user_id=$2", [id, userId]); return r.rows[0] ? session(r.rows[0]) : null; }
+  async list(userId: string) { const r = await this.pool.query<DbRow>("select id,user_id,title,mode,summary_through_seq,created_at,updated_at,archived,deleted_at,revision from agent_sessions where user_id=$1 order by updated_at desc,id", [userId]); return r.rows.map(session); }
   async patch(userId: string, id: string, patch: SessionPatch) {
     requireUuid(id); validateSessionPatch(patch);
     const r = await this.pool.query<DbRow>('update agent_sessions set title=coalesce($3,title),mode=coalesce($4,mode),archived=coalesce($5,archived),revision=revision+1,updated_at=now() where user_id=$1 and id=$2 and deleted_at is null and revision=$6 returning *', [userId, id, patch.title?.trim() ?? null, patch.mode ?? null, patch.archived ?? null, patch.expectedRevision]);

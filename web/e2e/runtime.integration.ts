@@ -92,8 +92,12 @@ test("取消保留记录；失败后新对话继续，旧任务恢复提示新�
   await expect.poll(async()=>(await task(cancelled)).status,{timeout:15_000}).toBe("cancelled");
   const failed=await send(page,"故意失败：离线故障用例");
   await expect.poll(async()=>(await task(failed)).status).toBe("failed");
-  await send(page,"我是计算机专业大二学生，继续下一轮。");
-  await expect(page.getByText("已记录你的计算机专业大二身份和每周8小时约束。",{exact:true})).toBeVisible();
+  const continued=await send(page,"我是计算机专业大二学生，继续下一轮。");
+  // Shared fixture sessions may legitimately contain the same scripted reply
+  // from an earlier task. Verify THIS task completed exactly once, not .first().
+  const reply=page.locator(`[data-task-id="${continued}"][data-message-role="assistant"]`);
+  await expect(reply).toHaveCount(1);
+  await expect(reply).toContainText("已记录你的计算机专业大二身份和每周8小时约束。");
   await page.getByLabel("查看任务记录").selectOption(failed);
   const response=page.waitForResponse(r=>r.url().endsWith(`/${failed}/resume`));
   await page.getByRole("button",{name:"恢复任务",exact:true}).click();

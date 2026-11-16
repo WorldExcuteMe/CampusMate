@@ -56,7 +56,7 @@ export class MemorySessionStore implements SessionStore {
       if (!s || s.userId !== userId) throw new SessionManagementError('会话不存在', 404);
       if (s.deletedAt) return structuredClone(s);
       if ((s.revision ?? 0) !== expectedRevision) throw new SessionManagementError('会话已被其他窗口修改，请刷新后重试');
-      if ((await this.tasks.listTasksByUser(userId)).some(t => t.sessionId === id && unfinishedSessionTask(t))) throw new SessionManagementError('会话有未结束任务，请先完成或取消任务再删除');
+      if ((await (this.tasks.listTasksBySession?this.tasks.listTasksBySession(userId,id):this.tasks.listTasksByUser(userId))).some(t => t.sessionId === id && unfinishedSessionTask(t))) throw new SessionManagementError('会话有未结束任务，请先完成或取消任务再删除');
       s.deletedAt = Date.now(); s.updatedAt = Date.now(); s.revision = (s.revision ?? 0) + 1; return structuredClone(s);
     };
     return this.tasks.sessionTransaction ? this.tasks.sessionTransaction(id, work) : work();

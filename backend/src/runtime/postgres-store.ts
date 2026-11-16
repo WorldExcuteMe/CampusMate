@@ -24,9 +24,10 @@ function toMs(v: unknown): number | null {
 function iso(ms: number): string { return new Date(ms).toISOString(); }
 function j(v: unknown): string { return JSON.stringify(v ?? null); }
 
-function rowToTask(r: Row): Task {
+export function rowToTask(r: Row): Task {
   return {
     id: String(r.id),
+    historyRevision: r.history_xid == null ? undefined : String(r.history_xid),
     userId: String(r.user_id),
     goalId: r.goal_id ? String(r.goal_id) : undefined,
     sessionId: r.session_id ? String(r.session_id) : undefined,
@@ -204,6 +205,14 @@ export class PostgresStore implements TaskStore {
   async listTasksByUser(userId: string): Promise<Task[]> {
     const r = await this.pool.query(`select * from agent_tasks where user_id=$1 order by created_at desc`, [userId]);
     return r.rows.map(rowToTask);
+  }
+  async listTasksBySession(userId: string, sessionId: string, limit?: number): Promise<Task[]> {
+    const r = await this.pool.query(`select * from agent_tasks where user_id=$1 and session_id=$2 order by created_at desc,turn_seq desc,id desc${limit === undefined ? '' : ' limit $3'}`, limit === undefined ? [userId, sessionId] : [userId, sessionId, limit]);
+    return r.rows.map(rowToTask);
+  }
+  async findSessionTurn(userId: string, sessionId: string, turnId: string) {
+    const r = await this.pool.query('select * from agent_tasks where user_id=$1 and session_id=$2 and turn_id=$3 limit 1', [userId, sessionId, turnId]);
+    return r.rows[0] ? rowToTask(r.rows[0]) : null;
   }
 
   // 原子认领：事务 + FOR UPDATE SKIP LOCKED。queued 或 lease 过期的 running；重认领 attempt+1。

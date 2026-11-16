@@ -1,14 +1,15 @@
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, expect, it, vi } from "vitest";
+import { toast } from 'sonner';
 vi.mock('@/lib/agent/draft-persistence', async original => ({ ...await original<object>(), createDraftPersistence: (await import('@/test-utils/draft-persistence')).uiDraftPersistence }));
-import { resetUIDrafts } from '@/test-utils/draft-persistence';
+import { resetUIDrafts, uiDraftPersistence } from '@/test-utils/draft-persistence';
 vi.mock("@/app/auth", () => ({ useRepository: () => ({getProfile:async()=>({id:"alice",major:"计算机",grade:"大二",interests:[],skills:[],goals:[]})}), useAuth: () => ({ session: { user: { id: "alice" } } }) }));
 vi.mock("@/app/config", () => ({ repository: { getProfile: async () => ({ id: "alice", major: "计算机", grade: "大二", interests: [], skills: [], goals: [] }) }, supabaseClient: { auth: { getSession: async () => ({ data: { session: { access_token: "fixture-token" } } }) } } }));
 import { SessionsProvider } from "@/lib/agent/sessions-context";
 import { AgentChatPage } from "./AgentChatPage";
 import { newSession, saveSessions, loadSessions } from "@/lib/agent/sessions";
-afterEach(() => { cleanup(); resetUIDrafts(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); localStorage.clear(); });
+afterEach(() => { cleanup(); resetUIDrafts(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); localStorage.clear(); });
 it.each(['reasoning_effort', 'deepseek_thinking'])("用户选择high后提交真实task请求，模型和窗口显示使用后端数据 (%s)", async (reasoningProtocol) => {
   localStorage.setItem("campusmate.onboarded", "1");
   vi.stubEnv("VITE_BACKEND_URL", "http://backend.test");
@@ -119,4 +120,36 @@ it("现有浏览器开发路径也显示真实工具等待及结果，并标明�
   expect(await screen.findByText("本地检索结果")).toBeVisible();
   expect(screen.getByText(/浏览器开发记录/)).toBeVisible();
   expect(screen.queryByRole("button", { name: "恢复任务" })).toBeNull();
+});
+
+it.each(['picker', 'drop', 'paste'])('图片超限在%s入口明确提示，整批不添加且保留已有文字', async entry => {
+  localStorage.setItem('campusmate.onboarded', '1'); vi.stubEnv('VITE_BACKEND_URL', ''); Element.prototype.scrollIntoView = vi.fn();
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ providers: [] }) })));
+  const error = vi.spyOn(toast, 'error').mockReturnValue('fixture-toast');
+  const view = render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><SessionsProvider><AgentChatPage /></SessionsProvider></QueryClientProvider>);
+  const input = screen.getByRole('textbox'); await waitFor(() => expect(input).not.toBeDisabled());
+  fireEvent.change(input, { target: { value: '保留我的文字' } });
+  const files = Array.from({ length: 6 }, (_, i) => new File(['image'], `${i}.png`, { type: 'image/png' }));
+  if (entry === 'picker') fireEvent.change(view.container.querySelector('input[type="file"]')!, { target: { files } });
+  else if (entry === 'paste') fireEvent.paste(input, { clipboardData: { files } });
+  else fireEvent.drop(input, { dataTransfer: { files } });
+  await waitFor(() => expect(error).toHaveBeenCalledWith(expect.stringMatching(/最多 4 张图片.*6 张/)));
+  expect(input).toHaveValue('保留我的文字'); expect(view.container.querySelectorAll('img')).toHaveLength(0);
+  expect(screen.getByText(/每条消息最多 4 张图片 · 最多8个附件/)).toBeVisible();
+});
+
+it('旧版6图草稿发送前被拦截，未发起模型请求且原稿完整保留', async () => {
+  localStorage.setItem('campusmate.onboarded', '1'); vi.stubEnv('VITE_BACKEND_URL', ''); Element.prototype.scrollIntoView = vi.fn();
+  const session = newSession(); saveSessions([session], 'alice');
+  const draft = { text: '必须看全6张', attachments: Array.from({ length: 6 }, (_, i) => ({ id: `legacy-${i}`, name: `${i}.png`, kind: 'image' as const, status: 'ready' as const, dataUrl: 'data:image/png;base64,Zml4dHVyZQ==' })) };
+  await uiDraftPersistence().write('alice', session.id, draft, 0, 'seed', 'seed');
+  const fetcher = vi.fn(async (_url: string) => ({ ok: true, json: async () => ({ providers: [] }) })); vi.stubGlobal('fetch', fetcher);
+  const error = vi.spyOn(toast, 'error').mockReturnValue('fixture-toast');
+  const view = render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><SessionsProvider><AgentChatPage /></SessionsProvider></QueryClientProvider>);
+  await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(draft.text));
+  fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+  expect(error).toHaveBeenCalledWith(expect.stringMatching(/最多 4 张图片.*6 张/));
+  expect(screen.getByRole('textbox')).toHaveValue(draft.text); expect(view.container.querySelectorAll('img')).toHaveLength(6);
+  expect(fetcher.mock.calls.every(([url]) => !String(url).includes('/llm') && !String(url).includes('/tasks'))).toBe(true);
+  expect((await uiDraftPersistence().read('alice', session.id)).current.draft).toEqual(draft);
 });

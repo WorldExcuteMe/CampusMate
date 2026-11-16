@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const auth = vi.hoisted(() => ({ owner: 'alice' }));
 vi.mock('@/app/auth', () => ({ useAuth: () => ({ session: { user: { id: auth.owner } } }) }));
 vi.mock('@/app/config', () => ({ supabaseClient: null }));
-vi.mock('../agent/session-sync', async original => ({ ...await original<object>(), listRemoteSessions: vi.fn(), getRemoteHistory: vi.fn(), createRemoteSession: vi.fn(), patchRemoteSession: vi.fn(), removeRemoteSession: vi.fn(), importRemoteHistory: vi.fn() }));
+vi.mock('../agent/session-sync', async original => ({ ...await original<object>(), listRemoteSessions: vi.fn(), getRemoteHistory: vi.fn(), getHistoryPage:vi.fn(), getHistoryChanges:vi.fn(), createRemoteSession: vi.fn(), patchRemoteSession: vi.fn(), removeRemoteSession: vi.fn(), importRemoteHistory: vi.fn() }));
 import * as api from '../agent/session-sync';
 import { SessionsProvider, useSessions } from '../agent/sessions-context';
 import { newSession, saveSessions, loadSessions } from '../agent/sessions';
@@ -11,7 +11,7 @@ import type { RemoteSession, RemoteHistory } from '../agent/session-sync';
 let remotes: RemoteSession[], histories: Map<string, RemoteHistory>;
 function Probe({ name = 'A' }: { name?: string }) {
   const s = useSessions(); const first = s.sessions.find(x => x.backendId);
-  return <section aria-label={name}><p data-testid={name+'-loading'}>{String(s.initialLoading)}</p><div data-testid={name+'-list'}>{s.sessions.filter(x => x.backendId).map(x => <p key={x.id}>{x.name}:{x.archived ? 'archived' : 'active'}</p>)}</div><div data-testid={name+'-messages'}>{s.active.messages.map((m,i) => <p key={i}>{m.content}</p>)}</div><p>{s.syncError}</p><button onClick={() => first && s.rename(first.id, '同步后的名称')}>{name}-rename</button><button onClick={() => first && s.archive(first.id)}>{name}-archive</button><button onClick={() => first && s.restore(first.id)}>{name}-restore</button><button onClick={() => first && s.remove(first.id)}>{name}-delete</button><button onClick={s.refresh}>{name}-refresh</button></section>;
+  return <section aria-label={name}><p data-testid={name+'-loading'}>{String(s.initialLoading)}</p><div data-testid={name+'-list'}>{s.sessions.filter(x => x.backendId).map(x => <p key={x.id}>{x.name}:{x.archived ? 'archived' : 'active'}</p>)}</div><div data-testid={name+'-messages'}>{s.active.messages.map((m,i) => <p key={i}>{m.content}</p>)}</div><p>{s.syncError}</p><button onClick={() => first && s.rename(first.id, '同步后的名称')}>{name}-rename</button><button onClick={() => first && s.archive(first.id)}>{name}-archive</button><button onClick={() => first && s.restore(first.id)}>{name}-restore</button><button onClick={() => first && s.remove(first.id)}>{name}-delete</button><button onClick={s.refresh}>{name}-refresh</button><button onClick={s.loadOlder}>{name}-older</button></section>;
 }
 beforeEach(() => {
   vi.stubEnv('VITE_BACKEND_URL', 'http://backend.test'); auth.owner = 'alice'; localStorage.clear(); vi.clearAllMocks();
@@ -19,6 +19,12 @@ beforeEach(() => {
   histories = new Map([['server-session', { session: remotes[0], messages: [{ role: 'user', content: '完整问题', turnId: 'turn' }, { role: 'assistant', content: '完整回答', taskId: 'task', turnId: 'turn' }], tasks: [] }]]);
   vi.mocked(api.listRemoteSessions).mockImplementation(async () => structuredClone(remotes));
   vi.mocked(api.getRemoteHistory).mockImplementation(async id => structuredClone({ ...histories.get(id)!, session: remotes.find(r => r.id === id)! }));
+  const page=async(id:string) => {
+    const h=histories.get(id)!; const items:api.HistoryItem[]=[];
+    for (const [i,m] of h.messages.entries()) { const key=m.turnId??m.taskId??String(i); const old=items.find(item=>item.key===key); if(old)old.messages.push(m);else items.push({key,order:[1,i,i,key],version:'1',messages:[m]}); }
+    return structuredClone({ session:remotes.find(r=>r.id===id)!,items,after:'fixture-cursor',hasMore:false });
+  };
+  vi.mocked(api.getHistoryPage).mockImplementation(page);vi.mocked(api.getHistoryChanges).mockImplementation(page);
   vi.mocked(api.createRemoteSession).mockImplementation(async input => { let r = remotes.find(r => r.id === input.id); if (!r) { r = { ...input, revision: 0, createdAt: 2, updatedAt: 2 }; remotes.push(r); histories.set(r.id, { session: r, messages: [], tasks: [] }); } return structuredClone(r); });
   vi.mocked(api.patchRemoteSession).mockImplementation(async (id, patch) => { const r = remotes.find(r => r.id === id)!; if ((r.revision ?? 0) !== patch.expectedRevision) throw Error('409 stale revision'); Object.assign(r, patch, { revision: patch.expectedRevision+1 }); return structuredClone(r); });
   vi.mocked(api.removeRemoteSession).mockImplementation(async id => { const r = remotes.find(r => r.id === id)!; r.deletedAt = 3; r.revision = (r.revision ?? 0)+1; return structuredClone(r); });
@@ -84,4 +90,34 @@ it('旧账号的迟到响应不能写入新账号缓存，所有请求绑定预�
   expect(screen.getByTestId('A-list')).not.toHaveTextContent('不应出现在Bob');
   expect(api.listRemoteSessions).toHaveBeenCalledWith(expect.any(AbortSignal), 'bob');
   expect(JSON.stringify(loadSessions('bob'))).not.toContain('alice-private');
+});
+
+it('恢复后只请求增量；空增量不重写全部会话缓存，不走旧完整历史端点',async()=>{
+  render(<SessionsProvider><Probe /></SessionsProvider>);await waitFor(()=>expect(screen.getByTestId('A-messages')).toHaveTextContent('完整回答'));
+  vi.mocked(api.getHistoryChanges).mockResolvedValue({session:remotes[0],items:[],after:'new-watermark',hasMore:false});
+  const write=vi.spyOn(Storage.prototype,'setItem');write.mockClear();
+  fireEvent.click(screen.getByText('A-refresh'));
+  await waitFor(()=>expect(api.getHistoryChanges).toHaveBeenCalledWith('server-session','fixture-cursor',undefined,expect.any(AbortSignal),'alice'));
+  expect(api.getRemoteHistory).not.toHaveBeenCalled();expect(api.getHistoryPage).toHaveBeenCalledTimes(1);
+  expect(write.mock.calls.filter(([key])=>key==='campusmate.sessions.v2:alice')).toHaveLength(0);write.mockRestore();
+});
+it('旧页读取失败保留已显示消息，按钮可重试且不回退到全量历史',async()=>{
+  const original=vi.mocked(api.getHistoryPage).getMockImplementation()!;let fail=true;
+  vi.mocked(api.getHistoryPage).mockImplementation(async(id,before,signal,owner)=>{
+    const p=await original(id,before,signal,owner);if(!before)return {...p,before:'older',hasMore:true};
+    if(fail){fail=false;throw Error('fixture read failed');}
+    return {...p,items:[],hasMore:false};
+  });
+  render(<SessionsProvider><Probe /></SessionsProvider>);await waitFor(()=>expect(screen.getByTestId('A-messages')).toHaveTextContent('完整回答'));
+  fireEvent.click(screen.getByText('A-older'));await screen.findByText(/现有记录已保留，可重试/);expect(screen.getByTestId('A-messages')).toHaveTextContent('完整回答');
+  fireEvent.click(screen.getByText('A-older'));await waitFor(()=>expect(api.getHistoryPage).toHaveBeenCalledTimes(3));expect(api.getRemoteHistory).not.toHaveBeenCalled();
+});
+it('账号切换后迟到的分页响应不写入另一账号缓存',async()=>{
+  let release!:(value:api.RemotePage)=>void;
+  vi.mocked(api.getHistoryPage).mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+  const view=render(<SessionsProvider><Probe /></SessionsProvider>);await waitFor(()=>expect(api.getHistoryPage).toHaveBeenCalled());
+  auth.owner='bob';remotes=[];view.rerender(<SessionsProvider><Probe /></SessionsProvider>);
+  await act(async()=>release({session:{id:'server-session',title:'alice-private',mode:'auto',createdAt:1,updatedAt:1},items:[],after:'secret-cursor',hasMore:false}));
+  await waitFor(()=>expect(screen.getByTestId('A-loading')).toHaveTextContent('false'));
+  expect(JSON.stringify(loadSessions('bob'))).not.toContain('alice-private');expect(JSON.stringify(loadSessions('bob'))).not.toContain('secret-cursor');
 });
