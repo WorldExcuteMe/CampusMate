@@ -3,6 +3,18 @@ import assert from "node:assert/strict";
 import { buildContext } from "../app-context.ts";
 import { Worker } from "./worker.ts";
 import type { ChatMessage } from "../core/types.ts";
+import { generationPolicy } from "../core/generation-policy.ts";
+
+test("source summary avoids repeated thinking while retaining high preference for research and complex writing", () => {
+  const caps = { reasoning: "chat_template_kwargs" };
+  const summary = generationPolicy(caps, "high", "summary" as Parameters<typeof generationPolicy>[2], 1024);
+  assert.equal(summary.requested, "high"); assert.equal(summary.effective, "off");
+  assert.deepEqual(summary.params, { chat_template_kwargs: { enable_thinking: false } });
+  assert.match(summary.reason, /摘要/);
+  for (const stage of ["simple", "plan", "verify", "write"] as const) assert.equal(generationPolicy(caps, "high", stage, 4096).effective, "on");
+  assert.equal(generationPolicy({ reasoning: "reasoning_effort" }, "high", "summary" as Parameters<typeof generationPolicy>[2], 1024).effective, "low");
+  assert.deepEqual(generationPolicy({}, "high", "summary" as Parameters<typeof generationPolicy>[2], 1024).params, {});
+});
 
 test("Worker固定system前缀不因task变化，并分离实际请求量及输出截断", async () => {
   const ctx = buildContext({}); const requests: ChatMessage[][] = [];

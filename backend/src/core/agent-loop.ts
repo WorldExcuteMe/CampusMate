@@ -3,7 +3,7 @@
 import type { Budget, ChatMessage, CheckpointState, EventType, ToolDef, Usage } from "./types.ts";
 import { EMPTY_USAGE } from "./types.ts";
 import type { LlmTransport } from "./llm.ts";
-import { errorMessage, isTransportError } from "./errors.ts";
+import { errorMessage, isTransportError, isStorageUnavailable } from "./errors.ts";
 import { trimToBudget, toolsTokens, resolveContextCap, messagesTokens, RESERVE_OUTPUT } from "./context.ts";
 import { checkBudget } from "./budget.ts";
 import { budgetStopSummary } from "./budget.ts";
@@ -105,7 +105,7 @@ export async function runAgentLoop(opts: Parameters<typeof runAgentLoopInternal>
   result.stopReason ??= result.budgetExceeded ? "budget" : result.paused ? "approval" : result.mock || result.error || result.truncated ? "error" : "completed";
   return result;
 }
-function fetchObservations(messages: ChatMessage[], known: Set<string>) {
+function toolObservations(messages: ChatMessage[], known: Set<string>, toolName: string) {
   type Call = { name: string; args: Record<string, unknown> };
   const calls = new Map<string, Call>(); let lastTextCall: Call | null = null;
   const observations: { index: number; call: Call; data: Record<string, unknown>; failed: boolean }[] = [];
@@ -120,10 +120,56 @@ function fetchObservations(messages: ChatMessage[], known: Set<string>) {
       const match = /^\[工具观测：([^，\]]+)(?:，[^\]]*)?\]\s*([\s\S]*)$/.exec(message.content);
       if (match && lastTextCall?.name === match[1]) { call = lastTextCall; content = match[2]; }
     }
-    if (call?.name !== "web_fetch" || content === undefined) continue;
+    if (call?.name !== toolName || content === undefined) continue;
     try { const data = JSON.parse(content); if (data && typeof data === "object") observations.push({ index, call, data, failed: toolResultFailed(content) }); } catch { /* No structured fetch proof. */ }
   }
   return observations;
+}
+function fetchObservations(messages: ChatMessage[], known: Set<string>) { return toolObservations(messages, known, "web_fetch"); }
+function informationSourceCandidates(messages: ChatMessage[], known: Set<string>, user: string): string[] {
+  const topic = user.replace(/^\s*(?:(?:请|帮我|麻烦)\s*)*(?:收集|搜集|查询|查找|搜索|了解|介绍)\s*/, "").replace(/的?(?:信息|资料|情况)[。！？\s]*$/, "");
+  const focus = topic.match(/[\u3400-\u9fff]{4,}/g)?.sort((a, b) => b.length - a.length)[0];
+  const grams = focus ? [...new Set(Array.from({ length: focus.length - 1 }, (_, i) => focus.slice(i, i + 2)))] : [];
+  const attempted = fetchObservations(messages, known).map(o => o.call.args.url).filter((url): url is string => typeof url === "string");
+  const failedHosts = new Set(attempted.flatMap(url => { try { return [new URL(url).hostname]; } catch { return []; } }));
+  const candidates = new Map<string, number>();
+  for (const observation of toolObservations(messages, known, "web_search")) {
+    if (observation.failed || !Array.isArray(observation.data.results)) continue;
+    for (const result of observation.data.results) {
+      if (!result || typeof result !== "object" || typeof result.url !== "string") continue;
+      const description = String(result.title ?? "") + " " + String(result.snippet ?? "");
+      if (grams.length && grams.filter(gram => description.includes(gram)).length < Math.max(2, Math.ceil(grams.length * 0.35))) continue;
+      try {
+        const url = new URL(result.url);
+        if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || attempted.includes(url.href)) continue;
+        const score = (/\.(edu\.cn|edu)$/.test(url.hostname) ? 100 : 0) + (/\.html?$/i.test(url.pathname) ? 10 : 0) - (failedHosts.has(url.hostname) ? 200 : 0) - (/^\/(?:default\.[^/]+|index\.[^/]+)?$/i.test(url.pathname) ? 20 : 0);
+        if (!candidates.has(url.href)) candidates.set(url.href, score);
+      } catch { /* Search data never authorizes malformed or invented URLs. */ }
+    }
+  }
+  return [...candidates].sort((a, b) => b[1] - a[1]).map(([url]) => url).slice(0, 2);
+}
+function advanceNoticesOnly(sources: ReturnType<typeof fetchObservations>): boolean {
+  return sources.length > 0 && sources.every(o => {
+    const text = String(o.data.text);
+    const heading = text.slice(0, 300).match(/(?:关于|参赛|报名|竞赛|大赛|赛事).{0,100}?通知/)?.[0];
+    return Boolean(heading)
+      // A notice can describe successful past editions in its body. Only a
+      // result/report heading distinguishes it from an advance announcement.
+      && !/成功举办|圆满(?:结束|落幕)|获奖|(?:结果|成绩).{0,15}(?:通知|公示)|决赛战报/.test(heading!);
+  });
+}
+function noticeStatusGuard(reply: string, sources: ReturnType<typeof fetchObservations>): string {
+  if (!advanceNoticesOnly(sources)) return reply;
+  // A published schedule is not proof of an actual event or current status.
+  // Omit unsupported conclusions; never invent a replacement date/result.
+  const supported = reply.split(/\n|(?<=[。！？])/).filter(part =>
+    !/(?:已经?|现已|目前已).{0,30}(?:结束|截止|落幕|举行|举办|完成|完赛|闭幕|收官)|圆满(?:结束|落幕)|成功举办|非报名期/.test(part)
+    && !/(?:赛事|竞赛|比赛|报名|当前|最新).{0,6}(?:状态|进展|时效)|(?:状态|时效)[：:]/.test(part)
+    && !/(?:暂无|尚无|尚未|未曾|没有).{0,30}(?:发布|公布|报名信息|报名通知|官方.{0,10}(?:信息|通知))/.test(part)
+    && !(/(?:总决赛|决赛|赛事|竞赛|比赛).{0,60}于.{0,35}(?:举行|举办)/.test(part) && !/拟|计划|暂定|预定|预计|定于/.test(part)),
+  ).join("\n").trim();
+  return "资料时效：本次读取的是参赛通知；实际举办情况、最新报名状态及下一届安排尚未核实。\n\n" + supported;
 }
 function recoveredFetchErrors(messages: ChatMessage[], requiredText: string, reply: string, known: Set<string>): number {
   const observations = fetchObservations(messages, known);
@@ -169,6 +215,7 @@ async function runAgentLoopInternal(opts: {
   const usage: Usage = { ...(opts.initialUsage ?? opts.resumeUsage ?? EMPTY_USAGE) };
   const priorWallMs = usage.wallMs;
   const transcript: ChatMessage[] = structuredClone(opts.resumeTranscript ?? []);
+  let informationReadAttempted = transcript.some(m => m.tool_calls?.some(c => c.id.startsWith("information-read:")));
   let model = "unknown";
   let protocolRepairs = 0;
   let synthesizing = false;
@@ -248,18 +295,52 @@ async function runAgentLoopInternal(opts: {
     }
     for (let i = 0; i < maxRounds; i++) {
       if (overBudget()) { await emit("budget.exceeded", { usage }); break; }
+      // A brief collection has a bounded search -> read -> summary path. These
+      // are real traced tool invocations, never fabricated model observations.
+      if (briefInformation && known.has("web_fetch") && !informationReadAttempted && !/https?:\/\//.test(opts.user)
+        && !fetchObservations(transcript, known).some(o => !o.failed && Number(o.data.status) >= 200 && Number(o.data.status) < 300 && typeof o.data.text === "string" && o.data.text.trim())) {
+        const candidates = informationSourceCandidates(transcript, known, opts.user);
+        if (candidates.length) {
+          informationReadAttempted = true;
+          let read = false;
+          for (const url of candidates) {
+            if (overBudget()) break;
+            const id = `information-read:${transcript.length}`;
+            const request: ChatMessage = { role: "assistant", content: "", tool_calls: [{ id, type: "function", function: { name: "web_fetch", arguments: JSON.stringify({ url }) } }] };
+            messages.push(request); transcript.push(structuredClone(request));
+            const out = await tracedTool("web_fetch", { url }, id, `native:${transcript.length - 1}:${id}`);
+            usage.toolCalls++;
+            const observation: ChatMessage = { role: "tool", content: out, tool_call_id: id };
+            messages.push({ ...observation, content: await hooks.prepareToolResult?.("web_fetch", out) ?? out }); transcript.push(structuredClone(observation));
+            if (!toolResultFailed(out)) actions.push("web_fetch");
+            await checkpoint();
+            read = fetchObservations(transcript, known).some(o => !o.failed && Number(o.data.status) >= 200 && Number(o.data.status) < 300 && typeof o.data.text === "string" && o.data.text.trim());
+            if (read) break;
+          }
+          messages = trimToBudget(messages, cap, tTools, reserve, undefined, { role: "user", content: userContent }).messages;
+          if (overBudget()) break;
+          if (!read) {
+            const reply = "已取得搜索线索，但尝试的资料页未能读取，尚不能交付已核实的摘要。请稍后重试或提供可访问的材料。";
+            transcript.push({ role: "assistant", content: reply });
+            usage.wallMs = priorWallMs + now() - start;
+            return { reply, actions, usage, model, mock: false, rounds: i, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: "error", error: "source_unavailable" };
+          }
+        }
+      }
       await hooks.beforeRequest?.();
       await emit("llm.request", { round: i });
       const availableSources = briefInformation && !synthesizing ? fetchObservations(transcript, known).filter(o => !o.failed && Number(o.data.status) >= 200 && Number(o.data.status) < 300 && typeof o.data.text === "string" && o.data.text.trim() && typeof o.data.url === "string") : [];
       if (availableSources.length) {
         synthesizing = true;
-        messages.push({ role: "system", content: "【信息摘要阶段】已取得真实网页材料，现在交付首轮摘要，不再调用工具。只用最多6条单句要点，约300字，不用分节标题或大表格。第一条说明截至当前日期的时效/报名状态；最后一条引用成功读取页的完整URL，而非页面内提到但没有读取的官网入口。赛前通知中的计划赛程不能写成已实际举办的决赛日期。仅依据已取得材料，缺失信息写未核实，不能据未取得通知断言未来赛事不存在。用户需要详细材料时可继续展开。本轮可引用的实际读取URL：" + JSON.stringify([...new Set(availableSources.map(o => o.data.url))]) });
+        const noticeRule = /竞赛|大赛|赛事|比赛/.test(opts.user) && advanceNoticesOnly(availableSources) ? "本次材料仅为参赛通知。不要输出赛事状态、报名状态或时效段落，系统另行提示未核实的时效。不能据计划日期断言已举办、已完成或非报名期，也不能断言下一届未发布；日期只能按通知计划表述。" : "材料未证明的当前状态写未核实，不能根据日期推断已实际举办或通知不存在。";
+        messages.push({ role: "system", content: "【信息摘要阶段】已取得真实网页材料，现在交付首轮摘要，不再调用工具。只用最多6条单句要点，约300字，不用分节标题或大表格。仅整理材料明确支持的组织方、参赛对象、组队、材料及通知计划流程等信息；最后一条引用成功读取页的完整URL，而非页面内提到但没有读取的官网入口。" + noticeRule + "用户需要详细材料时可继续展开。本轮可引用的实际读取URL：" + JSON.stringify([...new Set(availableSources.map(o => o.data.url))]) });
       }
       const requestTools = synthesizing ? [] : deps.tools;
       const outputLimit = Math.min(reserve, Math.max(1, deps.budget.tokens - usage.tokens), synthesizing ? 1024 : Infinity);
       await hooks.onPromptUsage?.({ inputTokens: messagesTokens(messages) + (synthesizing ? 0 : tTools), contextLimit: deps.contextLimit ?? null, outputReserve: outputLimit, source: "estimated" });
       let heldDelta = "", plainDelta = false;
-      const res = await deps.transport.chat({ messages, tools: requestTools, signal: deps.signal, reasoning: deps.reasoning, stage: synthesizing ? "write" : deps.stage, deadlineAt: start + deps.budget.wallMs - priorWallMs, maxOutputTokens: outputLimit, onDelta: (text) => {
+      const res = await deps.transport.chat({ messages, tools: requestTools, signal: deps.signal, reasoning: deps.reasoning, stage: synthesizing ? "summary" : deps.stage, temperature: synthesizing ? 0 : undefined, deadlineAt: start + deps.budget.wallMs - priorWallMs, maxOutputTokens: outputLimit, onDelta: (text) => {
+        if (briefInformation) { heldDelta += text; return; }
         if (plainDelta) { void emit("llm.delta", { text, round: i }).catch(() => {}); return; }
         heldDelta += text;
         const first = heldDelta.trimStart()[0];
@@ -332,12 +413,20 @@ async function runAgentLoopInternal(opts: {
         }
         return { reply: "模型工具调用格式无效，尚未执行该操作。已尝试修正一次，请用新消息重试。", actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: "invalid_output", error: "invalid_tool_protocol" };
       }
-      if (heldDelta) await emit("llm.delta", { text: heldDelta, round: i });
+      if (briefInformation && actions.includes("web_search") && !synthesizing) {
+        const reply = "本轮未取得与原问题相关的可读资料正文，尚不能完成可靠摘要。请稍后重试或提供官方链接。";
+        transcript.push({ role: "assistant", content: reply });
+        return { reply, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: "error", error: "source_unavailable" };
+      }
+      if (heldDelta && !synthesizing) await emit("llm.delta", { text: heldDelta, round: i });
       const warning = uncertainEffects ? "存在操作结果未确认，请核对后用新消息继续。\n\n" : "";
       let finalReply = warning + (res.content.trim() ? res.content : (actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}。` : "（模型未返回内容，请重试或换一种问法）"));
       if (synthesizing) {
-        const urls = [...new Set(fetchObservations(transcript, known).filter(o => !o.failed && Number(o.data.status) >= 200 && Number(o.data.status) < 300 && typeof o.data.text === "string" && o.data.text.trim() && typeof o.data.url === "string").map(o => String(o.data.url)))];
+        const sources = fetchObservations(transcript, known).filter(o => !o.failed && Number(o.data.status) >= 200 && Number(o.data.status) < 300 && typeof o.data.text === "string" && o.data.text.trim() && typeof o.data.url === "string");
+        if (/竞赛|大赛|赛事|比赛/.test(opts.user)) finalReply = noticeStatusGuard(finalReply, sources);
+        const urls = [...new Set(sources.map(o => String(o.data.url)))];
         if (!urls.some(url => finalReply.includes(url))) finalReply += "\n\n本次实际读取的资料来源：\n" + urls.map(url => `- ${url}`).join("\n");
+        if (heldDelta) await emit("llm.delta", { text: finalReply, round: i });
       }
       transcript.push({ role: "assistant", content: finalReply });
       return { reply: finalReply, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: overBudget(), paused: false, messages, transcript, telemetry, error: uncertainEffects ? warning : undefined };
@@ -355,7 +444,7 @@ async function runAgentLoopInternal(opts: {
     return { reply, actions, usage, model, mock: false, rounds: maxRounds, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: "round_limit", error: "round_limit" };
   } catch (err) {
     if (err instanceof TaskCancelledError) { await checkpoint(); if (!deps.isCancelled) throw err; return { reply: "任务已取消", actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, stopReason: "cancelled" }; }
-    if (err instanceof CheckpointWriteError || err instanceof LeaseLostError) throw err;
+    if (err instanceof CheckpointWriteError || err instanceof LeaseLostError || isStorageUnavailable(err)) throw err;
     if (err instanceof BudgetPauseError) {
       const last = messages[messages.length - 1];
       if (last?.role === "assistant" && !last.tool_calls?.length && parseJsonTool(String(last.content), known)) {

@@ -50,6 +50,17 @@ export function errorMessage(err: unknown): string {
   return clip(String(err));
 }
 
+// Only connection acquisition failed: no SQL has been submitted on this attempt.
+export class StorageUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super("数据库连接暂时不可用，执行记录已保留，请稍后恢复任务", { cause });
+    this.name = "StorageUnavailableError";
+  }
+}
+export function isStorageUnavailable(err: unknown): boolean {
+  return err instanceof StorageUnavailableError || (err instanceof Error && err.name === "StorageUnavailableError");
+}
+
 export class LlmTransportError extends Error {
   readonly kind = "llm-transport";
   reason: "network" | "timeout" | "cancelled" | "capability" | "input" | "protocol" | "authentication" | "rate_limit" | "upstream";

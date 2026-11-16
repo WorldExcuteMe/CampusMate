@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { AcceptanceCriterion, CompletionCertificate, Task, ToolDef, ToolInvocation } from "../core/types.ts";
 import type { LlmTransport } from "../core/llm.ts";
 import { CheckpointWriteError, TaskCancelledError, runAgentLoop, type AgentLoopResult } from "../core/agent-loop.ts";
-import { errorMessage, LlmTransportError } from "../core/errors.ts";
+import { errorMessage, LlmTransportError, isStorageUnavailable } from "../core/errors.ts";
 import type { CompanionRegistry } from "../core/companion.ts";
 import { checkFsPath, checkTerminal, checkGroup } from "../core/companion.ts";
 import type { EvidenceStore } from "../core/evidence.ts";
@@ -32,6 +32,7 @@ import type { CheckpointState } from "../core/types.ts";
 import { isProposalRequest } from "../core/document-plan.ts";
 import { runProposal, type ProposalResult } from "../core/proposal.ts";
 import { toolResultFailed } from "../core/tool-result.ts";
+import { isDatabaseConnectionError } from "./sql.ts";
 
 function executionFailure(result: AgentLoopResult): string {
   if (result.error === "invalid_tool_protocol") return "模型工具调用格式无效，尚未执行相应操作";
@@ -158,7 +159,11 @@ export class Worker {
   async run(opts: { signal?: AbortSignal; pollMs?: number } = {}): Promise<void> {
     const pollMs = opts.pollMs ?? 1000;
     while (!opts.signal?.aborted) {
-      const n = await this.tick();
+      let n = 0;
+      try { n = await this.tick(); }
+      // A claim transaction may lose its connection after SQL started. Do not
+      // replay that transaction: keep polling; a committed lease can expire.
+      catch (error) { if (!isStorageUnavailable(error) && !isDatabaseConnectionError(error)) throw error; }
       if (n === 0) await new Promise((r) => setTimeout(r, pollMs));
     }
   }
@@ -168,7 +173,10 @@ export class Worker {
     const control = new AbortController();
     let latestState: CheckpointState | undefined;
     let eventQueue = Promise.resolve();
+    let heartbeatFailure: unknown;
+    let heartbeatRunning = false;
     const checkCurrent = async () => {
+      if (heartbeatFailure) throw heartbeatFailure;
       const current = await store.getTask(task.id);
       if (current?.cancelRequested) throw new TaskCancelledError();
       if (task.turnId) assertTurnLease(current, { userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now() });
@@ -180,8 +188,11 @@ export class Worker {
       else { await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.cancelled", payload: {} }); await store.updateTask(task.id, patch); }
     };
     const heartbeat = setInterval(() => { void (async () => {
+      if (heartbeatRunning) return;
+      heartbeatRunning = true;
       try { if ((await store.getTask(task.id))?.cancelRequested || !await store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now())) control.abort(); }
-      catch { control.abort(); }
+      catch (error) { if (isStorageUnavailable(error)) heartbeatFailure = error; control.abort(); }
+      finally { heartbeatRunning = false; }
     })(); }, this.heartbeatMs);
     try {
       if (task.turnId) assertTurnLease(await store.getTask(task.id), { userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now() });
@@ -436,6 +447,21 @@ export class Worker {
         await finishTurn({ status: "failed", error: summary, result: { summary, certificate, artifactIds: result.delivery?.artifactIds ?? [], ...(result.delivery ? { partial: true, completion: { state: "partial", reason: "document_checks_failed", checks: result.delivery.checks } as const } : {}) } });
       }
     } catch (err) {
+      if (isStorageUnavailable(err) || isStorageUnavailable(heartbeatFailure)) {
+        // Recheck the fence before pausing. If the database remains unavailable,
+        // leave the durable checkpoint and lease for later recovery.
+        try {
+          const message = "数据库连接暂时中断，已保留检查点，请稍后恢复任务";
+          if (store.pauseTaskIfOwned) {
+            if (!await store.pauseTaskIfOwned({ taskId: task.id, userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now(), error: message })) return;
+          } else {
+            assertTurnLease(await store.getTask(task.id), { userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now() });
+            await store.updateTask(task.id, { status: "paused", error: message });
+          }
+          await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.needs_input", payload: { reason: "storage_unavailable", message } });
+        } catch { /* A newer worker or unavailable storage must not be overwritten. */ }
+        return;
+      }
       if (err instanceof LeaseLostError) return;
       if (err instanceof TaskCancelledError) { await cancelled(); return; }
       if ((err instanceof ProviderError || err instanceof ContextLimitError) && task.turnId && this.sessions && store.finishSessionTurn) {

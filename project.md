@@ -1,5 +1,12 @@
 # CampusMate · project.md
 
+## 2026-11-15 云端任务恢复与可靠摘要
+
+- 当前分支 `codex/cloud-task-resilience-20261115`；修复真实 PG 建连超时的有界恢复、回滚原错、坏连接/Client error、Worker 存储暂停与空闲认领恢复。显式审阅的纯只读查询可恢复一次，写入和事务不重放，TLS/owner/密钥保持；本机改用原项目 IPv4 Session Pooler，数据库不走 CONNECT。
+- 简短信息收集从真实搜索结果读取至多两个来源，再以实际 URL 生成摘要；失败透明记录。新增轻量 summary 阶段，保留研究和复杂任务 high 偏好及真实遥测；补通知赛程与实际举办的时效区分。
+- 真实 high 云任务252138ms完成，真实暂停任务在新连接下恢复；最终auto任务174459ms、2次模型/2次工具、26轮询及SSE均通过，保留实际状态未核实。实际重启后读回6条消息/18条事件、模型及密钥解密匹配；夹具已清理、旧失败记录保留。11-16收尾补原子租约暂停与受控时钟回归，最终串行348项为347 pass/0 fail/0 cancelled/1外部数据库skip，类型通过。已重新拉起前端5176、云API/Worker8788并验证认证API为200，不依赖WSL。
+- 规格及完整失败/恢复证据见 `docs/specs/cloud-task-resilience.md`、`docs/CLOUD_TASK_RESILIENCE.md`；本轮不push、不合并main，不改旧会话或数据库结构。
+
 ## 2026-11-15 Gemma 工具执行回归修复
 
 - 用户报告竞赛收集任务只返回JSON/Gemma工具token，随后超时；已查实前两任务无tool.called却succeeded，第三任务单次180008ms超时。主代理单独修复，分支`codex/model-tool-recovery-20261115`，不push/不合并main。

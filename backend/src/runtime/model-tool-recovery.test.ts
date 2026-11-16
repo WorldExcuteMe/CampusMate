@@ -83,7 +83,7 @@ test("R10 resume reconciles observed read failure without clearing unaccounted p
 test("R11 ordinary information gathering switches to a bounded synthesis after actual source retrieval",async()=>{
   let requests=0;const readTools:ToolDef[]=[{type:"function",function:{name:"web_fetch",description:"fixture",parameters:{type:"object"}}}];
   const result=await runAgentLoop({system:"fixture",user:"收集全国大学生物联网设计竞赛的信息",deps:{stage:"simple",tools:readTools,budget:{tokens:20000,wallMs:60000,toolCalls:10,costUsd:1},transport:{chat:async opts=>{
-    requests++;if(requests===2){assert.equal(opts.tools?.length,0);assert.equal(opts.stage,"write");assert(Number(opts.maxOutputTokens)<=1024);assert(JSON.stringify(opts.messages).includes("摘要阶段"));}
+    requests++;if(requests===2){assert.equal(opts.tools?.length,0);assert.equal(opts.stage,"summary");assert(Number(opts.maxOutputTokens)<=1024);assert(JSON.stringify(opts.messages).includes("摘要阶段"));}
     return {content:requests===2?"已核对的摘要，来源 https://example.org/source":"",toolCalls:requests===1?[{id:"fetch",type:"function",function:{name:"web_fetch",arguments:'{"url":"https://example.org/source"}'}}]:[],usage:{input:1,output:1},model:"fixture"};
   }},executeTool:async()=>'{"status":200,"url":"https://example.org/source","text":"真实取得的网页"}'}});
   assert.equal(requests,2);assert.equal(result.stopReason,"completed");assert.equal(result.toolErrors,0);

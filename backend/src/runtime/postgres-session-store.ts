@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AppendSessionMessage, SessionStore, StoredSession, StoredSessionMessage } from "../core/storage-contracts.ts";
 import type { ChatMessage } from "../core/types.ts";
 import type { SqlPool } from "./sql.ts";
+import { readQuery } from "./sql.ts";
 import { assertTaskOwner, json, messageEnvelope, millis, optionalText, requireUuid, sameJson, type DbRow } from "./postgres-shared.ts";
 
 function session(r: DbRow): StoredSession { return { id: String(r.id), userId: String(r.user_id), title: String(r.title), mode: r.mode as StoredSession["mode"], summary: String(r.summary ?? ""), summaryThroughSeq: Number(r.summary_through_seq), createdAt: millis(r.created_at), updatedAt: millis(r.updated_at) }; }
@@ -14,8 +15,8 @@ export class PostgresSessionStore implements SessionStore {
     await this.pool.query("insert into agent_sessions(id,user_id,title,mode) values($1,$2,$3,$4) on conflict(id) do nothing", [id, input.userId, input.title ?? "新会话", input.mode ?? "auto"]);
     const found = await this.get(input.userId, id); if (!found) throw new Error("Session owner forbidden"); return found;
   }
-  async get(userId: string, id: string) { requireUuid(id); const r = await this.pool.query<DbRow>("select * from agent_sessions where id=$1 and user_id=$2", [id, userId]); return r.rows[0] ? session(r.rows[0]) : null; }
-  async list(userId: string) { const r = await this.pool.query<DbRow>("select * from agent_sessions where user_id=$1 order by updated_at desc,id", [userId]); return r.rows.map(session); }
+  async get(userId: string, id: string) { requireUuid(id); const r = await readQuery<DbRow>(this.pool, "select * from agent_sessions where id=$1 and user_id=$2", [id, userId]); return r.rows[0] ? session(r.rows[0]) : null; }
+  async list(userId: string) { const r = await readQuery<DbRow>(this.pool, "select * from agent_sessions where user_id=$1 order by updated_at desc,id", [userId]); return r.rows.map(session); }
   async appendMessage(input: AppendSessionMessage) {
     requireUuid(input.sessionId); if (!input.turnId || !input.messageKey) throw new Error("Message requires stable turn/key");
     return this.pool.transaction(async (client) => {
@@ -34,7 +35,7 @@ export class PostgresSessionStore implements SessionStore {
       return message(r.rows[0]);
     });
   }
-  async listMessages(userId: string, sessionId: string, afterSeq = 0) { requireUuid(sessionId); const r = await this.pool.query<DbRow>("select * from agent_session_messages where user_id=$1 and session_id=$2 and seq>$3 order by seq", [userId, sessionId, afterSeq]); return r.rows.map(message); }
+  async listMessages(userId: string, sessionId: string, afterSeq = 0) { requireUuid(sessionId); const r = await readQuery<DbRow>(this.pool, "select * from agent_session_messages where user_id=$1 and session_id=$2 and seq>$3 order by seq", [userId, sessionId, afterSeq]); return r.rows.map(message); }
   async updateSummary(userId: string, sessionId: string, summary: string, throughSeq: number) {
     requireUuid(sessionId); if (!Number.isInteger(throughSeq) || throughSeq < 0) throw new Error("Invalid summary sequence");
     const r = await this.pool.query<DbRow>("update agent_sessions set summary=$3,summary_through_seq=$4,updated_at=now() where user_id=$1 and id=$2 and summary_through_seq<=$4 and next_seq>$4 returning *", [userId, sessionId, summary, throughSeq]);

@@ -33,6 +33,7 @@ export interface TaskStore {
   saveTurnProgress?(input: TurnProgress, sessions: SessionStore): Promise<Task>;
   finishSessionTurn?(input: TurnProgress & { patch: Partial<Task> }, sessions: SessionStore): Promise<Task>;
   getTask(id: string): Promise<Task | null>;
+  pauseTaskIfOwned?(input: { taskId: string; userId: string; workerId: string; attempt: number; now: number; error: string }): Promise<boolean>;
   updateTask(id: string, patch: Partial<Task>): Promise<Task>;
   listTasksByUser(userId: string): Promise<Task[]>;
   listSessionHistory(query: SessionHistoryQuery): Promise<import("../core/types.ts").ChatMessage[]>;

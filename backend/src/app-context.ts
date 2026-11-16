@@ -55,6 +55,7 @@ export function buildContext(env: Record<string, string | undefined>, options: {
   if (isProd && !conn && !options.pool) throw new ProductionDbRequiredError();
   const pool = options.pool ?? (conn ? new PgPool(conn, {
     proxyUrl: env.DATABASE_PROXY_URL,
+    ...(env.DATABASE_CONNECTION_TIMEOUT_MS ? { connectionTimeoutMillis: Number(env.DATABASE_CONNECTION_TIMEOUT_MS) } : {}),
     ...(env.DATABASE_SSL_CA_FILE ? { ssl: { rejectUnauthorized: true, ca: readFileSync(path.resolve(fileURLToPath(new URL("../", import.meta.url)), env.DATABASE_SSL_CA_FILE), "utf8") } } : {}),
   }) : undefined);
   const store: TaskStore = pool ? new PostgresStore(pool) : new InMemoryStore();

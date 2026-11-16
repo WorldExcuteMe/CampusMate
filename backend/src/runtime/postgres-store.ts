@@ -8,7 +8,7 @@ import type { CreateTaskInput, TaskStore } from "./store.ts";
 import type { SqlClient, SqlPool } from "./sql.ts";
 import { assertTaskTransition } from "./state-machine.ts";
 import { sessionInputHash, SessionConflict, type TurnProgress } from "./store.ts";
-import { transactionPool } from "./sql.ts";
+import { transactionPool, readQuery } from "./sql.ts";
 import { PostgresSessionStore } from "./postgres-session-store.ts";
 import type { SessionStore } from "../core/storage-contracts.ts";
 import { assertTurnLease, turnMessages } from "../core/session-context.ts";
@@ -152,8 +152,15 @@ export class PostgresStore implements TaskStore {
   }
 
   async getTask(id: string): Promise<Task | null> {
-    const r = await this.pool.query(`select * from agent_tasks where id=$1`, [id]);
+    const r = await readQuery(this.pool, `select * from agent_tasks where id=$1`, [id]);
     return r.rows[0] ? rowToTask(r.rows[0]) : null;
+  }
+
+  async pauseTaskIfOwned(input: { taskId: string; userId: string; workerId: string; attempt: number; now: number; error: string }): Promise<boolean> {
+    const result = await this.pool.query(`update agent_tasks set status='paused',error=$7,updated_at=$6::timestamptz
+      where id=$1 and user_id=$2 and lease_owner=$3 and attempt=$4 and status=$5 and lease_expires_at>$6::timestamptz returning id`,
+    [input.taskId, input.userId, input.workerId, input.attempt, "running", iso(input.now), input.error]);
+    return result.rowCount > 0;
   }
 
   async updateTask(id: string, patch: Partial<Task>): Promise<Task> {
@@ -202,7 +209,7 @@ export class PostgresStore implements TaskStore {
     return sessionMessages(result.rows.reverse());
   }
   async listTasksByUser(userId: string): Promise<Task[]> {
-    const r = await this.pool.query(`select * from agent_tasks where user_id=$1 order by created_at desc`, [userId]);
+    const r = await readQuery(this.pool, `select * from agent_tasks where user_id=$1 order by created_at desc`, [userId]);
     return r.rows.map(rowToTask);
   }
 
@@ -270,7 +277,7 @@ export class PostgresStore implements TaskStore {
   }
 
   async listEvents(taskId: string, afterSeq = 0): Promise<AgentEvent[]> {
-    const r = await this.pool.query(`select * from agent_events where task_id=$1 and seq>$2 order by seq`, [taskId, afterSeq]);
+    const r = await readQuery(this.pool, `select * from agent_events where task_id=$1 and seq>$2 order by seq`, [taskId, afterSeq]);
     return r.rows.map(rowToEvent);
   }
 
@@ -286,12 +293,12 @@ export class PostgresStore implements TaskStore {
   }
 
   async getCheckpoint(id: string): Promise<Checkpoint | null> {
-    const r = await this.pool.query(`select * from agent_checkpoints where id=$1`, [id]);
+    const r = await readQuery(this.pool, `select * from agent_checkpoints where id=$1`, [id]);
     return r.rows[0] ? rowToCheckpoint(r.rows[0]) : null;
   }
 
   async latestCheckpoint(taskId: string): Promise<Checkpoint | null> {
-    const r = await this.pool.query(`select * from agent_checkpoints where task_id=$1 order by created_at desc limit 1`, [taskId]);
+    const r = await readQuery(this.pool, `select * from agent_checkpoints where task_id=$1 order by created_at desc limit 1`, [taskId]);
     return r.rows[0] ? rowToCheckpoint(r.rows[0]) : null;
   }
 
@@ -310,7 +317,7 @@ export class PostgresStore implements TaskStore {
   }
 
   async getInvocation(taskId: string, idempotencyKey: string): Promise<ToolInvocation | null> {
-    const r = await this.pool.query(`select * from agent_tool_invocations where task_id=$1 and idempotency_key=$2`, [taskId, idempotencyKey]);
+    const r = await readQuery(this.pool, `select * from agent_tool_invocations where task_id=$1 and idempotency_key=$2`, [taskId, idempotencyKey]);
     return r.rows[0] ? rowToInvocation(r.rows[0]) : null;
   }
 }
