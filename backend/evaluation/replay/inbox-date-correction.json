@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "replay-inbox-date-correction",
+  "name": "真实CONV-006跨日期更正失败的确定性回放",
+  "description": "来自20261116-202706_live_quality-before-p0-p1-202_46fa20：原记录截止22日，再改21日误新建第二条。回放旧save工具调用，验证兼容更新而非静默插入；不代表真实模型成功率。",
+  "cases": [{
+    "id": "REPLAY-INBOX-DATE-001", "category": "inbox", "difficulty": "hard", "source": "failure_replay", "tiers": ["api-memory"],
+    "prompt": "保存CM跨日期回放通知，11月22日18:00截止，图书馆。",
+    "turns": [
+      {
+        "prompt": "保存CM跨日期回放通知，11月22日18:00截止，图书馆。",
+        "script": [{"toolCalls": [{"name": "save_to_inbox", "arguments": {"title": "CM跨日期回放通知", "rawText": "CM跨日期回放通知，11月22日18:00截止，图书馆", "deadline": "2026-11-22", "deadlineTime": "18:00", "location": "图书馆"}}]}, {"content": "已保存一条。"}],
+        "expectedStatus": "succeeded", "checks": [{"kind": "inbox_saved", "min": 1, "max": 1, "deadlineStartsWith": "2026-11-22T18:00"}, {"kind": "no_tool_errors"}]
+      },
+      {
+        "prompt": "更正：刚才这条截止改为11月21日12:00，只更新已有记录，不要新增。",
+        "script": [{"toolCalls": [{"name": "save_to_inbox", "arguments": {"title": "CM跨日期回放通知", "rawText": "CM跨日期回放通知，11月22日18:00截止，图书馆；更正11月21日12:00", "deadline": "2026-11-21", "deadlineTime": "12:00", "location": "图书馆"}}]}, {"content": "已更新原记录，没有新增。"}],
+        "expectedStatus": "succeeded", "checks": [{"kind": "inbox_saved", "min": 1, "max": 1, "deadlineStartsWith": "2026-11-21T12:00"}, {"kind": "no_tool_errors"}]
+      },
+      {
+        "prompt": "重复刚才的更正，仍只更新已有记录，不要新增。",
+        "script": [{"toolCalls": [{"name": "save_to_inbox", "arguments": {"title": "CM跨日期回放通知", "rawText": "CM跨日期回放通知，11月21日12:00截止，图书馆", "deadline": "2026-11-21", "deadlineTime": "12:00", "location": "图书馆"}}]}, {"content": "原记录仍一条，未新增。"}],
+        "expectedStatus": "succeeded", "checks": [{"kind": "inbox_saved", "min": 1, "max": 1, "deadlineStartsWith": "2026-11-21T12:00"}, {"kind": "no_tool_errors"}]
+      }
+    ],
+    "checks": [{"kind": "inbox_saved", "min": 1, "max": 1}, {"kind": "status", "in": ["succeeded"]}],
+    "tags": ["failure-replay", "cross-date", "legacy-call", "idempotency"]
+  }]
+}

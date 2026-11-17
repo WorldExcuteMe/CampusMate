@@ -113,5 +113,19 @@ async function readCapped(res: Response, maxBytes: number): Promise<{ text: stri
 
 // HTML → 纯文本（去 script/style/标签）。
 export function htmlToText(html: string): string {
-  return html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/&nbsp;|&#160;|&#x0*a0;/gi, " ").replace(/\s+/g, " ").trim();
+}
+
+export function webPageText(html: string, status = 200): string {
+  if (status < 200 || status >= 300) return "";
+  const body = /<body\b[^>]*>([\s\S]*?)(?:<\/body>|$)/i.exec(html)?.[1];
+  if (body !== undefined) {
+    const text = htmlToText(body);
+    if (!text) return "";
+    const title = htmlToText(/<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ?? "");
+    return title && !text.startsWith(title) ? `${title}\n${text}` : text;
+  }
+  // An incomplete HTML shell/head is not an article. Plain text and fragments
+  // remain supported, including short but substantive official notices.
+  return /<(?:html|head)\b/i.test(html) ? "" : htmlToText(html);
 }

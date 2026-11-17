@@ -23,6 +23,7 @@ export interface IdemCtx { userId: string; }
 export function idempotencyKey(tool: string, args: Record<string, unknown>, ctx: IdemCtx): string {
   switch (tool) {
     case "save_to_inbox":
+      return `inbox:${ctx.userId}:${sha256(canonicalArgs({ title: args.title, summary: args.summary, category: args.category, deadline: args.deadline ?? null, source: args.source ?? '' }))}`;
     case "extract_notice": {
       const title = normTitle(String(args.title ?? args.rawText ?? ""));
       const deadline = String(args.deadline ?? "");
@@ -34,10 +35,10 @@ export function idempotencyKey(tool: string, args: Record<string, unknown>, ctx:
       return `opp:${h}`;
     }
     case "create_daily_task": {
-      return `daily:${ctx.userId}:${sha256(`${normTitle(String(args.title ?? ""))}|${args.dueAt ?? args.timeText ?? ""}`)}`;
+      return `daily:${ctx.userId}:${sha256(canonicalArgs({ title: args.title, dueAt: args.dueAt ?? null, timeText: args.timeText ?? '' }))}`;
     }
     case "set_growth_goal": {
-      return `goal:${ctx.userId}:${normTitle(String(args.goal ?? ""))}`;
+      return `goal:${ctx.userId}:${sha256(canonicalArgs({ goal: args.goal, dueAt: args.dueAt ?? null }))}`;
     }
     default:
       return `${tool}:${sha256(canonicalArgs(args))}`;

@@ -1,10 +1,11 @@
 // Durable Worker：认领(lease)→执行 agent-loop→事件/检查点→心跳续 lease→Evaluator→终态。
 // 成功记录可去重；结果未知的非幂等操作需核对，不能据此声称分布式exactly-once。
 import { randomUUID } from "node:crypto";
+import { BUSINESS_TOOL_NAMES } from '../core/business-tools.ts';
 import type { AcceptanceCriterion, CompletionCertificate, Task, ToolDef, ToolInvocation } from "../core/types.ts";
 import type { LlmTransport } from "../core/llm.ts";
 import { CheckpointWriteError, TaskCancelledError, runAgentLoop, type AgentLoopResult } from "../core/agent-loop.ts";
-import { errorMessage, LlmTransportError } from "../core/errors.ts";
+import { errorMessage, LlmTransportError, isStorageUnavailable, storageFailureDetails } from "../core/errors.ts";
 import type { CompanionRegistry } from "../core/companion.ts";
 import { checkFsPath, checkTerminal, checkGroup } from "../core/companion.ts";
 import type { EvidenceStore } from "../core/evidence.ts";
@@ -30,8 +31,26 @@ import { ProviderError } from "../core/providers.ts";
 import { stageForIntent } from "../core/generation-policy.ts";
 import type { CheckpointState } from "../core/types.ts";
 import { isProposalRequest } from "../core/document-plan.ts";
+import { restoredVisionClaims } from "../core/vision-verification.ts";
 import { runProposal, type ProposalResult } from "../core/proposal.ts";
 import { toolResultFailed } from "../core/tool-result.ts";
+import { isDatabaseConnectionError } from "./sql.ts";
+
+function executionFailure(result: AgentLoopResult): string {
+  if (result.error === "invalid_tool_protocol") return "模型工具调用格式无效，尚未执行相应操作";
+  if (result.error === "llm_timeout") return "模型响应超时，未得到完整答复";
+  if (result.error === "llm_capability") return "当前端点的输入能力与请求不匹配";
+  if (result.error === "llm_input") return "模型输入超出配置限制";
+  if (result.error === "llm_authentication") return "模型接口认证失败";
+  if (result.error === "llm_rate_limit") return "模型接口限流";
+  if (result.error === "llm_protocol") return "模型响应协议无效";
+  if (result.error === "llm_cancelled" || result.stopReason === "cancelled") return "任务已取消";
+  if (result.mock) return "模型连接未成功";
+  if (result.toolErrors) return `工具执行失败：仍有${result.toolErrors}次工具失败未恢复，成功的部分已保留`;
+  if (result.budgetExceeded) return "任务预算已耗尽";
+  if (result.truncated) return "模型输出未完成";
+  return "执行尚未满足验收条件";
+}
 
 export interface WorkerDeps {
   store: TaskStore;
@@ -123,8 +142,8 @@ export class Worker {
       return this.independentEvaluator.evaluate(task.id, criteria, input);
     }
     if (criteria.some((c) => c.required)) return { taskId: task.id, evaluatedBy: "evaluator", passed: false, criteria: criteria.map((c) => ({ id: c.id, passed: false, evidenceIds: [], note: "未配置独立验收存储，无法证明此条件" })), evaluatedAt: this.now() };
-    const passed = !result.mock && !result.error && !result.truncated && !result.budgetExceeded && !result.toolErrors;
-    return { taskId: task.id, evaluatedBy: "evaluator", passed, criteria: [{ id: "model_reachable", passed, evidenceIds: [], note: passed ? "模型真实答复" : "模型不可达，降级" }], evaluatedAt: this.now() };
+    const passed = !result.mock && result.model !== 'unreachable' && result.model !== 'unknown';
+    return { taskId: task.id, evaluatedBy: "evaluator", passed, criteria: [{ id: "model_reachable", passed, evidenceIds: [], note: passed ? "已收到模型真实答复；工具执行状态单独验收" : result.mock ? "模型请求失败，未取得正常答复" : "本轮尚未取得模型答复" }], evaluatedAt: this.now() };
   }
 
   // 认领并执行至多 concurrency 个任务，返回处理数。
@@ -142,18 +161,27 @@ export class Worker {
   async run(opts: { signal?: AbortSignal; pollMs?: number } = {}): Promise<void> {
     const pollMs = opts.pollMs ?? 1000;
     while (!opts.signal?.aborted) {
-      const n = await this.tick();
+      let n = 0;
+      try { n = await this.tick(); }
+      // A claim transaction may lose its connection after SQL started. Do not
+      // replay that transaction: keep polling; a committed lease can expire.
+      catch (error) { if (!isStorageUnavailable(error) && !isDatabaseConnectionError(error)) throw error; }
       if (n === 0) await new Promise((r) => setTimeout(r, pollMs));
     }
   }
 
   async executeTask(task: Task): Promise<void> {
     const store = this.store;
+    const preparationStartedAt = this.now();
     const control = new AbortController();
     let latestState: CheckpointState | undefined;
+    let checkpointPersisted = false;
     let eventQueue = Promise.resolve();
+    let heartbeatFailure: unknown;
+    let heartbeatRunning = false;
     const checkCurrent = async () => {
-      const current = await store.getTask(task.id);
+      if (heartbeatFailure) throw heartbeatFailure;
+      const current = await store.getTask(task.id, { includeImages: false });
       if (current?.cancelRequested) throw new TaskCancelledError();
       if (task.turnId) assertTurnLease(current, { userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now() });
     };
@@ -164,16 +192,23 @@ export class Worker {
       else { await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.cancelled", payload: {} }); await store.updateTask(task.id, patch); }
     };
     const heartbeat = setInterval(() => { void (async () => {
-      try { if ((await store.getTask(task.id))?.cancelRequested || !await store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now())) control.abort(); }
-      catch { control.abort(); }
+      if (heartbeatRunning) return;
+      heartbeatRunning = true;
+      try { if ((await store.getTask(task.id, { includeImages: false }))?.cancelRequested || !await store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now(), task.attempt)) control.abort(); }
+      catch (error) { if (isStorageUnavailable(error)) heartbeatFailure = error; control.abort(); }
+      finally { heartbeatRunning = false; }
     })(); }, this.heartbeatMs);
     try {
-      if (task.turnId) assertTurnLease(await store.getTask(task.id), { userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now() });
+      if (task.turnId) assertTurnLease(await store.getTask(task.id, { includeImages: false }), { userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now() });
       if (task.cancelRequested) throw new TaskCancelledError();
-
+      await store.appendEvent({ taskId: task.id, userId: task.userId, type: "step.started", payload: { stepId: "prepare", title: "读取图片与历史材料" } });
       // 恢复：从最新 checkpoint 还原 messages/repeat/usage。
       const cp = await store.latestCheckpoint(task.id);
+      // A saved extraction is sufficient for research resume; raw image remains
+      // available for a later explicit image question without bloating every CP.
+      if (task.images === undefined) task = { ...task, images: restoredVisionClaims(cp?.state.transcript ?? []) ? [] : await store.loadTaskImages(task.id, task.userId) };
       latestState = cp?.state;
+      checkpointPersisted = Boolean(cp);
       const resumeMessages = cp?.state.messages;
       const repeat = cp ? new Map(Object.entries(cp.state.repeat)) : undefined;
       let history: ChatMessage[] = [];
@@ -182,10 +217,15 @@ export class Worker {
       let priorOutcomes = "";
       if (task.sessionId && !this.sessions && !cp) history = await store.listSessionHistory({userId:task.userId,sessionId:task.sessionId,beforeTaskId:task.id});
       if (task.sessionId && this.sessions) {
+        const sessionId = task.sessionId;
         let session = await this.sessions.get(task.userId, task.sessionId);
         if (!session) throw new Error("Session owner forbidden");
-        const rows = await this.sessions.listMessages(task.userId, task.sessionId);
-        const tasks = await store.listTasksByUser(task.userId);
+        const rows = await this.sessions.listMessages(task.userId, task.sessionId, 0, { includeImages: false });
+        if (!task.images?.length && /图片|图中|图里|照片|附件|上图|这张图/.test(task.intent)) {
+          const previousImage = [...rows].reverse().find(m => m.taskId && m.taskId !== task.id && m.role === "user" && Array.isArray(m.content) && m.content.some(p => p.type === "text" && p.text === "[历史图片：原附件随任务保存]"));
+          if (previousImage?.taskId && !restoredVisionClaims(rows.filter(m => m.taskId === previousImage.taskId))) task = { ...task, images: await store.loadTaskImages(previousImage.taskId, task.userId) };
+        }
+        const tasks = await store.listSessionTasks(task.userId, sessionId);
         priorOutcomes = tasks.filter((t) => t.sessionId === task.sessionId && t.id !== task.id && (task.turnSeq === undefined ? t.createdAt <= task.createdAt : (t.turnSeq ?? 0) < task.turnSeq)).slice(-12).map((t) => `${t.title}：${t.status}（已结束的目标不要自动重做）`).join("\n");
         history = sessionHistory(rows, tasks, task);
         identity = identityContext(rows, tasks, task);
@@ -197,7 +237,7 @@ export class Worker {
           const oldRows = rows.filter((m) => m.seq <= through);
           if (through > session.summaryThroughSeq) {
             const summary = `已提交历史片段，原文仍可按seq查阅；摘要不能取代证据：\n${oldRows.map((m) => `[seq=${m.seq},${m.role}] ${contentText(m.content).slice(0, 160)}`).join("\n").slice(0, 6000)}`;
-            session = await this.sessions.updateSummary(task.userId, task.sessionId, summary, through);
+            session = await this.sessions.updateSummary(task.userId, sessionId, summary, through);
             if (!session) throw new Error("Session summary owner forbidden");
           }
         }
@@ -206,7 +246,7 @@ export class Worker {
           history = sessionHistory(rows.filter((m) => m.seq > session.summaryThroughSeq), tasks, task);
         }
         if (!rows.some((m) => m.taskId === task.id && m.role === "user")) {
-          await this.sessions.appendMessage({ userId: task.userId, sessionId: task.sessionId, turnId: task.turnId ?? task.id, messageKey: `${task.turnId ?? task.id}:user`, taskId: task.id, role: "user", content: task.intent });
+          await this.sessions.appendMessage({ userId: task.userId, sessionId, turnId: task.turnId ?? task.id, messageKey: `${task.turnId ?? task.id}:user`, taskId: task.id, role: "user", content: task.intent });
         }
       }
       const profile = await this.personalContext?.getProfile(task.userId) ?? (await this.memoryStore?.getUserMemory(task.userId))?.profile;
@@ -299,6 +339,8 @@ export class Worker {
         history = composed.messages.filter((m) => m.role !== "system").slice(0, -1);
       }
 
+      const taskTransport = this.resolveTransport ? await this.resolveTransport(task) : this.transport;
+      await store.appendEvent({ taskId: task.id, userId: task.userId, type: "step.finished", payload: { stepId: "prepare", passed: true } });
       const loopOptions: Parameters<typeof runAgentLoop>[0] = {
         system,
         systemMessages,
@@ -308,10 +350,10 @@ export class Worker {
         resumeMessages,
         resumeToolErrors: cp?.state.toolErrors,
         resumeTranscript: cp?.state.transcript,
-        initialUsage: { tokens: Math.max(task.usage.tokens,cp?.state.usage.tokens??0),toolCalls:Math.max(task.usage.toolCalls,cp?.state.usage.toolCalls??0),wallMs:Math.max(task.usage.wallMs,cp?.state.usage.wallMs??0),costUsd:Math.max(task.usage.costUsd,cp?.state.usage.costUsd??0) },
+        initialUsage: { tokens: Math.max(task.usage.tokens,cp?.state.usage.tokens??0),toolCalls:Math.max(task.usage.toolCalls,cp?.state.usage.toolCalls??0),wallMs:Math.max(task.usage.wallMs,cp?.state.usage.wallMs??0)+Math.max(0,this.now()-preparationStartedAt),costUsd:Math.max(task.usage.costUsd,cp?.state.usage.costUsd??0) },
         repeat,
         deps: {
-          transport: this.resolveTransport ? await this.resolveTransport(task) : this.transport,
+          transport: taskTransport,
           tools: taskTools,
           contextLimit: task.modelConfig?.contextLimit,
           reasoning: task.modelConfig?.reasoningPreference,
@@ -346,13 +388,15 @@ export class Worker {
             onCheckpoint: async (state) => {
               latestState = state;
               await eventQueue;
-              await store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now());
+              await store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now(), task.attempt);
               if (task.turnId && this.sessions && store.saveTurnProgress) {
                 await store.saveTurnProgress({ taskId: task.id, userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now(), state }, this.sessions);
+                checkpointPersisted = true;
                 return;
               }
               await saveTranscript(state.transcript ?? []);
               await store.writeCheckpoint({ taskId: task.id, userId: task.userId, eventSeq: 0, state });
+              checkpointPersisted = true;
             },
           },
         },
@@ -370,8 +414,9 @@ export class Worker {
         }) : await runAgentLoop(loopOptions);
       await eventQueue;
       await checkCurrent();
+      const recoveredCalls = new Set((await store.listEvents(task.id)).filter(e => e.type === 'tool.recovered').map(e => String(e.payload.callInstanceId)));
       if (!result.delivery && this.artifacts) {
-        const events = (await store.listEvents(task.id)).filter((e) => e.type === "tool.result" && String(e.payload.name).startsWith("document_"));
+        const events = (await store.listEvents(task.id)).filter((e) => e.type === "tool.result" && String(e.payload.name).startsWith("document_") && !recoveredCalls.has(String(e.payload.callInstanceId)));
         if (events.length) {
           const latest = new Map(events.map((e) => [String(e.payload.invocationId ?? e.payload.callInstanceId), e]));
           const documents = (await this.artifacts.listByTask(task.userId, task.id)).filter((a) => a.kind === "document");
@@ -380,11 +425,23 @@ export class Worker {
           result.delivery = { artifactIds: [...byDocument.values()].map((a) => a.id).slice(-8), checks, passed: checks.every((c) => c.passed) };
         }
       }
+      const businessEvents = (await store.listEvents(task.id)).filter(e => e.type === 'tool.result' && BUSINESS_TOOL_NAMES.some(name => name === e.payload.name) && !recoveredCalls.has(String(e.payload.callInstanceId)));
+      if (businessEvents.length) {
+        const latest = new Map(businessEvents.map(e => [String(e.payload.invocationId ?? e.payload.callInstanceId), e]));
+        const passed = [...latest.values()].every(e => e.payload.ok === true);
+        const check = { id: 'business_tools', passed, detail: '通知、待办、目标与合并请求必须收到实际保存成功结果，模型口头承诺不算完成' };
+        result.delivery = { artifactIds: result.delivery?.artifactIds ?? [], checks: [...(result.delivery?.checks ?? []), check], passed: (result.delivery?.passed ?? true) && passed };
+        if (!passed) {
+          result.reply = '任务未通过验收：本轮业务操作未全部确认成功。已提交的部分结果会保留，请查看执行记录及通知/待办列表，核实后重试；不能把模型口头答复当作保存成功。';
+          if (/只.*预览|(?:不要|不|勿)(?:写入|保存)/.test(task.intent)) result.reply = '本轮要求仅预览，写入请求未获成功确认。' + result.reply;
+          for (const messages of [result.messages, result.transcript]) { const last = messages.at(-1); if (last?.role === 'assistant') last.content = result.reply; }
+        }
+      }
       latestState = { messages: result.messages, transcript: result.transcript, documentRun: latestState?.documentRun, stepProgress: latestState?.stepProgress ?? {}, repeat: latestState?.repeat ?? {}, usage: result.usage, pendingApprovals: [] };
       if (!task.turnId) await saveTranscript(result.transcript);
 
       // 协作式取消：执行后检查标志。
-      const fresh = await store.getTask(task.id);
+      const fresh = await store.getTask(task.id, { includeImages: false });
       if (fresh?.cancelRequested) { await cancelled(); return; }
 
       await store.updateTask(task.id, { usage: result.usage, modelRuntime: { actualModel: result.model, providerId: task.modelConfig?.providerId, lastRequest: result.telemetry } });
@@ -406,7 +463,7 @@ export class Worker {
 
       let certificate = await this.evaluator(task, result);
       const executionPassed = !result.error && !result.mock && !result.truncated && !result.budgetExceeded && !result.toolErrors && (!result.stopReason || result.stopReason === "completed");
-      certificate = { ...certificate, passed: certificate.passed && executionPassed, criteria: [...certificate.criteria, { id: "runtime_execution", passed: executionPassed, evidenceIds: [], note: executionPassed ? "正常结束，未观测到工具失败" : `执行未通过：${result.stopReason ?? "error"}，toolErrors=${result.toolErrors ?? 0}` }] };
+      certificate = { ...certificate, passed: certificate.passed && executionPassed, criteria: [...certificate.criteria, { id: "runtime_execution", passed: executionPassed, evidenceIds: [], note: executionPassed ? recoveredCalls.size ? `正常结束，${recoveredCalls.size}次工具失败已由同一操作的成功重试恢复` : "正常结束，未观测到工具失败" : executionFailure(result) }] };
       if (result.delivery) certificate = { ...certificate, passed: certificate.passed && result.delivery.passed, criteria: [...certificate.criteria, ...result.delivery.checks.map((c) => ({ id: c.id, passed: c.passed, evidenceIds: [], note: c.detail }))] };
       await store.appendEvent({ taskId: task.id, userId: task.userId, type: certificate.passed ? "eval.passed" : "eval.failed", payload: { certificate } });
 
@@ -416,10 +473,25 @@ export class Worker {
           result: { summary: result.reply, certificate, artifactIds: result.delivery?.artifactIds ?? [], partial: false, ...(result.delivery ? { completion: { state: "complete", reason: "checks_passed", checks: result.delivery.checks } as const } : {}) },
         });
       } else {
-        const summary = result.delivery ? result.reply : `任务未通过验收（${certificate.criteria.filter(c => !c.passed).map(c => c.note).join("；")}）。\n${result.reply}`;
-        await finishTurn({ status: "failed", error: summary, result: { summary, certificate, artifactIds: result.delivery?.artifactIds ?? [], ...(result.delivery ? { partial: true, completion: { state: "partial", reason: "document_checks_failed", checks: result.delivery.checks } as const } : {}) } });
+        const summary = result.delivery ? result.reply : `任务未通过验收（${[...new Set(certificate.criteria.filter(c => !c.passed).map(c => c.note))].join("；")}）。\n${result.reply}`;
+        await finishTurn({ status: "failed", error: summary, result: { summary, certificate, artifactIds: result.delivery?.artifactIds ?? [], ...(result.delivery ? { partial: true, completion: { state: "partial", reason: result.delivery.checks.some(c => c.id === 'business_tools' && !c.passed) ? 'business_tools_failed' : "document_checks_failed", checks: result.delivery.checks } as const } : result.error === 'tool_protocol_error' ? { partial: true, completion: { state: 'partial', reason: 'tool_protocol_error' } as const } : {}) } });
       }
     } catch (err) {
+      if (isStorageUnavailable(err) || isStorageUnavailable(heartbeatFailure)) {
+        // Recheck the fence before pausing. If the database remains unavailable,
+        // leave the durable checkpoint and lease for later recovery.
+        try {
+          const message = checkpointPersisted ? "数据库连接暂时中断，已保留检查点，请稍后恢复任务" : "数据库连接暂时中断，尚无已保存的检查点；原请求仍保留，请稍后恢复任务";
+          if (store.pauseTaskIfOwned) {
+            if (!await store.pauseTaskIfOwned({ taskId: task.id, userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now(), error: message })) return;
+          } else {
+            assertTurnLease(await store.getTask(task.id, { includeImages: false }), { userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now() });
+            await store.updateTask(task.id, { status: "paused", error: message });
+          }
+          await store.appendEvent({ taskId: task.id, userId: task.userId, type: "task.needs_input", payload: { reason: "storage_unavailable", message, checkpointPersisted, storage: storageFailureDetails(heartbeatFailure) ?? storageFailureDetails(err) } });
+        } catch { /* A newer worker or unavailable storage must not be overwritten. */ }
+        return;
+      }
       if (err instanceof LeaseLostError) return;
       if (err instanceof TaskCancelledError) { await cancelled(); return; }
       if ((err instanceof ProviderError || err instanceof ContextLimitError) && task.turnId && this.sessions && store.finishSessionTurn) {

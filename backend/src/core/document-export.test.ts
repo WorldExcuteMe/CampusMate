@@ -8,6 +8,29 @@ import { CLOUD_TOOLS, executeCloudTool } from "./cloud-tools.ts";
 import { Worker } from "../runtime/worker.ts";
 import type { ChatMessage, ChatResult } from "./types.ts";
 import type { DocumentAst } from "../../../shared/document.ts";
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+test("探测与启动使用同一个固定Chromium；浏览器缺失时明确提示安装而非虚报成功", () => {
+  // Isolate the missing-browser scenario without removing/renaming anyone's cache.
+  const code = `
+    import assert from 'node:assert/strict';
+    import { availableDocumentFormats, DOCUMENT_CHROMIUM_OPTIONS, renderDocument } from './src/core/document-renderer.ts';
+    assert.equal(DOCUMENT_CHROMIUM_OPTIONS.channel, 'chromium');
+    assert.equal(DOCUMENT_CHROMIUM_OPTIONS.chromiumSandbox, true);
+    assert.deepEqual(availableDocumentFormats(), ['md', 'docx']);
+    await assert.rejects(() => renderDocument({schemaVersion:1, kind:'document', title:'缺环境测试', sources:[], blocks:[{type:'paragraph',text:'不能声称已经导出。'}]}, 'pdf'), /npm run documents:setup/);
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", code], {
+    cwd: fileURLToPath(new URL("../../", import.meta.url)),
+    env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: path.join(os.tmpdir(), `campusmate-no-browser-${randomUUID()}`) },
+    encoding: "utf8", timeout: 30000, windowsHide: true,
+  });
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+});
 
 test("同一中文长文含跨页表格/图片/图表/引用，实际DOCX/PDF复读及同版缓存", async () => {
   const ast = richDocument(), ctx = contextFor(), task = await ctx.store.createTask({ userId: OWNER, title: "文档测试" });

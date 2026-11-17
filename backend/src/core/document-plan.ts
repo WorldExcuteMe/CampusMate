@@ -2,7 +2,11 @@ import type { DocumentRequirements } from "../../../shared/document.ts";
 import type { Plan, PlanStep } from "./planner.ts";
 import { freezeAcceptance } from "./planner.ts";
 const DEFAULT_SECTIONS = ["背景与问题", "项目目标", "方案与实施步骤", "团队分工与进度", "资源与预算", "风险与应对", "预期成果与评估"];
-export function isProposalRequest(intent: string): boolean { return /(?:写|撰写|编写|生成|起草|制作|草拟|完成|做).{0,70}(?:策划书|计划书|项目方案)|(?:write|draft|create|generate).{0,70}(?:proposal|project plan)/i.test(intent); }
+export function isProposalRequest(intent: string): boolean {
+  const preview = /只.{0,8}(?:预览|提纲|大纲)|(?:等我|待我|经我)确认|(?:下一轮|下一条).{0,10}(?:写|生成)|(?:不要|不|勿)(?:写入|保存)(?:到任何|任何|[，。；！？\s]|$)|暂不(?:写|生成|保存)|preview only|outline only/i.test(intent);
+  if (preview) return false;
+  return /(?:写|撰写|编写|生成|起草|制作|草拟|完成|做).{0,70}(?:策划书|计划书|项目方案)|(?:write|draft|create|generate).{0,70}(?:proposal|project plan)/i.test(intent);
+}
 export function proposalRequirements(intent: string): DocumentRequirements {
   const custom = intent.match(/(?:章节|章节要求|章节结构)\s*[:：]\s*([^\n。]+)/)?.[1].split(/[、，,；;]/).map((s) => s.trim()).filter(Boolean).slice(0, 15);
   const sections = custom?.length ? custom : DEFAULT_SECTIONS;

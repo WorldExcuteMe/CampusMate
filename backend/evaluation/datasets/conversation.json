@@ -1,0 +1,227 @@
+{
+  "schemaVersion": 1,
+  "id": "conversation",
+  "name": "对话级评测（多轮同一 session，人类聊天体感）",
+  "description": "验证与人类在聊天框连续输入等价的会话语义：同一 session、逐轮 task/turn、Worker 注入历史与身份。api-memory 用例用脚本回放（验证运行时/会话契约）；live 用例用真实模型（验证真实对话能力，含上下文记忆、纠正、只预览不写、多轮保存）。",
+  "source": "fixed",
+  "cases": [
+    {
+      "id": "CONV-001",
+      "category": "conversation",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["api-memory"],
+      "prompt": "整理这条通知，先只给预览，不要写入：CM对话评测讲座 11月23日14:00 图书馆101。",
+      "turns": [
+        {
+          "prompt": "整理这条通知，先只给预览，不要写入：CM对话评测讲座 11月23日14:00 图书馆101。",
+          "script": [{ "content": "预览：CM对话评测讲座，11月23日14:00，图书馆101。尚未写入。" }],
+          "expectedStatus": "succeeded",
+          "checks": [
+            { "kind": "no_write" },
+            { "kind": "inbox_saved", "max": 0 },
+            { "kind": "reply_includes", "any": ["预览", "未写入"] }
+          ]
+        },
+        {
+          "prompt": "我确认预览，请保存到信息中心，只保存一条。",
+          "script": [
+            { "toolCalls": [{ "name": "save_to_inbox", "arguments": { "title": "CM对话评测讲座", "rawText": "CM对话评测讲座 11月23日14:00 图书馆101", "deadline": "2026-11-23", "deadlineTime": "14:00", "location": "图书馆101" } }] },
+            { "content": "已保存到信息中心，只有一条记录。" }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            { "kind": "tool_called", "name": "save_to_inbox", "min": 1 },
+            { "kind": "inbox_saved", "min": 1, "max": 1, "titleIncludes": "CM对话评测讲座" },
+            { "kind": "reply_includes", "any": ["已保存", "保存"] },
+            { "kind": "no_tool_errors" }
+          ]
+        },
+        {
+          "prompt": "更正：报名截止时间改为当天18:00（日期仍是11月23日），其他不变。只更新已有记录，不要新增重复。",
+          "script": [
+            { "toolCalls": [{ "name": "save_to_inbox", "arguments": { "title": "CM对话评测讲座", "rawText": "CM对话评测讲座 11月23日14:00 图书馆101", "deadline": "2026-11-23", "deadlineTime": "18:00", "location": "图书馆101" } }] },
+            { "content": "已更新截止时间为11月23日18:00，未新增重复记录。" }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            { "kind": "inbox_saved", "min": 1, "max": 1, "titleIncludes": "CM对话评测讲座" },
+            { "kind": "reply_includes", "any": ["18:00", "未新增"] },
+            { "kind": "no_tool_errors" }
+          ]
+        }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "inbox_saved", "min": 1, "max": 1, "titleIncludes": "CM对话评测讲座" }
+      ],
+      "acceptanceNotes": ["同一会话内预览→确认保存→更正，信息中心始终只有一条", "更正日期不变时复用已有记录，不产生重复"],
+      "tags": ["conversation", "multi-turn", "inbox", "correction", "api-memory"]
+    },
+    {
+      "id": "CONV-002",
+      "category": "conversation",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["api-memory"],
+      "prompt": "记住：我是计算机专业大二学生，每周最多 6 小时。先只确认，不要推荐。",
+      "turns": [
+        {
+          "prompt": "记住：我是计算机专业大二学生，每周最多 6 小时。先只确认，不要推荐。",
+          "script": [{ "content": "已记住：计算机专业、大二、每周最多 6 小时。" }],
+          "expectedStatus": "succeeded",
+          "checks": [
+            { "kind": "reply_includes", "all": ["计算机", "大二", "6"] },
+            { "kind": "no_write" }
+          ]
+        },
+        {
+          "prompt": "更正：我是大一，每周只有 3 小时。请按最新信息给两个适合的竞赛方向（只给方向，不要联网、不要写入）。",
+          "script": [{ "content": "已按最新信息（大一、每周 3 小时）调整：方向一，低门槛编程练习赛；方向二，校内创新活动。未联网、未写入。" }],
+          "expectedStatus": "succeeded",
+          "checks": [
+            { "kind": "reply_includes", "all": ["大一", "3"] },
+            { "kind": "tool_not_called", "name": "web_search" },
+            { "kind": "no_write" }
+          ]
+        }
+      ],
+      "checks": [{ "kind": "status", "in": ["succeeded"] }],
+      "acceptanceNotes": ["第二轮使用用户最新纠正（大一/3 小时），不沿用上一轮旧约束", "只给方向，不联网不写入"],
+      "tags": ["conversation", "multi-turn", "identity", "correction", "api-memory"]
+    },
+    {
+      "id": "CONV-003",
+      "category": "conversation",
+      "difficulty": "easy",
+      "source": "fixed",
+      "tiers": ["api-memory"],
+      "prompt": "只预览，不要写入：CM对话安全通知 11月25日19:00 线上。",
+      "turns": [
+        {
+          "prompt": "只预览，不要写入：CM对话安全通知 11月25日19:00 线上。",
+          "script": [{ "content": "预览：CM对话安全通知，11月25日19:00，线上。未写入。" }],
+          "expectedStatus": "succeeded",
+          "checks": [{ "kind": "no_write" }, { "kind": "reply_includes", "any": ["预览"] }]
+        },
+        {
+          "prompt": "根据刚才的预览，如果我只想保留时间地点，你会保存哪些字段？只回答字段，不要写入。",
+          "script": [{ "content": "只保留：标题、时间（11月25日19:00）、地点（线上）。不写入。" }],
+          "expectedStatus": "succeeded",
+          "checks": [
+            { "kind": "no_write" },
+            { "kind": "reply_includes", "all": ["19:00", "线上"] }
+          ]
+        }
+      ],
+      "checks": [{ "kind": "status", "in": ["succeeded"] }, { "kind": "inbox_saved", "max": 0 }],
+      "acceptanceNotes": ["两轮都只读；第二轮能引用上一轮预览内容"],
+      "tags": ["conversation", "multi-turn", "no-write", "api-memory"]
+    },
+    {
+      "id": "CONV-004",
+      "category": "conversation",
+      "difficulty": "hard",
+      "source": "fixed",
+      "tiers": ["live"],
+      "prompt": "记住：我是计算机专业大二学生，每周最多 6 小时，Python 入门，没有硬件。只回复确认，不要推荐。",
+      "turns": [
+        {
+          "prompt": "记住：我是计算机专业大二学生，每周最多 6 小时，Python 入门，没有硬件。只回复确认，不要推荐。",
+          "expectedStatus": ["succeeded", "failed"],
+          "checks": [
+            { "kind": "reply_includes", "any": ["记住", "已记录", "确认", "计算机"] },
+            { "kind": "no_write" },
+            { "kind": "max_duration_ms", "n": 240000 }
+          ]
+        },
+        {
+          "prompt": "根据我上一条提供的情况，推荐两个适合的校园竞赛方向。只给方向，不要联网，不要写入。",
+          "expectedStatus": ["succeeded", "failed"],
+          "checks": [
+            { "kind": "tool_not_called", "name": "web_search" },
+            { "kind": "no_write" },
+            { "kind": "reply_includes", "any": ["计算机", "Python", "编程"] },
+            { "kind": "max_duration_ms", "n": 300000 }
+          ]
+        }
+      ],
+      "checks": [{ "kind": "status", "in": ["succeeded", "failed"] }],
+      "acceptanceNotes": ["真实模型应在第二轮复用人设（计算机/Python/无硬件/6 小时），不重复索取", "明确不联网不写入时不得调用 web_search 或写工具"],
+      "tags": ["conversation", "multi-turn", "identity", "memory", "live"]
+    },
+    {
+      "id": "CONV-005",
+      "category": "conversation",
+      "difficulty": "hard",
+      "source": "fixed",
+      "tiers": ["live"],
+      "prompt": "先只预览这条通知，不要写入：CM对话直播讲座 11月28日15:00 线上。",
+      "turns": [
+        {
+          "prompt": "先只预览这条通知，不要写入：CM对话直播讲座 11月28日15:00 线上。",
+          "expectedStatus": ["succeeded", "failed"],
+          "checks": [
+            { "kind": "inbox_saved", "max": 0 },
+            { "kind": "no_write" },
+            { "kind": "reply_includes", "any": ["预览"] },
+            { "kind": "max_duration_ms", "n": 300000 }
+          ]
+        },
+        {
+          "prompt": "我确认，请把刚才这条保存到信息中心，只保存一条。",
+          "expectedStatus": ["succeeded", "failed"],
+          "checks": [
+            { "kind": "tool_called", "name": "save_to_inbox", "min": 1 },
+            { "kind": "inbox_saved", "min": 1, "max": 1, "titleIncludes": "CM对话直播讲座" },
+            { "kind": "reply_includes", "any": ["保存", "信息中心"] },
+            { "kind": "max_duration_ms", "n": 300000 }
+          ]
+        }
+      ],
+      "checks": [{ "kind": "status", "in": ["succeeded", "failed"] }, { "kind": "inbox_saved", "min": 1, "max": 1 }],
+      "acceptanceNotes": ["第一轮不得写；第二轮确认后真实写入一条，且能引用上一轮内容"],
+      "tags": ["conversation", "multi-turn", "inbox", "confirm", "live"]
+    },
+    {
+      "id": "CONV-006",
+      "category": "conversation",
+      "difficulty": "hard",
+      "source": "fixed",
+      "tiers": ["live"],
+      "prompt": "整理这三条群通知，先只给预览，不要写入：①【CM对话通知】11月30日14:00 图书馆报告厅，11月20日18:00 前报名；②转发①，其他内容相同；③主办方补充：①的报名截止改为11月22日18:00，活动时间和地点不变。",
+      "turns": [
+        {
+          "prompt": "整理这三条群通知，先只给预览，不要写入：①【CM对话通知】11月30日14:00 图书馆报告厅，11月20日18:00 前报名；②转发①，其他内容相同；③主办方补充：①的报名截止改为11月22日18:00，活动时间和地点不变。",
+          "expectedStatus": ["succeeded", "failed"],
+          "checks": [
+            { "kind": "no_write" },
+            { "kind": "reply_includes", "any": ["11月22日", "更正", "重复", "冲突"] },
+            { "kind": "max_duration_ms", "n": 360000 }
+          ]
+        },
+        {
+          "prompt": "按最新更正保存到信息中心，只保存一条，截止时间以最新为准。",
+          "expectedStatus": ["succeeded", "failed"],
+          "checks": [
+            { "kind": "tool_called", "name": "save_to_inbox", "min": 1 },
+            { "kind": "inbox_saved", "min": 1, "max": 1, "titleIncludes": "CM对话通知" },
+            { "kind": "max_duration_ms", "n": 300000 }
+          ]
+        },
+        {
+          "prompt": "把刚才这条的截止时间再改为11月21日12:00。只更新已有记录，不要新增。",
+          "expectedStatus": ["succeeded", "failed"],
+          "checks": [
+            { "kind": "inbox_saved", "min": 1, "max": 1, "titleIncludes": "CM对话通知" },
+            { "kind": "reply_includes", "any": ["11月21日", "更新", "未新增"] },
+            { "kind": "max_duration_ms", "n": 300000 }
+          ]
+        }
+      ],
+      "checks": [{ "kind": "status", "in": ["succeeded", "failed"] }, { "kind": "inbox_saved", "min": 1, "max": 1 }],
+      "acceptanceNotes": ["去重+更正预览 → 确认保存 → 再次更正，信息中心始终一条", "真实模型是否产生重复记录是本用例的核心检查"],
+      "tags": ["conversation", "multi-turn", "inbox", "dedupe", "correction", "live"]
+    }
+  ]
+}

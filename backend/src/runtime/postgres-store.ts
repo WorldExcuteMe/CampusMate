@@ -8,13 +8,17 @@ import type { CreateTaskInput, TaskStore } from "./store.ts";
 import type { SqlClient, SqlPool } from "./sql.ts";
 import { assertTaskTransition } from "./state-machine.ts";
 import { sessionInputHash, SessionConflict, type TurnProgress } from "./store.ts";
-import { transactionPool } from "./sql.ts";
+import { transactionPool, readQuery } from "./sql.ts";
 import { PostgresSessionStore } from "./postgres-session-store.ts";
 import type { SessionStore } from "../core/storage-contracts.ts";
 import { assertTurnLease, turnMessages } from "../core/session-context.ts";
 import { sessionMessages, sessionTurnLimit, type SessionHistoryQuery, type SessionTurn } from "./session-history.ts";
 
 type Row = Record<string, unknown>;
+// Status/lease/UI reads must not transfer base64 input. Execution uses full getTask/claimNext.
+const TASK_STATE_COLUMNS = `id,user_id,goal_id,session_id,turn_id,turn_seq,input_hash,transcript_committed,
+  prompt_usage,model_config,model_runtime,title,intent,status,priority,lease_owner,lease_expires_at,heartbeat_at,
+  attempt,max_attempts,budget,usage,last_checkpoint_id,cancel_requested,result,error,created_at,updated_at`;
 
 function toMs(v: unknown): number | null {
   if (v == null) return null;
@@ -24,9 +28,10 @@ function toMs(v: unknown): number | null {
 function iso(ms: number): string { return new Date(ms).toISOString(); }
 function j(v: unknown): string { return JSON.stringify(v ?? null); }
 
-function rowToTask(r: Row): Task {
+export function rowToTask(r: Row): Task {
   return {
     id: String(r.id),
+    historyRevision: r.history_xid == null ? undefined : String(r.history_xid),
     userId: String(r.user_id),
     goalId: r.goal_id ? String(r.goal_id) : undefined,
     sessionId: r.session_id ? String(r.session_id) : undefined,
@@ -87,16 +92,30 @@ function rowToInvocation(r: Row): ToolInvocation {
 }
 
 export class PostgresStore implements TaskStore {
+  private imageInputs = new Map<string, { images: string[]; bytes: number; expiresAt: number }>();
+  private imageInputBytes = 0;
+  private cacheImages(userId: string, taskId: string, images: string[]) {
+    const key = JSON.stringify([userId, taskId]), previous = this.imageInputs.get(key);
+    if (previous) { this.imageInputBytes -= previous.bytes; this.imageInputs.delete(key); }
+    const bytes = images.reduce((n, image) => n + image.length * 2, 0);
+    if (bytes > 24 * 1024 * 1024) return;
+    this.imageInputs.set(key, { images: [...images], bytes, expiresAt: Date.now() + 600000 }); this.imageInputBytes += bytes;
+    while (this.imageInputs.size > 32 || this.imageInputBytes > 24 * 1024 * 1024) {
+      const oldest = this.imageInputs.keys().next().value!;
+      this.imageInputBytes -= this.imageInputs.get(oldest)!.bytes; this.imageInputs.delete(oldest);
+    }
+  }
   private pool: SqlPool;
   constructor(pool: SqlPool) { this.pool = pool; }
 
   async createSessionTask(input: CreateTaskInput & { sessionId: string; turnId: string }, _sessions: SessionStore): Promise<{ task: Task; deduped: boolean }> {
-    return this.pool.transaction(async (client) => {
-      const parent = await client.query<Row>("select * from agent_sessions where id=$1 and user_id=$2 for update", [input.sessionId, input.userId]);
+    const accepted = await this.pool.transaction(async (client) => {
+      const parent = await client.query<Row>("select * from agent_sessions where id=$1 and user_id=$2 and deleted_at is null for update", [input.sessionId, input.userId]);
       if (!parent.rows[0]) throw new Error("Session owner forbidden");
       const hash = sessionInputHash(input);
-      const existing = await client.query<Row>("select * from agent_tasks where user_id=$1 and session_id=$2 and turn_id=$3", [input.userId, input.sessionId, input.turnId]);
+      const existing = await client.query<Row>(`select ${TASK_STATE_COLUMNS} from agent_tasks where user_id=$1 and session_id=$2 and turn_id=$3`, [input.userId, input.sessionId, input.turnId]);
       if (existing.rows[0]) { const task = rowToTask(existing.rows[0]); if (task.inputHash !== hash) throw new SessionConflict("同一轮次的输入冲突"); return { task, deduped: true }; }
+      if ((await client.query("select id from agent_tasks where user_id=$1 and session_id=$2 and status in ('paused','needs_input') limit 1", [input.userId, input.sessionId])).rows.length) throw new SessionConflict("当前会话有暂停或等待输入的任务，请先恢复或取消该任务，再发送新消息；原记录已保留。");
       await client.query("insert into agent_session_turns(user_id,session_id,turn_id) values($1,$2,$3)", [input.userId, input.sessionId, input.turnId]);
       const pool = transactionPool(client);
       const task = await new PostgresStore(pool).createTask({ ...input, inputHash: hash, turnSeq: Number(parent.rows[0].next_turn_seq) });
@@ -104,16 +123,19 @@ export class PostgresStore implements TaskStore {
       await client.query("update agent_sessions set next_turn_seq=next_turn_seq+1 where id=$1", [input.sessionId]);
       return { task, deduped: false };
     });
+    // Publish only after COMMIT; child stores inside transactions have private caches.
+    this.cacheImages(input.userId, accepted.task.id, input.images ?? []);
+    return accepted;
   }
 
   async resumeSessionTask(id: string, userId: string, budget?: Budget): Promise<Task> {
     return this.pool.transaction(async (client) => {
       const tasks = new PostgresStore(transactionPool(client));
-      const task = await tasks.getTask(id);
+      const task = await tasks.getTask(id, { includeImages: false });
       if (!task || task.userId !== userId) throw new Error("Task owner forbidden");
       if (task.sessionId) await client.query("select id from agent_sessions where id=$1 and user_id=$2 for update", [task.sessionId, userId]);
       if (task.status === "failed" && task.turnSeq !== undefined && (await client.query("select id from agent_tasks where user_id=$1 and session_id=$2 and turn_seq>$3 limit 1", [userId, task.sessionId, task.turnSeq])).rows.length) throw new SessionConflict("后续对话已开始，请用新消息继续；原任务记录已保留。");
-      return tasks.updateTask(id, { status: "queued", transcriptCommitted: false, ...(budget ? { budget } : {}), error: "" });
+      return tasks.updateTask(id, { status: "queued", attempt: task.attempt + 1, maxAttempts: Math.max(task.maxAttempts, task.attempt + 1), transcriptCommitted: false, ...(budget ? { budget } : {}), error: "" });
     });
   }
 
@@ -121,7 +143,7 @@ export class PostgresStore implements TaskStore {
     return this.pool.transaction(async (client) => {
       const hint = await client.query<Row>("select session_id from agent_tasks where id=$1 and user_id=$2", [input.taskId, input.userId]);
       await client.query("select id from agent_sessions where id=$1 and user_id=$2 for update", [hint.rows[0]?.session_id, input.userId]);
-      const locked = await client.query<Row>("select * from agent_tasks where id=$1 and user_id=$2 for update", [input.taskId, input.userId]);
+      const locked = await client.query<Row>(`select ${TASK_STATE_COLUMNS} from agent_tasks where id=$1 and user_id=$2 for update`, [input.taskId, input.userId]);
       const task = locked.rows[0] ? rowToTask(locked.rows[0]) : null;
       assertTurnLease(task, input);
       const pool = transactionPool(client);
@@ -142,22 +164,41 @@ export class PostgresStore implements TaskStore {
     const now = Date.now();
     const r = await this.pool.query(
       `insert into agent_tasks (id,user_id,goal_id,session_id,title,intent,status,priority,attempt,max_attempts,budget,usage,cancel_requested,created_at,updated_at,turn_id,turn_seq,input_hash,images,model_config)
-       values ($1,$2,$3,$4,$5,$6,'queued',$7,0,$8,$9::jsonb,$10::jsonb,false,$11::timestamptz,$11::timestamptz,$12,$13,$14,$15::jsonb,$16::jsonb) returning *`,
+       values ($1,$2,$3,$4,$5,$6,'queued',$7,0,$8,$9::jsonb,$10::jsonb,false,$11::timestamptz,$11::timestamptz,$12,$13,$14,$15::jsonb,$16::jsonb) returning ${TASK_STATE_COLUMNS}`,
       [id, input.userId, input.goalId ?? null, input.sessionId ?? null, input.title, input.intent ?? input.title,
        input.priority ?? 50, input.maxAttempts ?? 3, j(input.budget ?? DEFAULT_BUDGET), j(EMPTY_USAGE), iso(now), input.turnId ?? null, input.turnSeq ?? null, input.inputHash ?? null, j(input.images ?? null), j(input.modelConfig ?? null)],
     );
-    const task = rowToTask(r.rows[0]);
+    const task = { ...rowToTask(r.rows[0]), images: input.images };
+    this.cacheImages(input.userId, task.id, input.images ?? []);
     await this.appendEvent({ taskId: task.id, userId: task.userId, type: "task.queued", payload: { title: task.title } });
     return task;
   }
 
-  async getTask(id: string): Promise<Task | null> {
-    const r = await this.pool.query(`select * from agent_tasks where id=$1`, [id]);
+  async getTask(id: string, options?: { includeImages?: boolean }): Promise<Task | null> {
+    const r = await readQuery(this.pool, `select ${options?.includeImages === false ? TASK_STATE_COLUMNS : "*"} from agent_tasks where id=$1`, [id]);
     return r.rows[0] ? rowToTask(r.rows[0]) : null;
+  }
+  async loadTaskImages(id: string, userId: string): Promise<string[]> {
+    const key = JSON.stringify([userId, id]), cached = this.imageInputs.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      this.imageInputs.delete(key); this.imageInputs.set(key, cached); return [...cached.images];
+    }
+    if (cached) { this.imageInputBytes -= cached.bytes; this.imageInputs.delete(key); }
+    const r = await readQuery<Row>(this.pool, "select images from agent_tasks where id=$1 and user_id=$2", [id, userId]);
+    if (!r.rows[0]) throw new Error("Task owner forbidden");
+    const images = Array.isArray(r.rows[0].images) ? r.rows[0].images as string[] : [];
+    this.cacheImages(userId, id, images); return images;
+  }
+
+  async pauseTaskIfOwned(input: { taskId: string; userId: string; workerId: string; attempt: number; now: number; error: string }): Promise<boolean> {
+    const result = await this.pool.query(`update agent_tasks set status='paused',error=$7,updated_at=$6::timestamptz
+      where id=$1 and user_id=$2 and lease_owner=$3 and attempt=$4 and status=$5 and lease_expires_at>$6::timestamptz returning id`,
+    [input.taskId, input.userId, input.workerId, input.attempt, "running", iso(input.now), input.error]);
+    return result.rowCount > 0;
   }
 
   async updateTask(id: string, patch: Partial<Task>): Promise<Task> {
-    const current = await this.getTask(id);
+    const current = await this.getTask(id, { includeImages: false });
     if (!current) throw new Error(`task not found: ${id}`);
     if (patch.status && patch.status !== current.status) assertTaskTransition(current.status, patch.status);
     const sets: string[] = [];
@@ -186,7 +227,7 @@ export class PostgresStore implements TaskStore {
     }
     add("updated_at", iso(Date.now()), "::timestamptz");
     params.push(id);
-    const r = await this.pool.query(`update agent_tasks set ${sets.join(",")} where id=$${params.length} returning *`, params);
+    const r = await this.pool.query(`update agent_tasks set ${sets.join(",")} where id=$${params.length} returning ${TASK_STATE_COLUMNS}`, params);
     return rowToTask(r.rows[0]);
   }
 
@@ -202,8 +243,23 @@ export class PostgresStore implements TaskStore {
     return sessionMessages(result.rows.reverse());
   }
   async listTasksByUser(userId: string): Promise<Task[]> {
-    const r = await this.pool.query(`select * from agent_tasks where user_id=$1 order by created_at desc`, [userId]);
+    const r = await readQuery(this.pool, `select * from agent_tasks where user_id=$1 order by created_at desc`, [userId]);
     return r.rows.map(rowToTask);
+  }
+  async listSessionTasks(userId: string, sessionId: string): Promise<Task[]> {
+    // Do not load unrelated sessions or multi-megabyte base64 images merely to
+    // render progress, check a turn's model snapshot, or build prior outcomes.
+    const r = await readQuery(this.pool, `select ${TASK_STATE_COLUMNS}
+      from agent_tasks where user_id=$1 and session_id=$2 order by turn_seq desc,created_at desc`, [userId, sessionId]);
+    return r.rows.map(rowToTask);
+  }
+  async listTasksBySession(userId: string, sessionId: string, limit?: number): Promise<Task[]> {
+    const r = await this.pool.query(`select * from agent_tasks where user_id=$1 and session_id=$2 order by created_at desc,turn_seq desc,id desc${limit === undefined ? '' : ' limit $3'}`, limit === undefined ? [userId, sessionId] : [userId, sessionId, limit]);
+    return r.rows.map(rowToTask);
+  }
+  async findSessionTurn(userId: string, sessionId: string, turnId: string) {
+    const r = await this.pool.query('select * from agent_tasks where user_id=$1 and session_id=$2 and turn_id=$3 limit 1', [userId, sessionId, turnId]);
+    return r.rows[0] ? rowToTask(r.rows[0]) : null;
   }
 
   // 原子认领：事务 + FOR UPDATE SKIP LOCKED。queued 或 lease 过期的 running；重认领 attempt+1。
@@ -213,7 +269,7 @@ export class PostgresStore implements TaskStore {
     const claimed = await this.pool.transaction(async (client: SqlClient) => {
       const r = await client.query(
         `with picked as (
-           select id, status from agent_tasks candidate
+           select id, status, attempt>=max_attempts as exhausted from agent_tasks candidate
            where (status='queued' or (status='running' and lease_expires_at < $2::timestamptz))
            and (turn_seq is null or not exists (
              select 1 from agent_tasks earlier where earlier.user_id=candidate.user_id and earlier.session_id=candidate.session_id
@@ -224,23 +280,29 @@ export class PostgresStore implements TaskStore {
            for update skip locked limit 1
          )
          update agent_tasks t set
-           status='running', lease_owner=$1, lease_expires_at=$3::timestamptz, heartbeat_at=$2::timestamptz,
+           status=case when picked.status='running' and picked.exhausted then 'paused' else 'running' end,
+           error=case when picked.status='running' and picked.exhausted then '执行租约连续失效，已停止自动重试；原请求和记录已保留，请恢复任务或用新消息继续。' else t.error end,
+           lease_owner=case when picked.status='running' and picked.exhausted then null else $1 end, lease_expires_at=$3::timestamptz, heartbeat_at=$2::timestamptz,
            attempt = t.attempt + case when picked.status='running' then 1 else 0 end,
            updated_at=$2::timestamptz
-         from picked where t.id=picked.id returning t.*`,
+         from picked where t.id=picked.id returning ${TASK_STATE_COLUMNS.split(",").map(c => "t." + c.trim()).join(",")}`,
         [opts.workerId, nowIso, expIso],
       );
       return r.rows[0] ? rowToTask(r.rows[0]) : null;
     });
+    if (claimed?.status === "paused") {
+      await this.appendEvent({ taskId: claimed.id, userId: claimed.userId, type: "task.needs_input", payload: { reason: "execution_interrupted", message: claimed.error } });
+      return null;
+    }
     if (claimed) await this.appendEvent({ taskId: claimed.id, userId: claimed.userId, type: "task.claimed", payload: { workerId: opts.workerId } });
     return claimed;
   }
 
-  async renewLease(id: string, workerId: string, leaseTtlMs: number, now: number): Promise<boolean> {
+  async renewLease(id: string, workerId: string, leaseTtlMs: number, now: number, attempt?: number): Promise<boolean> {
     const r = await this.pool.query(
       `update agent_tasks set lease_expires_at=$3::timestamptz, heartbeat_at=$2::timestamptz, updated_at=$2::timestamptz
-       where id=$1 and lease_owner=$4 and status='running' returning id`,
-      [id, iso(now), iso(now + leaseTtlMs), workerId],
+       where id=$1 and lease_owner=$4 and status='running' and lease_expires_at>$2::timestamptz and ($5::integer is null or attempt=$5) returning id`,
+      [id, iso(now), iso(now + leaseTtlMs), workerId, attempt ?? null],
     );
     return r.rowCount > 0;
   }
@@ -270,28 +332,28 @@ export class PostgresStore implements TaskStore {
   }
 
   async listEvents(taskId: string, afterSeq = 0): Promise<AgentEvent[]> {
-    const r = await this.pool.query(`select * from agent_events where task_id=$1 and seq>$2 order by seq`, [taskId, afterSeq]);
+    const r = await readQuery(this.pool, `select * from agent_events where task_id=$1 and seq>$2 order by seq`, [taskId, afterSeq]);
     return r.rows.map(rowToEvent);
   }
 
   async writeCheckpoint(input: { taskId: string; userId: string; stepId?: string; eventSeq: number; state: Checkpoint["state"] }): Promise<Checkpoint> {
     const id = randomUUID();
     const r = await this.pool.query(
-      `insert into agent_checkpoints (id,task_id,user_id,step_id,event_seq,state) values ($1,$2,$3,$4,$5,$6::jsonb) returning *`,
+      `insert into agent_checkpoints (id,task_id,user_id,step_id,event_seq,state) values ($1,$2,$3,$4,$5,$6::jsonb) returning id,task_id,user_id,step_id,event_seq,created_at`,
       [id, input.taskId, input.userId, input.stepId ?? null, input.eventSeq, j(input.state)],
     );
     await this.pool.query(`update agent_tasks set last_checkpoint_id=$2, updated_at=$3::timestamptz where id=$1`, [input.taskId, id, iso(Date.now())]);
     await this.appendEvent({ taskId: input.taskId, userId: input.userId, stepId: input.stepId, type: "checkpoint.written", payload: { checkpointId: id, eventSeq: input.eventSeq } });
-    return rowToCheckpoint(r.rows[0]);
+    return rowToCheckpoint({ ...r.rows[0], state: input.state });
   }
 
   async getCheckpoint(id: string): Promise<Checkpoint | null> {
-    const r = await this.pool.query(`select * from agent_checkpoints where id=$1`, [id]);
+    const r = await readQuery(this.pool, `select * from agent_checkpoints where id=$1`, [id]);
     return r.rows[0] ? rowToCheckpoint(r.rows[0]) : null;
   }
 
   async latestCheckpoint(taskId: string): Promise<Checkpoint | null> {
-    const r = await this.pool.query(`select * from agent_checkpoints where task_id=$1 order by created_at desc limit 1`, [taskId]);
+    const r = await readQuery(this.pool, `select * from agent_checkpoints where task_id=$1 order by created_at desc limit 1`, [taskId]);
     return r.rows[0] ? rowToCheckpoint(r.rows[0]) : null;
   }
 
@@ -310,7 +372,7 @@ export class PostgresStore implements TaskStore {
   }
 
   async getInvocation(taskId: string, idempotencyKey: string): Promise<ToolInvocation | null> {
-    const r = await this.pool.query(`select * from agent_tool_invocations where task_id=$1 and idempotency_key=$2`, [taskId, idempotencyKey]);
+    const r = await readQuery(this.pool, `select * from agent_tool_invocations where task_id=$1 and idempotency_key=$2`, [taskId, idempotencyKey]);
     return r.rows[0] ? rowToInvocation(r.rows[0]) : null;
   }
 }

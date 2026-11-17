@@ -15,6 +15,13 @@ const allTools: ToolDef[] = [
 ];
 
 function reg(): CapabilityRegistry { const r = new CapabilityRegistry(); registerCloudDefaults(r); return r; }
+test("inbox correction and lookup are available through the same real Worker manifest", () => {
+  const manifest = buildManifest({ registry: reg(), userId: "u1", taskId: "t1", budget: DEFAULT_BUDGET });
+  const visible = manifestTools(manifest, CLOUD_TOOLS).map(tool => tool.function.name);
+  assert(visible.includes("update_inbox")); assert(visible.includes("list_inbox"));
+  assert.equal(TOOL_SPECS.update_inbox?.permission, "write_user");
+  assert.equal(TOOL_SPECS.list_inbox?.permission, "read");
+});
 
 test("云端默认注册不含本机能力", () => {
   const r = reg();

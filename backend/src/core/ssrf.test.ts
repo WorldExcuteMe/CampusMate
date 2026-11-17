@@ -1,9 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { guardUrl, isPrivateIp, assertPublicHost, safeFetch, htmlToText } from "./ssrf.ts";
+import { guardUrl, isPrivateIp, assertPublicHost, safeFetch, htmlToText, webPageText } from "./ssrf.ts";
 
 const publicResolve = async () => [{ address: "93.184.216.34" }];
 const privateResolve = async () => [{ address: "127.0.0.1" }];
+
+test("a JavaScript shell's title is not readable page evidence", () => {
+  assert.equal(webPageText('<body>Enable JavaScript and cookies to continue</body>', 403), "");
+  assert.equal(webPageText('<html><head><title>AI Competitions and Hackathons | Kaggle</title></head><body><script>loadApp()</script></body></html>'), "");
+  assert.equal(webPageText('<html><head><title>title</title></head><body><main>报名费为100元，截止11月22日。</main></body></html>'), "title\n报名费为100元，截止11月22日。");
+  assert.equal(webPageText('<article>简短但真实的通知正文</article>'), "简短但真实的通知正文");
+});
 
 test("guardUrl 拦截私网/元数据/内部域/非 http", () => {
   for (const bad of ["http://127.0.0.1/x", "http://localhost/", "http://169.254.169.254/latest", "http://10.0.0.1/", "http://192.168.1.1/", "http://172.16.0.1/", "http://metadata.google.internal/", "http://foo.local/", "http://foo.internal/", "ftp://example.com/", "file:///etc/passwd"]) {

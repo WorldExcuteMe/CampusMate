@@ -34,7 +34,8 @@ test("createTask 发 INSERT...RETURNING 且追加 task.queued 事件", async () 
   const task = await store.createTask({ userId: "u1", title: "x" });
   assert.equal(task.id, "t1");
   assert.equal(task.status, "queued");
-  assert.ok(pool.texts().some((t) => /insert into agent_tasks/i.test(t) && /returning \*/i.test(t)));
+  const insert = pool.texts().find(t => /insert into agent_tasks/i.test(t))!;
+  assert.match(insert, /returning id,user_id/i); assert(!/returning \*/i.test(insert));
   assert.ok(pool.texts().some((t) => /insert into agent_events/i.test(t)));
 });
 
@@ -95,7 +96,7 @@ test("renewLease 限定 owner+running", async () => {
 });
 
 test("updateTask 非法状态转换抛错", async () => {
-  const pool = new FakePool((t) => /select \* from agent_tasks/i.test(t) ? { rows: [taskRow({ status: "succeeded" })], rowCount: 1 } : { rows: [taskRow()], rowCount: 1 });
+  const pool = new FakePool((t) => /^\s*select\b[\s\S]*\bfrom agent_tasks/i.test(t) ? { rows: [taskRow({ status: "succeeded" })], rowCount: 1 } : { rows: [taskRow()], rowCount: 1 });
   const store = new PostgresStore(pool);
   await assert.rejects(() => store.updateTask("t1", { status: "running" }), /非法任务状态转换/);
 });

@@ -5,9 +5,12 @@ import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { chromium } from "playwright";
+import assert from "node:assert/strict";
+import { availableDocumentFormats, DOCUMENT_CHROMIUM_OPTIONS, inspectExport, renderDocument } from "../src/core/document-renderer.ts";
+import type { DocumentAst } from "../../shared/document.ts";
 
 async function check() {
-  const browser = await chromium.launch({ headless: true, chromiumSandbox: true, timeout: 15000 });
+  const browser = await chromium.launch(DOCUMENT_CHROMIUM_OPTIONS);
   await browser.close();
 }
 
@@ -38,4 +41,21 @@ try {
   }
   await check();
   console.log("[document-sandbox] Sandboxed Chromium ready with a runner-local browser profile.");
+}
+
+// Probe the real renderer, not just the executable's presence: catches missing fonts,
+// chart screenshots, PDF generation and text extraction without model/DB requests.
+assert.ok(availableDocumentFormats().includes("pdf"), "缺少固定Chromium或中文字体；请先运行 npm run documents:setup");
+const smoke: DocumentAst = {
+  schemaVersion: 1, kind: "document", title: "文档导出环境自检", sources: [],
+  blocks: [
+    { type: "paragraph", text: "中文字体、表格和图表必须真实导出。仅为本机测试，不包含用户数据。" },
+    { type: "table", headers: ["检查项目", "要求"], rows: [["中文", "可复读"], ["图表", "真实图片"]] },
+    { type: "chart", title: "导出环境检查", labels: ["中文", "图表"], values: [2, 3] },
+  ],
+};
+for (const format of ["docx", "pdf"] as const) {
+  const bytes = await renderDocument(smoke, format), result = await inspectExport(smoke, bytes, format);
+  assert.equal(result.passed, true, JSON.stringify(result));
+  console.log(`[document-runtime] ${format.toUpperCase()} exported and read back: ${bytes.length} bytes${result.pages ? `, ${result.pages} pages` : ""}.`);
 }

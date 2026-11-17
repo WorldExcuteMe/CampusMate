@@ -25,12 +25,19 @@ test("cache与reasoning是usage分量，0和缺失可区分，不重复计数", 
   assert.equal(result.telemetry?.usage.reasoning, 20);
   assert.equal(result.usage.input + result.usage.output, 130);
 });
-test("总deadline覆盖慢响应体，401不重试", async () => {
+test("总deadline覆盖慢响应体，401不重试", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
   let calls = 0;
-  const slow = new DeepSeekTransport({ apiKey: "fixture", timeoutMs: 20, maxRetries: 0, fetchImpl: async () => ({ ok: true, status: 200, text: async () => { await new Promise((r) => setTimeout(r, 120)); return await reply().text(); } }) as Response });
+  let bodyStarted!: () => void, bodyFinished = false;
+  const bodyReady = new Promise<void>(resolve => { bodyStarted = resolve; });
+  const slow = new DeepSeekTransport({ apiKey: "fixture", timeoutMs: 20, maxRetries: 0, fetchImpl: async () => ({ ok: true, status: 200, text: async () => { bodyStarted(); await new Promise((r) => setTimeout(r, 120)); bodyFinished = true; return await reply().text(); } }) as Response });
   const started = Date.now();
-  await assert.rejects(() => slow.chat({ messages: [] }), /超时|deadline|abort/i);
-  assert.ok(Date.now() - started < 100);
+  const timedOut = assert.rejects(() => slow.chat({ messages: [] }), /超时|deadline|abort/i);
+  await bodyReady;
+  t.mock.timers.tick(20);
+  await timedOut;
+  assert.equal(Date.now() - started, 20);
+  assert.equal(bodyFinished, false);
   const unauthorized = new DeepSeekTransport({ apiKey: "fixture", maxRetries: 2, fetchImpl: async () => { calls++; return new Response('{"error":{"message":"invalid key"}}', { status: 401 }); } });
   await assert.rejects(() => unauthorized.chat({ messages: [] }), /401/);
   assert.equal(calls, 1);

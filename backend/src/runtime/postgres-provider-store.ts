@@ -1,5 +1,6 @@
 import type { ProviderStore, ProviderWrite, StoredProvider } from "../core/storage-contracts.ts";
 import type { SqlPool } from "./sql.ts";
+import { readQuery } from "./sql.ts";
 import { assertSecret, json, millis, type DbRow } from "./postgres-shared.ts";
 
 function provider(r: DbRow): StoredProvider { return { userId: String(r.user_id), providerId: String(r.provider_id), displayName: String(r.display_name), protocol: String(r.protocol), baseUrl: String(r.base_url), modelId: String(r.model_id), capabilities: r.capabilities as Record<string, unknown>, contextLimit: r.context_limit == null ? undefined : Number(r.context_limit), metadataSource: String(r.metadata_source), encryptedSecret: r.encrypted_secret == null ? undefined : r.encrypted_secret as StoredProvider["encryptedSecret"], isDefault: Boolean(r.is_default), createdAt: millis(r.created_at), updatedAt: millis(r.updated_at) }; }
@@ -23,7 +24,7 @@ export class PostgresProviderStore implements ProviderStore {
       return provider(r.rows[0]);
     });
   }
-  async get(userId: string, providerId: string) { const r = await this.pool.query<DbRow>("select * from user_llm_providers where user_id=$1 and provider_id=$2", [userId, providerId]); return r.rows[0] ? provider(r.rows[0]) : null; }
-  async list(userId: string) { const r = await this.pool.query<DbRow>("select * from user_llm_providers where user_id=$1 order by created_at,provider_id", [userId]); return r.rows.map(provider); }
+  async get(userId: string, providerId: string) { const r = await readQuery<DbRow>(this.pool, "select * from user_llm_providers where user_id=$1 and provider_id=$2", [userId, providerId]); return r.rows[0] ? provider(r.rows[0]) : null; }
+  async list(userId: string) { const r = await readQuery<DbRow>(this.pool, "select * from user_llm_providers where user_id=$1 order by created_at,provider_id", [userId]); return r.rows.map(provider); }
   async delete(userId: string, providerId: string) { return (await this.pool.query("delete from user_llm_providers where user_id=$1 and provider_id=$2", [userId, providerId])).rowCount > 0; }
 }

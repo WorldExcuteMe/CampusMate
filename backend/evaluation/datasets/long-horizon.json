@@ -1,0 +1,548 @@
+{
+  "schemaVersion": 1,
+  "id": "long-horizon",
+  "name": "10步骤策划与真实三格式文档",
+  "description": "至少两个长任务实际交付；文件内容与字节检查必须独立复核。",
+  "cases": [
+    {
+      "id": "HORIZON-001",
+      "category": "long_horizon",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "live"
+      ],
+      "prompt": "为“CM探索校园通知可信核验助手”做竞赛策划书。用户提供的约束：3人、4周、硬件预算0元，只处理用户主动粘贴的校园通知，不接入私聊。不要联网、不保存，先列需求和10步依赖计划。",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "name": "document_create"
+        },
+        {
+          "kind": "tool_called",
+          "name": "document_inspect"
+        },
+        {
+          "kind": "tool_called",
+          "name": "document_export",
+          "min": 3
+        },
+        {
+          "kind": "max_tool_calls",
+          "n": 12
+        }
+      ],
+      "tags": [
+        "quality-20261116",
+        "exploratory"
+      ],
+      "turns": [
+        {
+          "prompt": "为“CM探索校园通知可信核验助手”做竞赛策划书。用户提供的约束：3人、4周、硬件预算0元，只处理用户主动粘贴的校园通知，不接入私聊。不要联网、不保存，先列需求和10步依赖计划。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "继续第2步：给出两条标明虚构示例的通知，包含转发重复和截止更正；只预览。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "基于示例做第3步字段契约，区分未知与已知，别把示例当真实赛事。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第4步设计去重与更正流程，解释为什么不能把可变截止时间当记录身份，只给设计。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第5步列可信核验规则：主办方、域名、通知年份分别怎么确认？图片水印能不能单独证明真假？别联网。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第6步列5个风险与失败恢复方案，不能承诺已解决。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第7步做4周3人分工表，覆盖研发、验证和试用，暂不生成文件。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第8步列预算，硬件必须0元，API价格未知，写估算与限额，不编造供应商价格。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第9步整合为4章完整正文：问题与用户、方案与工具、实施与预算、风险与验收。700–1100字，建议和估算标明，不宣称已上线、学校合作或访问过私聊。只写正文，下一轮再保存。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第10步按刚才完整正文生成真实文档“CM探索校园通知可信核验助手”，用document_create保存；再document_inspect检查，并真实导出md、docx、pdf三种格式。正文保留4章、3人4周、硬件0元；不能只回复已生成，必须给实际下载路径。不要联网。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "tool_order",
+              "names": [
+                "document_create",
+                "document_inspect",
+                "document_export"
+              ]
+            },
+            {
+              "kind": "no_tool_errors"
+            },
+            {
+              "kind": "artifact_export",
+              "format": "md",
+              "minBytes": 100,
+              "minHeadings": 4,
+              "minBodyChars": 700,
+              "contains": [
+                "问题与用户",
+                "方案与工具",
+                "实施与预算",
+                "风险与验收"
+              ]
+            },
+            {
+              "kind": "artifact_export",
+              "format": "docx",
+              "minBytes": 100,
+              "minHeadings": 4,
+              "minBodyChars": 700,
+              "contains": [
+                "问题与用户",
+                "方案与工具",
+                "实施与预算",
+                "风险与验收"
+              ]
+            },
+            {
+              "kind": "artifact_export",
+              "format": "pdf",
+              "minBytes": 100,
+              "minHeadings": 4,
+              "minBodyChars": 700,
+              "contains": [
+                "问题与用户",
+                "方案与工具",
+                "实施与预算",
+                "风险与验收"
+              ]
+            },
+            {
+              "kind": "tool_called",
+              "name": "document_export",
+              "args": {
+                "format": "md"
+              }
+            },
+            {
+              "kind": "tool_called",
+              "name": "document_export",
+              "args": {
+                "format": "docx"
+              }
+            },
+            {
+              "kind": "tool_called",
+              "name": "document_export",
+              "args": {
+                "format": "pdf"
+              }
+            }
+          ]
+        }
+      ],
+      "acceptanceNotes": [
+        "10个逐步依赖步骤；最终交付须复读产物和4章内容，工具调用/口头宣称不等于真实文件通过。",
+        "此用例只用用户资料，不覆盖外部事实检索质量。"
+      ]
+    },
+    {
+      "id": "HORIZON-002",
+      "category": "long_horizon",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "live"
+      ],
+      "prompt": "为“CM探索校园资料整理助手”做竞赛策划书。用户提供的约束：3人、4周、硬件预算0元，只处理用户主动粘贴的校园通知，不接入私聊。不要联网、不保存，先列需求和10步依赖计划。",
+      "checks": [
+        {
+          "kind": "tool_called",
+          "name": "document_create"
+        },
+        {
+          "kind": "tool_called",
+          "name": "document_inspect"
+        },
+        {
+          "kind": "tool_called",
+          "name": "document_export",
+          "min": 3
+        },
+        {
+          "kind": "max_tool_calls",
+          "n": 12
+        }
+      ],
+      "tags": [
+        "quality-20261116",
+        "exploratory"
+      ],
+      "turns": [
+        {
+          "prompt": "为“CM探索校园资料整理助手”做竞赛策划书。用户提供的约束：3人、4周、硬件预算0元，只处理用户主动粘贴的校园通知，不接入私聊。不要联网、不保存，先列需求和10步依赖计划。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "继续第2步：给出两条标明虚构示例的通知，包含转发重复和截止更正；只预览。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "基于示例做第3步字段契约，区分未知与已知，别把示例当真实赛事。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第4步设计去重与更正流程，解释为什么不能把可变截止时间当记录身份，只给设计。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第5步列可信核验规则：主办方、域名、通知年份分别怎么确认？图片水印能不能单独证明真假？别联网。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第6步列5个风险与失败恢复方案，不能承诺已解决。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第7步做4周3人分工表，覆盖研发、验证和试用，暂不生成文件。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第8步列预算，硬件必须0元，API价格未知，写估算与限额，不编造供应商价格。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第9步整合为4章完整正文：问题与用户、方案与工具、实施与预算、风险与验收。700–1100字，建议和估算标明，不宣称已上线、学校合作或访问过私聊。只写正文，下一轮再保存。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第10步按刚才完整正文生成真实文档“CM探索校园资料整理助手”，用document_create保存；再document_inspect检查，并真实导出md、docx、pdf三种格式。正文保留4章、3人4周、硬件0元；不能只回复已生成，必须给实际下载路径。不要联网。",
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "tool_order",
+              "names": [
+                "document_create",
+                "document_inspect",
+                "document_export"
+              ]
+            },
+            {
+              "kind": "no_tool_errors"
+            },
+            {
+              "kind": "artifact_export",
+              "format": "md",
+              "minBytes": 100,
+              "minHeadings": 4,
+              "minBodyChars": 700,
+              "contains": [
+                "问题与用户",
+                "方案与工具",
+                "实施与预算",
+                "风险与验收"
+              ]
+            },
+            {
+              "kind": "artifact_export",
+              "format": "docx",
+              "minBytes": 100,
+              "minHeadings": 4,
+              "minBodyChars": 700,
+              "contains": [
+                "问题与用户",
+                "方案与工具",
+                "实施与预算",
+                "风险与验收"
+              ]
+            },
+            {
+              "kind": "artifact_export",
+              "format": "pdf",
+              "minBytes": 100,
+              "minHeadings": 4,
+              "minBodyChars": 700,
+              "contains": [
+                "问题与用户",
+                "方案与工具",
+                "实施与预算",
+                "风险与验收"
+              ]
+            },
+            {
+              "kind": "tool_called",
+              "name": "document_export",
+              "args": {
+                "format": "md"
+              }
+            },
+            {
+              "kind": "tool_called",
+              "name": "document_export",
+              "args": {
+                "format": "docx"
+              }
+            },
+            {
+              "kind": "tool_called",
+              "name": "document_export",
+              "args": {
+                "format": "pdf"
+              }
+            }
+          ]
+        }
+      ],
+      "acceptanceNotes": [
+        "10个逐步依赖步骤；最终交付须复读产物和4章内容，工具调用/口头宣称不等于真实文件通过。",
+        "此用例只用用户资料，不覆盖外部事实检索质量。"
+      ]
+    }
+  ]
+}

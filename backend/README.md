@@ -11,6 +11,17 @@
 
 ## 运行
 
+先在本目录运行 `npm ci`。PDF 及带图表的 Word 还依赖与锁定 Playwright 匹配的 Chromium，`npm ci` 不会替你安装浏览器。在仓库根目录执行：
+
+```bash
+npm run documents:setup
+npm run documents:check
+```
+
+`documents:setup` 使用后端已锁定的 Playwright 下载 Chromium，不升级依赖，也不清理其他版本的浏览器。`documents:check` 使用与产品相同的 Chromium channel 和沙箱设置，实际生成并复读中文、表格、图表的 DOCX/PDF（不调用模型、不连接数据库、不写用户文档）。Linux 首次安装可在 `backend` 下运行 `npm run documents:setup -- --with-deps`，补齐系统库。中文字体使用仓库内已固定哈希的资源，不依赖操作系统安装字体。
+
+渲染器显式使用 `channel: "chromium"`，使可用性检测与真实启动指向同一个固定浏览器，而非检测完整 Chromium、启动时却寻找另一份 headless-shell。保留 `chromiumSandbox: true`；不要用 `--no-sandbox` 掩盖环境故障。Playwright 升级后需重新执行以上命令。说明依据 [Playwright 官方浏览器安装文档](https://playwright.dev/docs/browsers)。
+
 ```bash
 # 一体化（API + Worker 同进程，默认内存 store，可立即演示）
 LLM_API_KEY=sk-... SUPABASE_JWT_SECRET=... PORT=8788 node src/main.ts
@@ -18,7 +29,7 @@ LLM_API_KEY=sk-... SUPABASE_JWT_SECRET=... PORT=8788 node src/main.ts
 # 启用 Postgres 持久化（Phase 2）：设置 DATABASE_URL 或 SUPABASE_DB_PASSWORD+SUPABASE_PROJECT_REF
 DATABASE_URL=postgresql://postgres:PWD@db.REF.supabase.co:5432/postgres node src/main.ts
 
-# 测试（无需安装依赖即可跑单元；pg 已入 dependencies）
+# 测试（先安装依赖及上述文档渲染环境）
 node --test
 
 # 类型检查
@@ -28,6 +39,26 @@ npm run typecheck
 > 真实库集成测试 `postgres-integration.test.ts` 需直连 Postgres 且已应用 `migrations/0002`；
 > 不可达/未迁移自动 skip。本开发环境直连 Supabase 5432 被重置（ECONNRESET），故默认 skip；
 > 在有直连权限的环境应用迁移后即可运行。
+
+## Headless Agent 评测（无需浏览器/Computer Use）
+
+`src/evaluation/` + `scripts/eval.ts` 提供独立评测子系统：数据集 → 批量执行 → 结构化 Trace → 确定性检查/混合评分 → 失败分析 → 版本对比与回归 Gate。三级通道：
+
+- `scripted`：进程内 `runAgentLoop`，脚本回放模型，毫秒级，CI 用；
+- `api-memory`：真实 HTTP + JWT + Worker + 任务状态机 + 审批 + 执行期证书，模型脚本回放，数据写内存库；
+- `live`：同一运行时换真实 Provider/真实工具，业务数据仍写内存库（不写云端 PG），用于真实模型端到端能力验证。
+
+```bash
+node scripts/eval.ts run --suite baseline --suite security --target scripted
+node scripts/eval.ts run --suite business --target api-memory
+node scripts/eval.ts run --suite conversation --target api-memory     # 多轮同一 session
+node scripts/eval.ts run --suite live --target live --concurrency 1
+node scripts/eval.ts run --suite conversation --target live --concurrency 1   # 真实模型多轮
+node scripts/eval.ts report --run latest && node scripts/eval.ts analyze --run latest
+node scripts/eval.ts parity --eval latest-live --case <caseId> --human-file human-task.json
+```
+
+多轮用例（`turns`）与人类聊天一致：创建真实 session、逐轮提交 `task(sessionId,turnId)`，Worker 注入历史/身份；`--reasoning/--provider/--session` 可让入口进一步对齐 UI。`parity` 把真实 UI 任务事件与评测 trace 归一为行为指纹，比较状态/工具序列/参数哈希/来源/用量。完整说明见 [EVALUATION_SYSTEM](../docs/EVALUATION_SYSTEM.md)；运行产物在 `.local/eval/`（gitignored）。既有 30 任务基准保留：`node scripts/run-benchmark.ts`，也可用 `node scripts/eval.ts run --target legacy` 走统一报告。
 
 ## 环境变量
 

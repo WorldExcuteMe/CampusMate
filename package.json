@@ -8,6 +8,15 @@
     "db:status": "node scripts/local-supabase.mjs status",
     "db:env": "node scripts/local-supabase.mjs env",
     "db:verify": "node scripts/verify-local-db.mjs",
+    "db:verify-business": "node scripts/verify-business-tools.mjs",
+    "test:session-sync": "node scripts/verify-session-sync.mjs",
+    "test:history-sync": "node scripts/verify-history-sync.mjs",
+    "documents:setup": "npm --prefix backend run documents:setup",
+    "documents:check": "npm --prefix backend run documents:check",
+    "test:document-export": "node scripts/verify-document-export.mjs",
+    "test:tool-recovery": "node scripts/verify-tool-recovery.mjs",
+    "test:composer-drafts": "node scripts/verify-composer-drafts.mjs",
+    "test:draft-tabs": "node scripts/verify-draft-tabs.mjs",
     "db:verify-reports": "node scripts/verify-verification-save.mjs"
   },
   "devDependencies": { "supabase": "3.1.0" }

@@ -11,7 +11,20 @@
     "api": "node src/main-api.ts",
     "worker": "node src/main-worker.ts",
     "test": "node --test",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "eval": "node scripts/eval.ts",
+    "eval:fast": "node scripts/eval.ts run --suite baseline --target scripted",
+    "eval:security": "node scripts/eval.ts run --suite security --target scripted",
+    "eval:integration": "node scripts/eval.ts run --suite business --target api-memory",
+    "eval:conversation": "node scripts/eval.ts run --suite conversation --target api-memory",
+    "eval:conversation-live": "node scripts/eval.ts run --suite conversation --target live --concurrency 1",
+    "eval:live": "node scripts/eval.ts run --suite live --target live --concurrency 1",
+    "eval:holdout": "node scripts/eval.ts run --suite all-holdout --target api-memory --holdout",
+    "eval:report": "node scripts/eval.ts report --run latest",
+    "eval:analyze": "node scripts/eval.ts analyze --run latest",
+    "eval:gate": "node scripts/eval.ts gate --run latest",
+    "documents:setup": "playwright install --no-remove chromium",
+    "documents:check": "node scripts/check-document-sandbox.ts"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.16",

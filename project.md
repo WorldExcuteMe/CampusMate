@@ -1,5 +1,71 @@
 # CampusMate · project.md
 
+## 2026-11-17 v22真实文稿交付与本轮收尾
+
+- 固定live连续两次9/9、真实conversation3/3，CONV-006最终1条；两项原10步任务均完成并实际下载MD/DOCX/PDF，耗时16.2/13.5分钟。最后格式定向复测2/2、6文件复读，PDF四页独立渲染检查；原稿短引用避免模型为导出重写整篇，普通正文提前断流有一次只读恢复。详细runId、源码版本边界与样件见[七项收尾报告](docs/AGENT_DRAFT_DELIVERY_20261117.md)。
+- 最后排版修正后串行后端560项=559 pass/0 fail/1外部DB skip，类型通过；fast16/16，business7/7、conversation api-memory3/3及回放1/1。原Gate五项PASS，留出live3/4、api-memory2/2；固定compare无目标类别回归，不宣称留出全过。最后标题修正仅涉及原稿转换分支，两次固定live在该格式修正前，非相同字节最终候选重复验收。
+- 整体质量尚未全达：工具均值0.667→1.0超+20%目标，单轮Parity来源100%→83%，多轮Parity60%低于80%而FAIL；原29例全批26/29，新31例84轮全部exploratory、无人工晋升，后续原失败定向通过不拼成全批100%。离线可信核验语义过强/预算占位、其他Provider、云PG/RLS、新UI及Word原生视觉仍有边界。
+- 用户要求的TokenEconomizer已通过官方CLI安装、Windows启动适配和标准TUI信任5个hook；核实为Microsoft/UC Berkeley项目。后续新Codex会话启用，真实净节省未测。仍由主代理独立执行，分支`codex/agent-evaluation-quality-20261116`保持未提交；没有push、合并main、认证密钥改动、云端业务写入或重启日常服务，不宣称网页已运行新后端。
+
+## 2026-11-17 正文断流与v21候选（历史，已收集）
+
+- v20未通过：固定第二次live8/9、留出live3/4、探索26/29；Gate因LIVE-007拒绝，两个10步任务在第9轮断流，0真实文件。保留全部失败，不改期望/阈值，不提交发布。
+- v21允许提前EOF后的普通正文一次无工具续写，保护取消/预算/工具片段/检查点；明确私有指令请求由Runtime拒绝。全后端552 pass/0 fail/1外部DB skip（553项）、类型通过，fast16/16、业务/对话/回放11/11。两项原长任务与原失败15轮会话使用真实API复测中，尚未宣布交付通过。
+- 主代理独立，原分支保留；无云端业务写入、凭证变更、push或main合并。最新证据及未达标项见[实测](docs/AGENT_STREAM_RECOVERY_20261117.md)。
+
+## 2026-11-16 Agent质量迭代（候选实测进行中）
+
+- 当前统一事实见[质量实测记录](docs/AGENT_EVAL_QUALITY_20261116.md)：22:42候选后端541 pass/0 fail/1外部DB skip（542项），前端227/227、类型/构建通过；fast16/16、业务/对话/回放11/11。已增加有界活跃SSE时限、暂停会话新轮次拦截与UI说明、发送前预算检查及完整逐轮证据。当前候选真实固定集重复、长任务文件验收与Gate尚未收尾，不提交、不push、不合并main、不重启云业务Worker。以下保留早期进展，不能当最终结论。
+
+- 用户切换到Headless CLI常规能力评测，主代理单独执行。新分支`codex/agent-evaluation-quality-20261116`保留之前未提交工作；不push、不合并main、不改认证/密钥、不写云端业务库，不阅读holdout内容或修改既有期望/Gate阈值。
+- 真实复现`20261116-202706_live_quality-before-p0-p1-202_46fa20`：LIVE-005检索无URL，CONV-006跨日期更正出现2条。新增按owner+已有itemId更新通知、列表定位、旧工具唯一匹配兼容、原文/已确认状态保护；保留同名独立场次。P0真实复测`20261116-204910_live_quality-p0-manifest-rete_44b743`18/18检查，succeeded，3轮153.2s、2工具，原id不变、最终1条；仍需固定集重复证明稳定性。
+- 修正年份分词/泛类目过滤、多来源请求路径、只请求名称链接时的摘要范围；证据门槛不放宽。第一版LIVE-005虽然现有断言通过，实际任务仍failed且有引用不匹配，明确不宣称完成。流式工具协议偶发错误仍在定位。
+- 新增5套探索数据共22例/75轮（含两段15轮会话、两项10步骤三格式文档），全部validate；不自动晋升固定集。新增同owner跨session入口、产物授权下载/哈希/复读检查、逐例结果与业务事实持久落盘。组件148/148、入口/runner定向38/38、类型检查通过；api-memory计分10/10、跨日期失败回放1/1。脚本通过不当模型能力结论。
+- 固定live与探索live正在运行，合计最多2个真实请求并行，数据只在内存；完整回归、连续两次稳定live、holdout/Gate尚未完成，暂不提交候选。证据与边界见[评测文档](docs/EVALUATION_SYSTEM.md)和[规格](docs/specs/agent-evaluation-quality.md)。
+
+## 2026-11-16 Headless Agent 评测与自动优化闭环
+
+- 用户要求工作 Agent 不再用 Computer Use/浏览器模拟用户验证 CampusMate，而是直接调用后端 Runtime 完成批量评测、Trace 评分与自动迭代。主代理执行，分支保持 `codex/vision-and-agent-acceptance-20261116`，未 push/合并 main、未改认证与云端数据。
+- 新增独立评测子系统 `backend/src/evaluation/` + CLI `backend/scripts/eval.ts`：三级通道 `scripted`（真实 runAgentLoop，毫秒级）、`api-memory`（真实 HTTP/JWT/Worker/状态机/事件/幂等/审批/执行期 Evaluator，模型脚本回放，内存库）、`live`（真实 Provider/真实工具，业务数据写内存库，不写云端 PG）；另有 `legacy` 兼容既有 30 任务。
+- 对话级（人类聊天等价）已支持：数据集 `turns` 多轮用例走真实 `POST /v1/sessions` + 逐轮 `POST /v1/tasks(sessionId,turnId)`，Worker 注入历史/身份；`--reasoning/--provider/--session` 对齐 UI 入口；每轮独立检查 + 会话级检查；`trace.turns/session` 保留每轮轨迹。新增 `conversation` 数据集（api-memory 3 例 + live 3 例）。
+- Parity 对照已实现：把真实 UI 任务/会话的事件与评测 trace 归一成行为指纹，比较状态/工具序列（含 LCS 相似度）/参数哈希/来源/用量；支持 `--human-file` 或 `--human-task/--human-session + --token`。实测单轮真实 UI 任务（3b84）：状态一致、工具序列 100%、来源 100%、LLM 请求 0 差、tokens 0.98×；6 轮真实会话（8b8e）：状态一致、工具序列相似度 80%、集合 50%（人类会话含一次错误写入机会雷达、后被纠正，评测未复现该错误），据此明确“行为结构等价、文本不逐字等价”的边界。
+- 新增数据集 `backend/evaluation/datasets/`（baseline 12、security 6、business 7、live 9）与留出集 `holdout/`（live-holdout、harness-smoke）；声明式 18 类确定性检查 + 隐式运行时检查（区分业务失败与基础设施失败）+ 失败归因；负样本/探索性用例不计通过率但失败可见。
+- 自动迭代链路已打通：`validate → run(fast/integration/live) → report/analyze → compare → gate`；运行 Manifest 记录 git/模型/prompt/工具/数据集哈希；Gate 含绝对通过率、相对下降、holdout、security/evidence 硬门槛；失败分析输出规则化优化建议与校准样本；可选独立 LLM Judge（`--judge`）已实测。系统不自动改代码，候选修改仍由工作 Agent 在独立分支完成，生产发布保留人工 Release Gate。
+- 实跑证据：fast（baseline+security 18 例）计分 16/16、2 条负样本按设计失败且可见，平均 4ms；integration（business 7 例）7/7、平均 96ms；**live（真实 Gemma 9 例）8/9、平均 63.7s、总 29015 tokens，无浏览器/Computer Use**；对话级：conversation 脚本 3/3（真实 session + 逐轮检查）、真实模型多轮 2/3（CONV-006 暴露多轮重复写入真实缺口，2 条记录）；live 留出集 4/4（平均 20.9s）；Parity 单轮/6 轮对照见上；LIVE-005 真实失败（4 次 web_search 后回复无 URL，format_error）由 analyze 直接定位并沉淀为 replay 用例；legacy 30/30；独立 Judge 单例评分实测生效。所有 live 均使用内存业务库，未写云端数据库。
+- 验证：后端全套 517 项 = 514 pass / 2 fail / 1 skip；2 个失败为既有沙箱限制（Playwright Chromium 与子进程 spawn EPERM），与本轮代码无关；评测子系统自身 129 项单测全绿；`tsc --noEmit` 通过；既有 `run-benchmark` 30/30；CI 增加确定性评测步骤。详见 [EVALUATION_SYSTEM](docs/EVALUATION_SYSTEM.md) 与 `backend/evaluation/datasets/README.md`。
+- 边界：不覆盖浏览器 UI/DOM/视觉（仍由 Playwright/人工验收）；live 不写云端 PG，持久化回归独立；AMD Gemma 延迟 100–180s/次且偶发 429，live 结论按当次报告解释，不宣称稳定性能。Computer Use 仅保留三种低频用途（人类基线 parity / UI 视觉验收 / 探索反例），协议见 EVALUATION_SYSTEM 13.1；交给调优 Agent 的完整启动 Prompt 见 [EVALUATION_AGENT_STARTUP_PROMPT](docs/EVALUATION_AGENT_STARTUP_PROMPT.md)。
+
+## 2026-11-16 真实内部浏览器回归
+
+- 分支 `codex/platform-reliability-20261116`，主代理执行。真实Gemma+云Supabase+平台界面复现“成功但来源错误”，修正主题/正文判断、摘要隔离与一次纠正、检查点真实提示、旧failed恢复入口。
+- 临时逐句计时发现当前会话操作误读全账号历史图片，单次查询41.56秒；按owner+session查询且不加载图片，原图执行入口保留。本轮POST约5.97秒，另修提交中进度与窗口提示一致性；不把单样本当稳定性能。
+- 原问题high检索、同会话零搜索追问、不可解析指定源失败、蓝桥杯检索、附件上传真实视觉调用、旧记录入口与刷新均实际操作；后端355通过/1外部DB跳过，前端221通过，类型与构建通过。详见[报告](docs/REAL_PLATFORM_REGRESSION.md)及[规格](docs/specs/real-platform-regression.md)。未改main、认证、密钥和旧记录。
+
+## 2026-11-15 云端任务恢复与可靠摘要
+
+- 当前分支 `codex/cloud-task-resilience-20261115`；修复真实 PG 建连超时的有界恢复、回滚原错、坏连接/Client error、Worker 存储暂停与空闲认领恢复。显式审阅的纯只读查询可恢复一次，写入和事务不重放，TLS/owner/密钥保持；本机改用原项目 IPv4 Session Pooler，数据库不走 CONNECT。
+- 简短信息收集从真实搜索结果读取至多两个来源，再以实际 URL 生成摘要；失败透明记录。新增轻量 summary 阶段，保留研究和复杂任务 high 偏好及真实遥测；补通知赛程与实际举办的时效区分。
+- 真实 high 云任务252138ms完成，真实暂停任务在新连接下恢复；最终auto任务174459ms、2次模型/2次工具、26轮询及SSE均通过，保留实际状态未核实。实际重启后读回6条消息/18条事件、模型及密钥解密匹配；夹具已清理、旧失败记录保留。11-16收尾补原子租约暂停与受控时钟回归，最终串行348项为347 pass/0 fail/0 cancelled/1外部数据库skip，类型通过。已重新拉起前端5176、云API/Worker8788并验证认证API为200，不依赖WSL。
+- 规格及完整失败/恢复证据见 `docs/specs/cloud-task-resilience.md`、`docs/CLOUD_TASK_RESILIENCE.md`；本轮不push、不合并main，不改旧会话或数据库结构。
+
+## 2026-11-15 Gemma 工具执行回归修复
+
+- 用户报告竞赛收集任务只返回JSON/Gemma工具token，随后超时；已查实前两任务无tool.called却succeeded，第三任务单次180008ms超时。主代理单独修复，分支`codex/model-tool-recovery-20261115`，不push/不合并main。
+- 修复独立工具文本解析/一次有界协议修正、未执行指令禁止验收成功；Radeon builtin/BYOK自动适配图像/原生工具/SSE/max_tokens/嵌套思考与单system。设置页移除能力填写，ID自动生成、名称可选。
+- 真实API又揭示同index不同ID被拼成web_fetchweb_fetch，以及SSE错误帧被漏读；已修复ID组装、错误分类和DONE终止。补搜索实体相关性/一次短查询回退、已取得正文后的简短摘要阶段、真实来源绑定、带提示的只读抓取恢复；写入失败、用户指定必读来源、预算/取消/幂等保护保留。
+- 已用用户授权的真实Gemma识别测试图7319/红色圆形；原始竞赛提示在完整工具清单下5次模型请求、4次工具调用、128824ms正常结束，成功读取高校通知并列出来源，原官网抓取失败透明提示。不将赛前计划日期叙述视为独立事实验收，保留质量风险。
+- 后端320项：319 pass / 0 fail / 1外部TEST_DATABASE_URL skip，类型通过；前端219/219及类型/生产构建通过。已确认无排队/运行任务后重启本机8788，postgres/Worker开启，5176=200，认证模型列表200/未认证401，内置Gemma自动能力已生效。主密钥、云数据和旧任务记录保持。
+- 详情见`docs/MODEL_TOOL_RECOVERY.md`及`docs/specs/model-tool-recovery.md`。其他Key/端点完整探测、原生其他协议和KV收益仍待真实验收；本次不宣称全模型兼容或所有事实准确。
+
+## 2026-11-15 云端持久化运行接入
+
+- 用户因 WSL 内存占用明确选择复用原云端 Supabase。主代理单独完成，分支 `codex/local-persistent-runtime-20261115`，基于已发布 main d22efc9；本次不 push、不合并 main。
+- 已补 PgPool 显式 HTTP(S) CONNECT 与可信 CA 接线，保持 TLS 证书/主机名验证。Windows 原生代理可达；原有云 Auth/账号保持，刷新当前公开 JWKS，服务器主密钥保留在私有配置。
+- 云旧 schema 核对并加密备份/解密读回后，登记已有基线并在单事务中应用其余 8 份迁移，共九条原生历史。再次执行 applied=[]，原资料记录未变；36 张 public 表 RLS 开启。
+- 已实测真实云的供应商/默认项/会话/消息/任务/文件跨 API 进程重启读回、密钥解密和 API/RLS owner 隔离；诊断只用虚构 key，Worker 暂停期间无模型调用，夹具已清理后恢复正式 Worker。
+- 本地 5176 页面、8787 开发代理、8788 Postgres API/Worker 已运行；新增本机忽略入口 `.local/start-campusmate.ps1`，日常不需要常驻 WSL。原有其他 WSL 服务未停止。
+- 新增代理回归 4/4、后端类型检查通过；完整后端 293 项为 292 pass / 0 fail / 1 外部 TEST_DATABASE_URL skip。此 skip 独立于上述真实云实测。当前浏览器 Demo，真实账号下保存和 AMD 连通仍待用户登录验收。详见 `docs/CLOUD_RUNTIME_SETUP.md` 和 `docs/specs/cloud-persistent-development.md`。
+
 ## 2026-11-15 PR #5 集成审查
 
 - 主代理独立审查同事 PR #5（aa89e3d）并与 T1–T10 基线 6697163 合并，解决 30 处内容冲突。整合分支 `codex/integrate-pr5-main-20261115`，保持双方提交祖先。

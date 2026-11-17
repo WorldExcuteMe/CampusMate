@@ -10,7 +10,8 @@ import { backendEnabled } from "@/lib/agent/api-client";
 import { useAuth } from "@/app/auth";
 import { errorMessage } from "@/lib/llm/errors";
 
-const blank = () => ({ id: "", name: "", baseUrl: "", protocol: "openai", model: "", apiKey: "", contextLimit: "", tools: "unknown", vision: "unknown", reasoning: "unknown", maxOutputTokens: "", streaming: "unknown", temperature: "unknown", outputParameter: "unknown" });
+const blank = () => ({ id: `provider-${crypto.randomUUID()}`, name: "", baseUrl: "", protocol: "openai", model: "", apiKey: "", contextLimit: "" });
+const capabilityLabel = (value: unknown) => value === true ? "支持" : value === false ? "不支持" : "待实际请求确认";
 
 export function ProviderSettings() {
   const qc = useQueryClient();
@@ -24,12 +25,12 @@ export function ProviderSettings() {
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const refresh = () => { void qc.invalidateQueries({ queryKey }); };
   const save = useMutation({
-    mutationFn: () => saveProvider({ id: form.id, name: form.name, baseUrl: form.baseUrl, protocol: "openai", model: form.model, apiKey: form.apiKey || undefined, contextLimit: form.contextLimit ? Number(form.contextLimit) : null, capabilities: { tools: form.tools, vision: form.vision === "unknown" ? "unknown" : form.vision === "true", reasoning: form.reasoning, streaming: form.streaming === "unknown" ? "unknown" : form.streaming === "true", temperature: form.temperature === "unknown" ? "unknown" : form.temperature === "true", outputParameter: form.outputParameter, ...(form.maxOutputTokens ? { maxOutputTokens: Number(form.maxOutputTokens) } : {}) } }),
+    mutationFn: () => saveProvider({ id: form.id, name: form.name || form.model, baseUrl: form.baseUrl, protocol: "openai", model: form.model, apiKey: form.apiKey || undefined, contextLimit: form.contextLimit ? Number(form.contextLimit) : null }),
     onSuccess: (ok) => { if (!ok) throw new Error("保存失败"); refresh(); setForm(blank()); setEditing(false); },
   });
   const action = useMutation({
     mutationFn: async ({ p, kind }: { p: ProviderPublic; kind: "test" | "default" | "delete" | "clear" }) => {
-      if (kind === "test") { const result = await testProvider(p.id); return { id: p.id, text: `连接成功 · 配置 ${result.configuredModel} · 实际 ${result.actualModel}。能力仍以已配置项为准。` }; }
+      if (kind === "test") { const result = await testProvider(p.id); return { id: p.id, text: `文本连接成功 · 配置 ${result.configuredModel} · 实际 ${result.actualModel}。其他能力按接口规则及实际请求确认。` }; }
       if (kind === "default") await defaultProvider(p.id);
       if (kind === "delete") await removeProvider(p.id);
       if (kind === "clear") await saveProvider({ id: p.id, name: p.name, baseUrl: p.baseUrl, protocol: p.protocol, model: p.model, removeSecret: true });
@@ -38,13 +39,11 @@ export function ProviderSettings() {
     onSuccess: ({ id, text }) => { setFeedback((old) => ({ ...old, [id]: text })); refresh(); },
   });
   function edit(p: ProviderPublic) {
-    const caps = p.capabilities ?? {};
-    setForm({ id: p.id, name: p.name, baseUrl: p.baseUrl, protocol: "openai", model: p.model, apiKey: "", contextLimit: p.contextLimit?.toString() ?? "", tools: String(caps.tools ?? "unknown"), vision: String(caps.vision ?? "unknown"), reasoning: String(caps.reasoning ?? "unknown"), maxOutputTokens: caps.maxOutputTokens?.toString() ?? "", streaming: String(caps.streaming ?? "unknown"), temperature: String(caps.temperature ?? "unknown"), outputParameter: String(caps.outputParameter ?? "unknown") });
+    setForm({ id: p.id, name: p.name, baseUrl: p.baseUrl, protocol: "openai", model: p.model, apiKey: "", contextLimit: p.contextLimit?.toString() ?? "" });
     setEditing(true);
     save.reset();
   }
   const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((old) => ({ ...old, [key]: e.target.value }));
-  const selectClass = "h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
   return (
     <Card className="mb-4 overflow-hidden">
@@ -65,6 +64,8 @@ export function ProviderSettings() {
                 <div className="min-w-0">
                   <p className="font-medium">{p.name}{p.isDefault && <span className="ml-2 text-xs text-primary">默认</span>}{p.builtin && <span className="ml-2 text-xs text-muted-foreground">服务端提供</span>}</p>
                   <p className="mt-1 break-all text-xs text-muted-foreground">{p.model || "模型未知"} · {p.hasKey ? "密钥已配置" : "缺少密钥"} · 窗口 {p.contextLimit?.toLocaleString() ?? "未知"}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">图片：{capabilityLabel(p.capabilities?.vision)} · 工具：{p.capabilities?.tools === "native" ? "原生调用" : p.capabilities?.tools === "none" ? "不支持" : "兼容回退"} · 流式：{capabilityLabel(p.capabilities?.streaming)}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{p.metadataSource?.startsWith("endpoint-profile") ? "按厂商接口规则自动适配；实际可用性以请求为准。" : "接口自动适配；未确认的能力保留未知，不需要手动填写。"}</p>
                 </div>
                 <div className="flex flex-wrap gap-1">
                   <Button size="sm" variant="ghost" disabled={!enabled || action.isPending} aria-label={`测试连接 ${p.name}`} onClick={() => action.mutate({ p, kind: "test" })}>测试连接</Button>
@@ -84,24 +85,11 @@ export function ProviderSettings() {
         <form className="grid gap-3 border-t pt-5 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
           <p className="font-medium sm:col-span-2">{editing ? "编辑连接" : "添加自定义连接"}</p>
           <div><Label htmlFor="provider-id">连接 ID</Label><Input id="provider-id" required disabled={editing || !enabled} placeholder="my-provider" value={form.id} onChange={set("id")} /></div>
-          <div><Label htmlFor="provider-name">显示名称</Label><Input id="provider-name" required disabled={!enabled} placeholder="我的模型" value={form.name} onChange={set("name")} /></div>
+          <div><Label htmlFor="provider-name">显示名称</Label><Input id="provider-name" disabled={!enabled} placeholder="可选，默认使用模型名称" value={form.name} onChange={set("name")} /></div>
           <div><Label htmlFor="provider-url">API 地址</Label><Input id="provider-url" type="url" required disabled={!enabled} placeholder="https://api.example.com/v1" value={form.baseUrl} onChange={set("baseUrl")} /></div>
           <div><Label htmlFor="provider-model">模型 ID</Label><Input id="provider-model" required disabled={!enabled} placeholder="服务商提供的模型ID" value={form.model} onChange={set("model")} /></div>
           <div><Label htmlFor="provider-key">API 密钥</Label><Input id="provider-key" type="password" autoComplete="off" disabled={!enabled} placeholder={editing ? "留空保留原密钥" : "仅提交到认证后端"} value={form.apiKey} onChange={set("apiKey")} /></div>
-          <div><Label htmlFor="provider-context">上下文上限（可选）</Label><Input id="provider-context" type="number" min="1024" disabled={!enabled} placeholder="未知时留空" value={form.contextLimit} onChange={set("contextLimit")} /></div>
-          <details className="sm:col-span-2">
-            <summary className="cursor-pointer text-sm text-muted-foreground">接口能力（按服务商文档填写）</summary>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <div><Label htmlFor="provider-tools">工具调用</Label><select id="provider-tools" className={selectClass} disabled={!enabled} value={form.tools} onChange={set("tools")}><option value="unknown">未知</option><option value="native">原生工具</option><option value="json">JSON回退协议</option><option value="none">不支持</option></select></div>
-              <div><Label htmlFor="provider-vision">图片输入</Label><select id="provider-vision" className={selectClass} disabled={!enabled} value={form.vision} onChange={set("vision")}><option value="unknown">未知</option><option value="true">支持</option><option value="false">不支持</option></select></div>
-              <div><Label htmlFor="provider-reasoning">思考参数</Label><select id="provider-reasoning" className={selectClass} disabled={!enabled} value={form.reasoning} onChange={set("reasoning")}><option value="unknown">未知</option><option value="none">不可调节</option><option value="reasoning_effort">reasoning_effort</option><option value="enable_thinking">enable_thinking</option><option value="thinking_budget" disabled>预算型参数（待适配）</option></select></div>
-              <div><Label htmlFor="provider-streaming">正文流式输出</Label><select id="provider-streaming" className={selectClass} disabled={!enabled} value={form.streaming} onChange={set("streaming")}><option value="unknown">未知</option><option value="true">支持SSE</option><option value="false">不支持</option></select></div>
-              <div><Label htmlFor="provider-temperature">temperature 参数</Label><select id="provider-temperature" className={selectClass} disabled={!enabled} value={form.temperature} onChange={set("temperature")}><option value="unknown">未知</option><option value="true">支持</option><option value="false">不支持</option></select></div>
-              <div><Label htmlFor="provider-output-param">输出上限参数</Label><select id="provider-output-param" className={selectClass} disabled={!enabled} value={form.outputParameter} onChange={set("outputParameter")}><option value="unknown">未知，不发送</option><option value="max_tokens">max_tokens</option><option value="max_completion_tokens">max_completion_tokens</option></select></div>
-              <div><Label htmlFor="provider-output">最大输出 token（可选）</Label><Input id="provider-output" type="number" min="256" disabled={!enabled} value={form.maxOutputTokens} onChange={set("maxOutputTokens")} /></div>
-            </div>
-          </details>
-          <p className="text-xs text-muted-foreground sm:col-span-2">当前支持 OpenAI Chat Completions 兼容协议。窗口和能力未知时保持未知，连接测试仅验证文本请求。</p>
+          <p className="text-xs text-muted-foreground sm:col-span-2">只需填写API地址、模型ID和密钥，连接ID已自动生成，显示名称可留空。已知接口按厂商规则自动适配，其他能力在实际请求中确认；当前支持OpenAI Chat Completions兼容协议。</p>
           {(save.error || action.error) && <p role="alert" className="text-sm text-destructive sm:col-span-2">{errorMessage(save.error ?? action.error)}</p>}
           <div className="flex gap-2 sm:col-span-2"><Button type="submit" disabled={!enabled || !form.id || !form.model || !form.baseUrl || save.isPending}><Plus className="size-4" />{save.isPending ? "正在保存…" : editing ? "保存更改" : "添加供应商"}</Button>{editing && <Button type="button" variant="ghost" onClick={() => { setForm(blank()); setEditing(false); }}>取消编辑</Button>}</div>
         </form>

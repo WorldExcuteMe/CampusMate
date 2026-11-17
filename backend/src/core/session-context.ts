@@ -1,4 +1,7 @@
 import type { ChatMessage, Task } from "./types.ts";
+export function textOnlyHistory<T extends ChatMessage>(message: T): T {
+  return !Array.isArray(message.content) ? message : { ...message, content: message.content.map(part => part.type === "image_url" ? { type: "text" as const, text: "[历史图片：原附件随任务保存]" } : part) };
+}
 import type { StoredSessionMessage, AppendSessionMessage } from "./storage-contracts.ts";
 import { contentText } from "./context.ts";
 
@@ -32,13 +35,13 @@ export function sessionHistory(rows: StoredSessionMessage[], tasks: Task[], curr
   const byId = new Map(tasks.map((t) => [t.id, t]));
   return rows.filter((m) => m.role !== "system" && m.taskId !== current.id && (current.turnSeq === undefined || !m.taskId || (byId.get(m.taskId)?.turnSeq ?? 0) < current.turnSeq))
     .sort((a, b) => ((byId.get(a.taskId ?? "")?.turnSeq ?? 0) - (byId.get(b.taskId ?? "")?.turnSeq ?? 0)) || a.seq - b.seq)
-    .map(({ role, content, tool_calls, tool_call_id }) => ({ role, content, ...(tool_calls ? { tool_calls } : {}), ...(tool_call_id ? { tool_call_id } : {}) }));
+    .map(({ role, content, tool_calls, tool_call_id, reasoning_content, reasoning_source }) => ({ role, content, ...(tool_calls ? { tool_calls } : {}), ...(tool_call_id ? { tool_call_id } : {}), ...(role === 'assistant' && reasoning_content !== undefined ? { reasoning_content, reasoning_source } : {}) }));
 }
 
 // Preserve direct user statements, with provenance and correction order; never infer a profile.
 export function identityContext(rows: StoredSessionMessage[], tasks: Task[], current: Task): string {
   const byId = new Map(tasks.map((t) => [t.id, t]));
-  const facts = rows.filter((m) => m.role === "user" && m.taskId !== current.id && (current.turnSeq === undefined || (byId.get(m.taskId ?? "")?.turnSeq ?? 0) < current.turnSeq))
+  const facts = rows.filter((m) => m.role === "user" && !(typeof m.content === "string" && /^\[(?:工具观测|图片声明提取)/.test(m.content)) && m.taskId !== current.id && (current.turnSeq === undefined || (byId.get(m.taskId ?? "")?.turnSeq ?? 0) < current.turnSeq))
     .sort((a, b) => (byId.get(a.taskId ?? "")?.turnSeq ?? 0) - (byId.get(b.taskId ?? "")?.turnSeq ?? 0) || a.seq - b.seq)
     .flatMap((m) => contentText(m.content).split(/(?<=[。！？\n])/).filter((line) => /我(?:是|的|叫|现在|目前)|专业|年级|学校|更正|改为|擅长|预算|约束|要求/.test(line)).map((line) => `[seq=${m.seq}] ${line}`));
   if (!facts.length) return "";

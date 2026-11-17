@@ -1,0 +1,655 @@
+{
+  "schemaVersion": 1,
+  "id": "human-habits-time",
+  "name": "相对日期、跨时区、单双周与冲突来源",
+  "description": "补充人类时间表达矩阵。全部exploratory；固定时钟/课表只作为用户给定上下文，不代表读取真实高校系统。",
+  "cases": [
+    {
+      "id": "TIME-001",
+      "category": "time_context",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "api-memory",
+        "live"
+      ],
+      "prompt": "以本次上下文日期为准：今晚7点讨论，本周五18点交报名表，下周一上午10点开会。把三项具体日期时间写清楚，全部北京时间。只预览，不调用任何工具。",
+      "context": {
+        "now": "2026-11-16T13:00:00+08:00"
+      },
+      "script": [
+        {
+          "content": "2026-11-16 19:00；2026-11-20 18:00；2026-11-23 10:00。"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "tool_not_called",
+          "name": "list_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "update_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_to_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_create"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_inspect"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_export"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "read_artifact"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_search"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_fetch"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "propose_verification"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_opportunity"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "list_opportunities"
+        },
+        {
+          "kind": "reply_regex",
+          "pattern": "11(?:月|[-/])16"
+        },
+        {
+          "kind": "reply_regex",
+          "pattern": "11(?:月|[-/])20"
+        },
+        {
+          "kind": "reply_regex",
+          "pattern": "11(?:月|[-/])23"
+        },
+        {
+          "kind": "reply_includes",
+          "all": [
+            "19:00",
+            "18:00",
+            "10:00"
+          ]
+        }
+      ],
+      "tags": [
+        "human-habits",
+        "relative-time",
+        "exploratory"
+      ]
+    },
+    {
+      "id": "TIME-002",
+      "category": "time_context",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "api-memory",
+        "live"
+      ],
+      "prompt": "北京时间2026-11-18 20:00开始视频讨论，持续90分钟。另一同学使用UTC。给两个时区各自的开始与结束时间，不调用任何工具、不保存。",
+      "context": {
+        "now": "2026-11-16T13:00:00+08:00"
+      },
+      "script": [
+        {
+          "content": "北京时间2026-11-18 20:00–21:30；UTC 2026-11-18 12:00–13:30。"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "tool_not_called",
+          "name": "list_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "update_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_to_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_create"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_inspect"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_export"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "read_artifact"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_search"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_fetch"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "propose_verification"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_opportunity"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "list_opportunities"
+        },
+        {
+          "kind": "reply_includes",
+          "all": [
+            "20:00",
+            "21:30",
+            "12:00",
+            "13:30"
+          ]
+        }
+      ],
+      "tags": [
+        "human-habits",
+        "relative-time",
+        "exploratory"
+      ]
+    },
+    {
+      "id": "TIME-003",
+      "category": "time_context",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "api-memory",
+        "live"
+      ],
+      "prompt": "纽约同学明确按UTC-5：2026-11-18 09:00至11:00开会。我按北京时间UTC+8。只换算我的开始、结束具体日期时间，不调用任何工具。",
+      "context": {
+        "now": "2026-11-16T13:00:00+08:00"
+      },
+      "script": [
+        {
+          "content": "北京时间2026-11-18 22:00至2026-11-19 00:00。"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "tool_not_called",
+          "name": "list_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "update_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_to_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_create"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_inspect"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_export"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "read_artifact"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_search"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_fetch"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "propose_verification"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_opportunity"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "list_opportunities"
+        },
+        {
+          "kind": "reply_regex",
+          "pattern": "11(?:月|[-/])18"
+        },
+        {
+          "kind": "reply_regex",
+          "pattern": "11(?:月|[-/])19"
+        },
+        {
+          "kind": "reply_includes",
+          "all": [
+            "22:00",
+            "00:00"
+          ]
+        }
+      ],
+      "tags": [
+        "human-habits",
+        "relative-time",
+        "exploratory"
+      ]
+    },
+    {
+      "id": "TIME-004",
+      "category": "time_context",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "api-memory",
+        "live"
+      ],
+      "prompt": "现在本学期第11周。操作系统只在单周周一14–16上课；本周周一15–16想讨论项目。是否冲突？只能依据已给课表，先预览，不调用任何工具、不改课。",
+      "context": {
+        "now": "2026-11-16T13:00:00+08:00",
+        "term": {
+          "startDate": "2026-09-07",
+          "endDate": "2027-01-24",
+          "totalWeeks": 20,
+          "timezone": "Asia/Shanghai"
+        },
+        "schedules": [
+          {
+            "courseId": "",
+            "courseName": "操作系统",
+            "weekday": 1,
+            "startTime": "14:00",
+            "endTime": "16:00",
+            "startWeek": 1,
+            "endWeek": 20,
+            "weekPattern": "odd",
+            "classroom": "A101"
+          }
+        ]
+      },
+      "script": [
+        {
+          "content": "第11周是单周，操作系统上课，项目讨论与必修课冲突。"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "tool_not_called",
+          "name": "list_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "update_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_to_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_create"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_inspect"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_export"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "read_artifact"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_search"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_fetch"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "propose_verification"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_opportunity"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "list_opportunities"
+        },
+        {
+          "kind": "reply_includes",
+          "all": [
+            "冲突",
+            "操作系统"
+          ]
+        }
+      ],
+      "tags": [
+        "human-habits",
+        "relative-time",
+        "exploratory"
+      ]
+    },
+    {
+      "id": "TIME-005",
+      "category": "time_context",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "api-memory",
+        "live"
+      ],
+      "prompt": "现在第12周，操作系统仅单周周一14–16上课，其他固定课没有提供。本周周一15–16拟项目讨论，与这一门课是否冲突？只判断这一门，不猜其他课，不调用工具、不保存。",
+      "context": {
+        "now": "2026-11-23T13:00:00+08:00",
+        "term": {
+          "startDate": "2026-09-07",
+          "endDate": "2027-01-24",
+          "totalWeeks": 20,
+          "timezone": "Asia/Shanghai"
+        },
+        "schedules": [
+          {
+            "courseId": "",
+            "courseName": "操作系统",
+            "weekday": 1,
+            "startTime": "14:00",
+            "endTime": "16:00",
+            "startWeek": 1,
+            "endWeek": 20,
+            "weekPattern": "odd",
+            "classroom": "A101"
+          }
+        ]
+      },
+      "script": [
+        {
+          "content": "第12周是双周，这门单周课本周不上课，因此不冲突；其他安排未知。"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "tool_not_called",
+          "name": "list_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "update_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_to_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_create"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_inspect"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_export"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "read_artifact"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_search"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_fetch"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "propose_verification"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_opportunity"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "list_opportunities"
+        },
+        {
+          "kind": "reply_regex",
+          "pattern": "不.{0,4}冲突|无.{0,4}冲突|本周不上课|非上课周"
+        }
+      ],
+      "tags": [
+        "human-habits",
+        "relative-time",
+        "exploratory"
+      ]
+    },
+    {
+      "id": "TIME-006",
+      "category": "time_context",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "api-memory",
+        "live"
+      ],
+      "prompt": "CM验收：两份没有主办方落款的转发，一份写11月24日截止，另一份11月25日截止，转发顺序不能证明发布顺序。只标冲突和待确认项，不选一个当最终截止，不调用工具、不保存。",
+      "context": {
+        "now": "2026-11-16T13:00:00+08:00"
+      },
+      "script": [
+        {
+          "content": "两份材料截止日期冲突：11月24日与11月25日。主办方与发布时间未核实，需确认后再确定最终截止。"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "tool_not_called",
+          "name": "list_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "update_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_to_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_create"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_inspect"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_export"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "read_artifact"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_search"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_fetch"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "propose_verification"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_opportunity"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "list_opportunities"
+        },
+        {
+          "kind": "reply_includes",
+          "all": [
+            "冲突"
+          ]
+        },
+        {
+          "kind": "reply_regex",
+          "pattern": "11(?:月|[-/])24"
+        },
+        {
+          "kind": "reply_regex",
+          "pattern": "11(?:月|[-/])25"
+        },
+        {
+          "kind": "reply_regex",
+          "pattern": "未核实|待确认|需.{0,3}确认"
+        }
+      ],
+      "tags": [
+        "human-habits",
+        "relative-time",
+        "exploratory"
+      ]
+    },
+    {
+      "id": "TIME-007",
+      "category": "time_context",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "api-memory",
+        "live"
+      ],
+      "prompt": "急！“月底前交”是别的同学上个月转来的，月份不清楚。别因为我着急就猜本月最后一天。请只列需要确认的时间信息，不调用工具、不保存。",
+      "context": {
+        "now": "2026-11-16T13:00:00+08:00"
+      },
+      "script": [
+        {
+          "content": "需确认原始发布时间、指的是哪个月份、具体截止日期与时区。"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "tool_not_called",
+          "name": "list_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "update_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_to_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_create"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_inspect"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_export"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "read_artifact"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_search"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_fetch"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "propose_verification"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_opportunity"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "list_opportunities"
+        },
+        {
+          "kind": "reply_regex",
+          "pattern": "确认|未知|不明确"
+        },
+        {
+          "kind": "reply_excludes",
+          "any": [
+            "确定为11月30日",
+            "截止是11月30日"
+          ]
+        }
+      ],
+      "tags": [
+        "human-habits",
+        "relative-time",
+        "exploratory"
+      ]
+    }
+  ]
+}

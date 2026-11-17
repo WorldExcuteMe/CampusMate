@@ -74,6 +74,7 @@ export interface Task {
   error?: string;
   createdAt: number;
   updatedAt: number;
+  historyRevision?: string;
 }
 
 export interface Step {
@@ -110,7 +111,7 @@ export interface TaskResult {
 
 export type EventType =
   | "goal.created" | "task.queued" | "task.claimed" | "step.started" | "step.finished"
-  | "llm.request" | "llm.response" | "tool.called" | "tool.result" | "tool.approval_requested"
+  | "llm.request" | "llm.response" | "tool.called" | "tool.result" | "tool.recovered" | "tool.approval_requested"
   | "llm.delta"
   | "checkpoint.written" | "budget.exceeded" | "eval.passed" | "eval.failed"
   | "task.needs_input" | "task.cancelled" | "task.failed" | "task.succeeded" | "lease.renewed";
@@ -174,6 +175,9 @@ export interface ChatMessage {
   content: string | MessageContent[];
   tool_call_id?: string;
   tool_calls?: ToolCall[];
+  /** Opaque provider continuation data. Server-only; never emit as visible text. */
+  reasoning_content?: string;
+  reasoning_source?: string;
 }
 export interface ChatResult {
   content: string;
@@ -181,8 +185,11 @@ export interface ChatResult {
   usage: { input: number; output: number };
   model: string;
   truncated?: boolean;
+  streamInterrupted?: boolean; // SSE ended early without caller abort, length stop or protocol error.
   finishReason?: string | null;
   telemetry?: LlmTelemetry;
+  reasoningContent?: string;
+  reasoningSource?: string;
 }
 
 export interface NormalizedLlmUsage {

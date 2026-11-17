@@ -17,6 +17,12 @@ it("renders emphasis, headings, lists, GFM tables and code rather than literal M
   expect(container.querySelector("p:last-child")?.textContent).toBe("普通文本第一行\n第二行");
 });
 
+it('隐藏历史原始工具标记并说明未确认执行，不把协议当Markdown正文', () => {
+  render(<AssistantMessage content={'<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name="create_daily_task">{}</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>'} />);
+  expect(screen.getByRole('alert')).toHaveTextContent('不能视为已完成');
+  expect(screen.queryByText(/DSML/)).toBeNull();
+});
+
 it("ignores raw HTML and never auto-loads model-provided images", () => {
   const { container } = render(<AssistantMessage content={'<script>alert(1)</script>\n\n<iframe src="https://example.org"></iframe>\n\n<img src=x onerror="alert(2)">\n\n![示意图](https://tracker.example/pixel.png)\n\n正常文字'} />);
   expect(container.querySelector("script, iframe, img")).toBeNull();
@@ -39,4 +45,12 @@ it("Markdown task lists are display-only, not mutations of application tasks", (
   const checkboxes = screen.getAllByRole("checkbox");
   expect(checkboxes).toHaveLength(2);
   checkboxes.forEach(checkbox => expect(checkbox).toBeDisabled());
+});
+
+it("Chinese annotations after an automatic URL stay outside the actual destination", () => {
+  const { container } = render(<AssistantMessage content={'网址：www.caai-contest.cn（图片声称）。\n\n[中文路径](https://example.org/活动（报名）)\n\n`www.code.example（保留代码）`'} />);
+  expect(screen.getByRole("link", { name: "www.caai-contest.cn" })).toHaveAttribute("href", "http://www.caai-contest.cn/");
+  expect(container.querySelector("p")?.textContent).toBe("网址：www.caai-contest.cn（图片声称）。");
+  expect(decodeURI(screen.getByRole("link", { name: "中文路径" }).getAttribute("href")!)).toBe("https://example.org/活动（报名）");
+  expect(container.querySelector("code")).toHaveTextContent("www.code.example（保留代码）");
 });

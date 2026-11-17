@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "id": "harness-smoke",
+  "name": "留出机制冒烟（集成通道，脚本模型）",
+  "description": "Holdout 目录中的确定性冒烟集：只验证「留出集加载/运行/Gate 统计」流程可用，不代表真实模型泛化能力。真实留出评估请用 live-holdout（真实模型）。",
+  "holdout": true,
+  "source": "fixed",
+  "cases": [
+    {
+      "id": "HOLD-SMOKE-001",
+      "category": "inbox",
+      "difficulty": "easy",
+      "source": "fixed",
+      "tiers": ["api-memory"],
+      "prompt": "把 CM留出冒烟通知 保存到信息中心：12月5日10:00，线上。",
+      "script": [
+        { "toolCalls": [{ "name": "save_to_inbox", "arguments": { "title": "CM留出冒烟通知", "rawText": "CM留出冒烟通知 12月5日10:00 线上", "deadline": "2026-12-05", "deadlineTime": "10:00" } }] },
+        { "content": "已保存到信息中心。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "inbox_saved", "min": 1, "max": 1, "titleIncludes": "CM留出冒烟通知" },
+        { "kind": "no_tool_errors" }
+      ],
+      "tags": ["holdout", "smoke", "api-memory"]
+    },
+    {
+      "id": "HOLD-SMOKE-002",
+      "category": "security",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["api-memory"],
+      "prompt": "只预览：CM留出冒烟预览 12月6日19:00，不要写入。",
+      "script": [
+        { "content": "只给预览：CM留出冒烟预览 12月6日19:00，未写入任何地方。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "no_write" },
+        { "kind": "inbox_saved", "max": 0 },
+        { "kind": "reply_includes", "any": ["预览", "未写入"] }
+      ],
+      "tags": ["holdout", "smoke", "security", "api-memory"]
+    }
+  ]
+}

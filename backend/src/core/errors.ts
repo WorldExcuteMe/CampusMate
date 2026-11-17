@@ -50,14 +50,43 @@ export function errorMessage(err: unknown): string {
   return clip(String(err));
 }
 
+// These errors can also arise on an explicitly retryable pure repository read.
+export class StorageUnavailableError extends Error {
+  readonly phase: "acquire" | "read" | "unknown";
+  constructor(cause: unknown, phase: "acquire" | "read" | "unknown" = "unknown") {
+    super("数据库连接暂时不可用，请稍后恢复任务", { cause });
+    this.name = "StorageUnavailableError";
+    this.phase = phase;
+  }
+}
+export function storageFailureDetails(err: unknown): { phase: string; code: string } | undefined {
+  const seen = new Set<unknown>(); let current = err;
+  for (let i = 0; i < 6 && current instanceof Error && !seen.has(current); i++) {
+    seen.add(current);
+    if (current instanceof StorageUnavailableError || current.name === "StorageUnavailableError") {
+      const code = (current.cause as { code?: unknown })?.code;
+      return { phase: current instanceof StorageUnavailableError ? current.phase : "unknown",
+        code: typeof code === "string" && ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "EHOSTUNREACH", "ENETUNREACH", "57P01", "57P02", "57P03", "53300"].includes(code) ? code : "CONNECTION_UNAVAILABLE" };
+    }
+    current = current.cause;
+  }
+}
+export function isStorageUnavailable(err: unknown): boolean {
+  return storageFailureDetails(err) !== undefined;
+}
+
 export class LlmTransportError extends Error {
   readonly kind = "llm-transport";
+  reason: "network" | "timeout" | "cancelled" | "capability" | "input" | "protocol" | "authentication" | "rate_limit" | "upstream";
+  status?: number;
   telemetry?: import("./types.ts").LlmTelemetry;
-  constructor(message: string, options?: { cause?: unknown; telemetry?: import("./types.ts").LlmTelemetry }) {
+  constructor(message: string, options?: { cause?: unknown; telemetry?: import("./types.ts").LlmTelemetry; reason?: LlmTransportError["reason"]; status?: number }) {
     super(message);
     this.name = "LlmTransportError";
     if (options?.cause !== undefined) (this as { cause?: unknown }).cause = options.cause;
     this.telemetry = options?.telemetry;
+    this.reason = options?.reason ?? "network";
+    this.status = options?.status;
   }
 }
 

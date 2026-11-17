@@ -46,7 +46,7 @@ export function contentText(content: string | MessageContent[] | undefined): str
   return content.map((p) => (p.type === "text" ? p.text : "[图片]")).join(" ");
 }
 export function messagesTokens(msgs: ChatMessage[]): number {
-  return msgs.reduce((s, m) => s + estimateTokens(contentText(m.content)) + (m.tool_calls ? 64 : 0) + 8, 0);
+  return msgs.reduce((s, m) => s + estimateTokens(contentText(m.content)) + estimateTokens(m.reasoning_content ?? '') + (m.tool_calls ? 64 : 0) + 8, 0);
 }
 export function toolsTokens(tools?: ToolDef[]): number {
   return tools ? estimateTokens(JSON.stringify(tools)) : 0;

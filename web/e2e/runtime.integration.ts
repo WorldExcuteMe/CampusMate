@@ -92,13 +92,22 @@ test("取消保留记录；失败后新对话继续，旧任务恢复提示新�
   await expect.poll(async()=>(await task(cancelled)).status,{timeout:15_000}).toBe("cancelled");
   const failed=await send(page,"故意失败：离线故障用例");
   await expect.poll(async()=>(await task(failed)).status).toBe("failed");
-  await send(page,"我是计算机专业大二学生，继续下一轮。");
-  await expect(page.getByText("已记录你的计算机专业大二身份和每周8小时约束。",{exact:true})).toBeVisible();
+  const continued=await send(page,"我是计算机专业大二学生，继续下一轮。");
+  // Shared fixture sessions may legitimately contain the same scripted reply
+  // from an earlier task. Verify THIS task completed exactly once, not .first().
+  const reply=page.locator(`[data-task-id="${continued}"][data-message-role="assistant"]`);
+  await expect(reply).toHaveCount(1);
+  await expect(reply).toContainText("已记录你的计算机专业大二身份和每周8小时约束。");
   await page.getByLabel("查看任务记录").selectOption(failed);
-  const response=page.waitForResponse(r=>r.url().endsWith(`/${failed}/resume`));
-  await page.getByRole("button",{name:"恢复任务",exact:true}).click();
-  expect((await response).status()).toBe(409);
-  await expect(page.getByRole("alert")).toContainText("后续对话已开始，请用新消息继续");
+  // The agreed UI contract warns before a user can submit an invalid resume.
+  // Keep the independent server rejection check instead of requiring the old
+  // button to reappear or weakening the 409/history invariants.
+  await expect(page.getByRole("button",{name:"恢复任务",exact:true})).toHaveCount(0);
+  await expect(page.getByText("后续对话已开始，请用新消息继续；原任务记录已保留。",{exact:true})).toBeVisible();
+  await expect(page.getByRole("button",{name:"用新消息继续",exact:true})).toBeVisible();
+  const response=await request.post(`http://127.0.0.1:8737/v1/tasks/${failed}/resume`,{headers});
+  expect(response.status()).toBe(409);
+  expect((await response.json()).error).toContain("后续对话已开始，请用新消息继续");
   expect((await task(failed)).status).toBe("failed");
   await page.reload(); await page.getByLabel("查看任务记录").selectOption(cancelled);
   await expect(page.getByRole("status").filter({hasText:"已取消"})).toBeVisible();
