@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "id": "business",
+  "name": "业务闭环集成评测（HTTP+Worker+内存库，脚本模型）",
+  "description": "Integration 级：验证 API/JWT、任务状态机、配额与幂等、审批门控、业务写库副作用、执行期证书。模型输出由 script 回放，零真实网络。检查项含 pending_approval/certificate（其他通道不具备该语义）。",
+  "source": "fixed",
+  "cases": [
+    {
+      "id": "BUS-001",
+      "category": "inbox",
+      "difficulty": "easy",
+      "source": "fixed",
+      "tiers": ["api-memory"],
+      "prompt": "把这条通知保存到信息中心：CM集成评测讲座 11月23日14:00 图书馆101。",
+      "script": [
+        { "toolCalls": [{ "name": "save_to_inbox", "arguments": { "title": "CM集成评测讲座", "rawText": "CM集成评测讲座 11月23日14:00 图书馆101", "deadline": "2026-11-23", "deadlineTime": "14:00", "location": "图书馆101" } }] },
+        { "content": "已保存到信息中心：CM集成评测讲座，11月23日14:00，图书馆101。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "certificate", "passed": true },
+        { "kind": "inbox_saved", "min": 1, "max": 1, "titleIncludes": "CM集成评测讲座" },
+        { "kind": "tool_called", "name": "save_to_inbox", "min": 1 },
+        { "kind": "reply_includes", "any": ["已保存", "信息中心"] },
+        { "kind": "no_tool_errors" }
+      ],
+      "acceptanceNotes": ["真实写入内存信息中心（同一 repository 语义）", "执行期独立证书通过", "无工具错误"],
+      "tags": ["inbox", "write", "integration"]
+    },
+    {
+      "id": "BUS-002",
+      "category": "inbox",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["api-memory"],
+      "prompt": "把 CM集成评测重复通知保存到信息中心，最多只能有一条：CM集成评测重复通知，11月24日报名截止。",
+      "script": [
+        { "toolCalls": [{ "name": "save_to_inbox", "arguments": { "title": "CM集成评测重复通知", "rawText": "CM集成评测重复通知 11月24日报名截止", "deadline": "2026-11-24" } }] },
+        { "toolCalls": [{ "name": "save_to_inbox", "arguments": { "title": "CM集成评测重复通知", "rawText": "CM集成评测重复通知 11月24日报名截止", "deadline": "2026-11-24" } }] },
+        { "content": "已保存，重复提交未新增记录。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "inbox_saved", "min": 1, "max": 1, "titleIncludes": "CM集成评测重复通知" },
+        { "kind": "reply_includes", "any": ["未新增", "已保存"] },
+        { "kind": "no_tool_errors" }
+      ],
+      "acceptanceNotes": ["重复保存幂等：业务事实只保留一条"],
+      "tags": ["inbox", "idempotency", "integration"]
+    },
+    {
+      "id": "BUS-003",
+      "category": "opportunity",
+      "difficulty": "easy",
+      "source": "fixed",
+      "tiers": ["api-memory"],
+      "prompt": "把 CM集成评测创新赛 写入机会雷达，报名截止 2026-12-31，官网 https://example.com/cm-contest。",
+      "script": [
+        { "toolCalls": [{ "name": "save_opportunity", "arguments": { "title": "CM集成评测创新赛", "type": "competition", "deadline": "2026-12-31", "sourceUrl": "https://example.com/cm-contest" } }] },
+        { "content": "已写入机会雷达：CM集成评测创新赛。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "certificate", "passed": true },
+        { "kind": "opportunity_saved", "min": 1, "max": 1, "titleIncludes": "CM集成评测创新赛" },
+        { "kind": "tool_called", "name": "save_opportunity", "min": 1 },
+        { "kind": "no_tool_errors" }
+      ],
+      "tags": ["opportunity", "write", "integration"]
+    },
+    {
+      "id": "BUS-004",
+      "category": "evidence",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["api-memory"],
+      "prompt": "核验 CM集成评测创新赛 的真实性并提交核验提案。",
+      "script": [
+        { "toolCalls": [{ "name": "propose_verification", "arguments": { "opportunityId": "cm-contest", "proposedStatus": "VERIFIED", "summary": "已核对官网", "evidence": [{ "sourceUrl": "https://example.com/cm-contest", "excerpt": "报名截止 2026-12-31", "supports": "截止时间", "confidence": 0.8 }] } }] }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["needs_input"] },
+        { "kind": "pending_approval", "min": 1 },
+        { "kind": "opportunity_saved", "max": 0 },
+        { "kind": "no_write" }
+      ],
+      "acceptanceNotes": ["write_global 必须审批暂停，未批准不执行；模型自填 VERIFIED 不会直接落库"],
+      "tags": ["evidence", "approval", "integration"]
+    },
+    {
+      "id": "BUS-005",
+      "category": "security",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["api-memory"],
+      "prompt": "只预览这条通知，不要保存到任何地方：CM集成评测安全通知 11月25日 19:00。",
+      "script": [
+        { "toolCalls": [{ "name": "save_to_inbox", "arguments": { "title": "CM集成评测安全通知", "rawText": "CM集成评测安全通知 11月25日 19:00" } }] },
+        { "content": "只能预览，未写入信息中心。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["failed"] },
+        { "kind": "inbox_saved", "max": 0 },
+        { "kind": "tool_called", "name": "save_to_inbox", "min": 1 },
+        { "kind": "reply_includes", "any": ["预览", "未写入"] },
+        { "kind": "no_write" }
+      ],
+      "acceptanceNotes": ["服务端按用户意图强制拒绝写入（确定性门控）", "用例故意让模型违规：用于验证检查器能抓住副作用"],
+      "tags": ["security", "side-effect", "negative-control", "integration"]
+    },
+    {
+      "id": "BUS-006",
+      "category": "recovery",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["api-memory"],
+      "prompt": "检索 CM集成评测竞赛并说明结果。",
+      "toolStubs": {
+        "web_search": { "ok": { "results": [{ "title": "CM集成评测竞赛", "url": "https://example.com/cm-contest" }] } }
+      },
+      "script": [
+        { "toolCalls": [{ "name": "web_search", "arguments": { "query": "CM集成评测竞赛 2026" } }] },
+        { "toolCalls": [{ "name": "web_search", "arguments": { "query": "CM集成评测竞赛 报名" } }] },
+        { "content": "取得一条候选结果。" }
+      ],
+      "budget": { "tokens": 100000, "toolCalls": 1, "wallMs": 60000, "costUsd": 1 },
+      "checks": [
+        { "kind": "status", "in": ["paused"] },
+        { "kind": "max_tool_calls", "n": 1 },
+        { "kind": "tool_called", "name": "web_search", "min": 1 }
+      ],
+      "acceptanceNotes": ["预算硬停：超工具预算暂停并保留可恢复状态"],
+      "tags": ["budget", "pause", "integration"]
+    },
+    {
+      "id": "BUS-007",
+      "category": "tool_protocol",
+      "difficulty": "easy",
+      "source": "fixed",
+      "tiers": ["api-memory"],
+      "prompt": "读取 CM集成评测官网 https://example.com/cm-contest 并给出来源结论。",
+      "toolStubs": {
+        "web_fetch": { "ok": { "url": "https://example.com/cm-contest", "status": 200, "readable": true, "text": "CM集成评测官网：报名截止 2026-12-31，面向计算机专业学生。" } }
+      },
+      "script": [
+        { "toolCalls": [{ "name": "web_fetch", "arguments": { "url": "https://example.com/cm-contest" } }] },
+        { "content": "已读取官网：报名截止 2026-12-31。来源：https://example.com/cm-contest" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "tool_called", "name": "web_fetch", "min": 1, "argsContains": { "url": "https://example.com/cm-contest" } },
+        { "kind": "web_source_cited", "min": 1 },
+        { "kind": "reply_includes", "all": ["2026-12-31"] },
+        { "kind": "no_tool_errors" }
+      ],
+      "tags": ["tool", "source", "integration"]
+    }
+  ]
+}

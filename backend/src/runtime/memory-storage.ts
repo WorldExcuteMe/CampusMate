@@ -5,6 +5,7 @@ import { InMemoryApprovalStore } from "./approval.ts";
 import { InMemoryEvidenceStore } from "../core/evidence.ts";
 import { assertSecret, messageEnvelope, requireUuid, sameJson, validateArtifact } from "./postgres-shared.ts";
 import type { TaskStore } from "./store.ts";
+import { textOnlyHistory } from "../core/session-context.ts";
 
 async function ownedTask(tasks: TaskStore, userId: string, taskId: string, sessionId?: string) {
   const task = await tasks.getTask(taskId);
@@ -54,7 +55,7 @@ export class MemorySessionStore implements SessionStore {
     this.messages.set(input.sessionId, [...rows, row]); this.sessions.get(input.sessionId)!.updatedAt = row.createdAt;
     return structuredClone(row);
   }
-  async listMessages(userId: string, sessionId: string, afterSeq = 0) { return await this.get(userId, sessionId) ? structuredClone((this.messages.get(sessionId) ?? []).filter((m) => m.seq > afterSeq)) : []; }
+  async listMessages(userId: string, sessionId: string, afterSeq = 0, options?: { includeImages?: boolean }) { return await this.get(userId, sessionId) ? structuredClone((this.messages.get(sessionId) ?? []).filter((m) => m.seq > afterSeq).map(m => options?.includeImages === false ? textOnlyHistory(m) : m)) : []; }
   async updateSummary(userId: string, sessionId: string, summary: string, throughSeq: number) {
     const s = this.sessions.get(sessionId); if (s?.userId !== userId) return null;
     if (!Number.isInteger(throughSeq) || throughSeq < s.summaryThroughSeq || throughSeq > (this.messages.get(sessionId)?.length ?? 0)) throw new Error("Invalid summary sequence");

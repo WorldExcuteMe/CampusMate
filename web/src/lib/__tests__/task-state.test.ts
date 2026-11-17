@@ -15,3 +15,13 @@ it("任务恢复只替换本轮回复，按turn插入且累计用量不重复", 
   expect(mergeEvent(s, { id: 1, taskId: "a", seq: 1, type: "tool.called", payload: {}, createdAt: 1 })).toBe(s);
   expect(taskReply({ ...a, result: undefined, status: "needs_input" }, [])).toMatch(/等待处理/);
 });
+
+it("authoritative snapshots clear a prior 429 error after resume and successful completion", () => {
+  const failed: AgentTask = { id: "recovered", userId: "u", title: "图片追问", status: "failed", error: "HTTP 429", usage: { tokens: 0, toolCalls: 0, wallMs: 1000, costUsd: 0 } };
+  let session = mergeTask(newSession(), failed);
+  const { error: _old, ...snapshot } = failed;
+  session = mergeTask(session, { ...snapshot, status: "queued" });
+  expect(session.taskViews?.recovered.task.error).toBeUndefined();
+  session = mergeTask(session, { ...snapshot, status: "succeeded", result: { summary: "图片声称：已提取", artifactIds: [] } });
+  expect(session.taskViews?.recovered.task.error).toBeUndefined(); expect(session.messages.at(-1)?.content).toBe("图片声称：已提取");
+});

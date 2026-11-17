@@ -181,6 +181,7 @@ export interface ChatResult {
   usage: { input: number; output: number };
   model: string;
   truncated?: boolean;
+  streamInterrupted?: boolean; // SSE ended early without caller abort, length stop or protocol error.
   finishReason?: string | null;
   telemetry?: LlmTelemetry;
 }

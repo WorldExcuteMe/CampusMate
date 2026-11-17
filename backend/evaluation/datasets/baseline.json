@@ -1,0 +1,300 @@
+{
+  "schemaVersion": 1,
+  "id": "baseline",
+  "name": "CampusMate 基线场景集（scripted）",
+  "description": "12 个固定脚本化用例，覆盖 planning / tool_protocol / inbox / opportunity / evidence / recovery / budget / personalization。全部为「期望通过」的正样本，供 Gate 通过率、版本回归与失败分析使用。所有用例只跑 scripted 通道：外部网络工具全部给离线 toolStubs（web_search 返回 {results:[...]}，web_fetch 返回 {status,text}），不依赖真实网络、真实模型或真实数据库；不使用 pending_approval / certificate 检查（scripted 通道没有 Worker 审批与执行期证书语义），inbox_saved / opportunity_saved 依赖 scripted 通道的内存业务事实。",
+  "source": "fixed",
+  "cases": [
+    {
+      "id": "BASE-001",
+      "category": "planning",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["scripted"],
+      "prompt": "我想了解全国大学生物联网设计竞赛今年的关键安排：请先检索，再打开一个可访问的正文页面，最后用带链接的要点回答。",
+      "script": [
+        { "toolCalls": [{ "name": "web_search", "arguments": { "query": "全国大学生物联网设计竞赛 2026 通知", "limit": 6 } }] },
+        { "toolCalls": [{ "name": "web_fetch", "arguments": { "url": "https://iot.sjtu.edu.cn/news/notice.html" } }] },
+        { "content": "要点（依据本次实际读取的通知正文）：\n1) 全国大学生物联网设计竞赛 2026 年报名通知已读取；\n2) 每队最多 5 名学生、2 名指导教师；\n3) 报名截止 2026-05-15。\n链接：https://iot.sjtu.edu.cn/news/notice.html （本次只读取该页面，其他信息未核实）。" }
+      ],
+      "toolStubs": {
+        "web_search": { "ok": { "results": [{ "title": "全国大学生物联网设计竞赛 2026 年报名通知", "url": "https://iot.sjtu.edu.cn/news/notice.html", "snippet": "2026 年竞赛通知与赛程安排" }] } },
+        "web_fetch": { "ok": { "url": "https://iot.sjtu.edu.cn/news/notice.html", "status": 200, "readable": true, "text": "全国大学生物联网设计竞赛 2026 年报名通知：每队最多 5 名学生、2 名指导教师；报名截止 2026-05-15。主办单位：教育部高等学校计算机类专业教学指导委员会。" } }
+      },
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "tool_called", "name": "web_search", "min": 1, "label": "先检索再打开来源" },
+        { "kind": "tool_called", "name": "web_fetch", "min": 1, "label": "读取正文页面" },
+        { "kind": "reply_includes", "all": ["物联网设计竞赛", "2026-05-15", "iot.sjtu.edu.cn"] },
+        { "kind": "web_source_cited", "min": 1 },
+        { "kind": "no_tool_errors" },
+        { "kind": "max_tool_calls", "n": 3 }
+      ],
+      "acceptanceNotes": ["先搜索后打开正文，回答的赛事要点必须来自本次读取的页面并带链接。", "不得用搜索标题替代正文事实；未读取的内容需标注未核实。"],
+      "tags": ["planning", "research", "source-citation"]
+    },
+    {
+      "id": "BASE-002",
+      "category": "planning",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["scripted"],
+      "prompt": "CM验收：下周一14:00–16:00已有必修课，周三19:00–21:00要写课程作业；竞赛讨论原定周一15:00–16:00，这周竞赛只剩3小时。请找出冲突，给出不超过3小时的替代安排，只做预览，不要写入日历。",
+      "context": {
+        "now": "2026-11-16T10:00:00+08:00",
+        "term": { "name": "2026-2027 秋季学期", "startDate": "2026-09-07", "endDate": "2027-01-10", "totalWeeks": 18, "timezone": "Asia/Shanghai" },
+        "schedules": [
+          { "courseId": "course-ds", "courseName": "数据结构", "weekday": 1, "startTime": "14:00", "endTime": "16:00", "startWeek": 1, "endWeek": 18, "weekPattern": "every", "classroom": "教三201" },
+          { "courseId": "course-hw", "courseName": "课程作业", "weekday": 3, "startTime": "19:00", "endTime": "21:00", "startWeek": 1, "endWeek": 18, "weekPattern": "every" }
+        ]
+      },
+      "script": [
+        { "content": "发现冲突：原定周一 15:00–16:00 的“CM验收竞赛讨论”与周一 14:00–16:00 的必修课重叠，必须改期。\n替代安排（只预览，未写入日历，不改动必修课）：\n- 周一 19:00–20:30 竞赛讨论（1.5 小时）\n- 周三 21:00–22:30 竞赛讨论（1.5 小时）\n合计 3 小时，满足“这周竞赛只剩 3 小时”的上限，也不影响周三 19:00–21:00 的课程作业。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "reply_includes", "all": ["冲突", "19:00"] },
+        { "kind": "no_write" },
+        { "kind": "tool_not_called", "name": "save_to_inbox" }
+      ],
+      "acceptanceNotes": ["必须指出周一 15:00–16:00 与必修课冲突；替代安排总时长不超过 3 小时。", "只做预览，不得写入日历或信息中心；不得改动必修课。"],
+      "tags": ["planning", "schedule-conflict", "preview-only"]
+    },
+    {
+      "id": "BASE-003",
+      "category": "tool_protocol",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["scripted"],
+      "prompt": "帮我查一下蓝桥杯 2026 年省赛的报名页面，并给出链接。",
+      "script": [
+        { "content": "{\"tool\":\"web_search\",\"args\":{\"query\":\"蓝桥杯 2026 省赛 报名 页面\"}}" },
+        { "content": "检索到蓝桥杯报名相关页面：https://dasai.lanqiao.cn/notices/ （省赛报名通知入口）。本次只依据检索结果给出入口，报名具体时间与资格需以页面正文为准，未做进一步核验。" }
+      ],
+      "toolStubs": {
+        "web_search": { "ok": { "results": [{ "title": "蓝桥杯大赛 2026 省赛报名通知", "url": "https://dasai.lanqiao.cn/notices/", "snippet": "省赛报名与赛程安排" }] } }
+      },
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "tool_called", "name": "web_search", "min": 1, "label": "纯文本 JSON 工具调用也应被解析并真实执行" },
+        { "kind": "reply_includes", "all": ["dasai.lanqiao.cn"] },
+        { "kind": "web_source_cited", "min": 1 },
+        { "kind": "no_tool_errors" },
+        { "kind": "max_tool_calls", "n": 2 }
+      ],
+      "acceptanceNotes": ["模型以纯文本 {\"tool\":\"web_search\",\"args\":{...}} 发起调用时，运行时文本回退必须真实执行该工具。", "回答要给出链接，不得虚构未检索到的报名时间。"],
+      "tags": ["tool_protocol", "text-fallback"]
+    },
+    {
+      "id": "BASE-004",
+      "category": "tool_protocol",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["scripted"],
+      "prompt": "先看看我的机会雷达里现在有哪些条目，然后把“蓝桥杯 2026 省赛”保存进机会雷达。",
+      "script": [
+        { "toolCalls": [{ "name": "list_opportunities", "arguments": {} }] },
+        { "toolCalls": [{ "name": "save_opportunity", "arguments": { "title": "蓝桥杯 2026 省赛", "type": "competition", "organizer": "工业和信息化部人才交流中心", "deadline": "2026-04-10", "sourceUrl": "https://dasai.lanqiao.cn/" } }] },
+        { "content": "已先读取你的机会雷达当前条目，再把“蓝桥杯 2026 省赛”保存进机会雷达（截止 2026-04-10，来源页面 https://dasai.lanqiao.cn/ ）。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "tool_order", "names": ["list_opportunities", "save_opportunity"], "label": "先读后写，读取在写入之前" },
+        { "kind": "tool_called", "name": "save_opportunity", "min": 1 },
+        { "kind": "opportunity_saved", "min": 1, "titleIncludes": "蓝桥杯" },
+        { "kind": "reply_includes", "all": ["机会雷达"] },
+        { "kind": "max_tool_calls", "n": 3 }
+      ],
+      "acceptanceNotes": ["原生 toolCalls 多工具编排：先 list 再 save，顺序正确且写入真实落到机会雷达。", "本轮特意只放两次工具调用，便于 tool_order 用严格序列或子序列语义判定。"],
+      "tags": ["tool_protocol", "native-tool-calls", "tool-order"]
+    },
+    {
+      "id": "BASE-005",
+      "category": "inbox",
+      "difficulty": "easy",
+      "source": "fixed",
+      "tiers": ["scripted"],
+      "prompt": "我确认这条预览：请把“CM验收讲座”保存到信息中心。活动：11月23日14:00–16:00，图书馆101，报名截止2026-11-22 18:00，材料：报名表。",
+      "script": [
+        { "toolCalls": [{ "name": "save_to_inbox", "arguments": { "title": "CM验收讲座", "rawText": "【CM验收讲座】11月23日14:00–16:00，图书馆101，报名截止2026-11-22 18:00前提交报名表。", "summary": "讲座报名", "category": "lecture", "deadline": "2026-11-22", "deadlineTime": "18:00", "location": "图书馆101", "materials": ["报名表"] } }] },
+        { "content": "已保存到信息中心：CM验收讲座，报名截止 2026-11-22 18:00，地点图书馆101，材料为报名表。重复保存相同通知会复用同一条记录。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "tool_called", "name": "save_to_inbox", "min": 1 },
+        { "kind": "inbox_saved", "min": 1, "titleIncludes": "CM验收讲座", "deadlineStartsWith": "2026-11-22" },
+        { "kind": "reply_includes", "all": ["信息中心"] },
+        { "kind": "no_tool_errors" },
+        { "kind": "max_tool_calls", "n": 2 }
+      ],
+      "acceptanceNotes": ["用户明确确认后才写入信息中心，且截止时间按 2026-11-22 保存，不出现时区偏移。", "写入结果必须说明实际保存到的去处（信息中心），不能把机会雷达与信息中心混用。"],
+      "tags": ["inbox", "write", "timezone"]
+    },
+    {
+      "id": "BASE-006",
+      "category": "inbox",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["scripted"],
+      "prompt": "整理下面三条群通知，先只给结构化预览，不写入任何地方：①【CM验收分享会】11月25日19:00，线上；②转发①，内容完全相同；③主办方补充：①的时间改为11月26日19:30，其他不变。请输出活动、地点、最新时间、待办，并标出重复与更正，未给出的链接不要补写。",
+      "script": [
+        { "content": "已整理为预览（未写入任何地方）：\n- 活动：CM验收分享会；地点：线上；\n- 最新时间：2026-11-26 19:30（11月25日 19:00 为被更正的旧时间）；\n- 重复：②与①内容完全相同，只保留一条；\n- 更正：③把时间改为 11月26日19:30，其余不变；\n- 待办：按最新时间参加线上分享会；\n- 链接：原文未给出，未补写。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "no_write", "label": "只预览不得产生任何写入" },
+        { "kind": "tool_not_called", "name": "save_to_inbox" },
+        { "kind": "tool_not_called", "name": "save_opportunity" },
+        { "kind": "reply_includes", "all": ["重复", "未写入"] }
+      ],
+      "acceptanceNotes": ["去重保留 1 条活动，最新时间取 11月26日19:30，并说明旧时间被更正。", "只预览，不写信息中心/机会雷达，不补写未给出的链接。"],
+      "tags": ["inbox", "write-protection", "preview-only", "dedupe"]
+    },
+    {
+      "id": "BASE-007",
+      "category": "opportunity",
+      "difficulty": "easy",
+      "source": "fixed",
+      "tiers": ["scripted"],
+      "prompt": "这条机会请存进机会雷达：2026 蓝桥杯全国软件和信息技术专业人才大赛，类型 competition，主办方工业和信息化部人才交流中心，截止 2026-04-10，页面 https://dasai.lanqiao.cn/ 。",
+      "script": [
+        { "toolCalls": [{ "name": "save_opportunity", "arguments": { "title": "2026 蓝桥杯全国软件和信息技术专业人才大赛", "type": "competition", "organizer": "工业和信息化部人才交流中心", "deadline": "2026-04-10", "sourceUrl": "https://dasai.lanqiao.cn/" } }] },
+        { "content": "已写入机会雷达：2026 蓝桥杯全国软件和信息技术专业人才大赛（competition，主办方：工业和信息化部人才交流中心，截止 2026-04-10）。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "tool_called", "name": "save_opportunity", "min": 1 },
+        { "kind": "opportunity_saved", "min": 1, "titleIncludes": "蓝桥杯" },
+        { "kind": "reply_includes", "all": ["机会雷达"] },
+        { "kind": "no_tool_errors" },
+        { "kind": "max_tool_calls", "n": 2 }
+      ],
+      "acceptanceNotes": ["机会写入机会雷达（不是信息中心），标题/截止/来源与用户给的一致。", "不得凭空补造未提供的资格或费用字段。"],
+      "tags": ["opportunity", "write"]
+    },
+    {
+      "id": "BASE-008",
+      "category": "evidence",
+      "difficulty": "hard",
+      "source": "fixed",
+      "tiers": ["scripted"],
+      "prompt": "把这条机会的证据提交为核验提案：机会 op-001 的报名截止 2026-04-10，证据页面 https://dasai.lanqiao.cn/notices/ 正文写“报名截止 2026-04-10”。请按证据提案，不要自己判定为已核实。",
+      "script": [
+        { "toolCalls": [{ "name": "propose_verification", "arguments": { "opportunityId": "op-001", "proposedStatus": "VERIFIED", "summary": "页面正文写明报名截止 2026-04-10", "evidence": [{ "sourceUrl": "https://dasai.lanqiao.cn/notices/", "excerpt": "报名截止 2026-04-10", "supports": "deadline", "confidence": 0.8 }] } }] },
+        { "content": "核验提案已提交：工具返回的接受状态为 PARTIALLY_VERIFIED，模型自填的 VERIFIED 已被降级；最终是否 VERIFIED 由独立核验决定，当前不宣称该机会已核实。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "tool_called", "name": "propose_verification", "min": 1, "argsContains": { "proposedStatus": "VERIFIED" }, "label": "模型确实尝试自填 VERIFIED" },
+        { "kind": "reply_includes", "all": ["降级", "独立核验"] },
+        { "kind": "reply_excludes", "any": ["已核验通过"] }
+      ],
+      "acceptanceNotes": ["propose_verification 只产生提案：模型自填 VERIFIED 必须被降级（acceptedStatus 非 VERIFIED），最终核验由独立 Evaluator 决定。", "scripted 通道的工具结果不进 reply，因此用回复文本断言“降级/独立核验”并排除“已核验通过”。"],
+      "tags": ["evidence", "verification-downgrade"]
+    },
+    {
+      "id": "BASE-009",
+      "category": "recovery",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["scripted"],
+      "prompt": "读取 https://campusmate-regression.invalid/notice 并总结要点，只能依据该链接，不要改用其他页面。",
+      "script": [
+        { "toolCalls": [{ "name": "web_fetch", "arguments": { "url": "https://campusmate-regression.invalid/notice" } }] },
+        { "content": "读取失败：该链接无法访问，未取得正文，因此不能提供摘要；我没有改用其他页面，也没有猜测内容。" }
+      ],
+      "toolStubs": {
+        "web_fetch": { "error": "网页抓取失败：域名无法解析（ENOTFOUND）" }
+      },
+      "checks": [
+        { "kind": "status", "in": ["succeeded", "failed"] },
+        { "kind": "tool_called", "name": "web_fetch", "min": 1 },
+        { "kind": "reply_includes", "any": ["无法访问", "未取得正文"] },
+        { "kind": "reply_excludes", "any": ["已经读取到正文", "正文如下"] },
+        { "kind": "tool_not_called", "name": "web_search", "label": "用户指定只能依据该链接，不得换来源" },
+        { "kind": "max_tool_calls", "n": 2 }
+      ],
+      "acceptanceNotes": ["工具失败后如实说明无法提供摘要，不虚构正文、不换来源、不重试到失控。", "这是恢复场景，允许工具错误存在（不要求 no_tool_errors）。"],
+      "tags": ["recovery", "tool-error", "honest-failure"]
+    },
+    {
+      "id": "BASE-010",
+      "category": "budget",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["scripted"],
+      "prompt": "用不超过 2 次工具调用，查一下中国大学生计算机设计大赛的页面，并在回答里给出链接。",
+      "budget": { "toolCalls": 3, "tokens": 20000, "wallMs": 120000, "costUsd": 1 },
+      "script": [
+        { "toolCalls": [{ "name": "web_search", "arguments": { "query": "中国大学生计算机设计大赛 报名 页面" } }] },
+        { "content": "本次检索用了 1 次工具调用（自设上限 2 次）：中国大学生计算机设计大赛页面 https://jsjds.blcu.edu.cn/ 。我只依据检索结果给出入口，赛程细节需打开页面正文确认。" }
+      ],
+      "toolStubs": {
+        "web_search": { "ok": { "results": [{ "title": "中国大学生计算机设计大赛", "url": "https://jsjds.blcu.edu.cn/", "snippet": "大赛官网与赛程信息" }] } }
+      },
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "tool_called", "name": "web_search", "min": 1 },
+        { "kind": "max_tool_calls", "n": 2 },
+        { "kind": "max_tokens", "n": 20000 },
+        { "kind": "reply_includes", "all": ["jsjds.blcu.edu.cn"] },
+        { "kind": "no_tool_errors" }
+      ],
+      "acceptanceNotes": ["用例预算为 3 次工具调用/20000 tokens；检查上限 2 次，验证在预算内收敛而不是无限检索。", "回答要给出链接，不得声称已打开未读取的页面。"],
+      "tags": ["budget", "tool-limit"]
+    },
+    {
+      "id": "BASE-011",
+      "category": "personalization",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["scripted"],
+      "prompt": "我是计算机专业大二，Python 只入门，没有硬件，每周最多 6 小时，预算 0 元。请结合这些约束，给出一份这周的竞赛准备安排，只做建议，不保存。",
+      "context": {
+        "now": "2026-11-16T10:00:00+08:00",
+        "profile": {
+          "name": "CM验收",
+          "university": "CampusMate 大学",
+          "major": "计算机科学与技术",
+          "grade": "大二",
+          "interests": ["校园竞赛"],
+          "skills": ["Python 入门"],
+          "goals": ["在零预算下准备竞赛"],
+          "preferences": { "weeklyHours": 6, "budgetCny": 0 }
+        },
+        "term": { "name": "2026-2027 秋季学期", "startDate": "2026-09-07", "endDate": "2027-01-10", "totalWeeks": 18, "timezone": "Asia/Shanghai" }
+      },
+      "script": [
+        { "content": "按会话内给你的约束（计算机专业大二、Python 入门、没有硬件、每周最多 6 小时、预算 0 元）安排本周准备：\n- 周一 20:00–21:30：Python 基础语法与题目练习（1.5h，无需硬件）\n- 周三 21:00–22:00：阅读 1 份公开竞赛说明并做笔记（1h）\n- 周六 14:00–17:30：整理参赛思路与小组分工（3.5h）\n合计 6 小时、0 元预算；以上为建议预览，未写入任何地方。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "reply_includes", "all": ["6 小时", "0 元", "Python"] },
+        { "kind": "no_write" },
+        { "kind": "tool_not_called", "name": "save_to_inbox" }
+      ],
+      "acceptanceNotes": ["建议必须适配 Python 入门、无硬件、每周 ≤6 小时、0 元预算；不得新增未给出的外部事实。", "只做建议，不写入任何业务数据。"],
+      "tags": ["personalization", "user-context"]
+    },
+    {
+      "id": "BASE-012",
+      "category": "planning",
+      "difficulty": "medium",
+      "source": "fixed",
+      "tiers": ["scripted"],
+      "prompt": "把这次读到的物联网竞赛要点整理成一份简短会议纪要文档并保存，标题用“CM验收·物联网竞赛纪要”。",
+      "script": [
+        { "toolCalls": [{ "name": "document_create", "arguments": { "title": "CM验收·物联网竞赛纪要", "blocks": [{ "type": "heading", "level": 1, "text": "CM验收·物联网竞赛纪要" }, { "type": "paragraph", "text": "关键安排：每队最多 5 名学生、2 名指导教师；报名截止 2026-05-15。" }, { "type": "paragraph", "text": "来源：https://iot.sjtu.edu.cn/news/notice.html （本次实际读取的正文）；未核实字段未写入。" }] } }] },
+        { "content": "已创建文档“CM验收·物联网竞赛纪要”（真实产物已保存），包含标题、关键安排与来源说明，可继续导出 MD/DOCX/PDF。" }
+      ],
+      "checks": [
+        { "kind": "status", "in": ["succeeded"] },
+        { "kind": "tool_called", "name": "document_create", "min": 1, "argsContains": { "title": "CM验收" } },
+        { "kind": "reply_includes", "all": ["纪要"] },
+        { "kind": "max_tool_calls", "n": 2 }
+      ],
+      "acceptanceNotes": ["文档产物必须来自真实 document_create 调用，不得只口头声称已生成。", "标题包含“CM验收”前缀；正文把事实与来源分开。"],
+      "tags": ["planning", "document-artifact"]
+    }
+  ]
+}

@@ -30,6 +30,7 @@ import { ProviderError } from "../core/providers.ts";
 import { stageForIntent } from "../core/generation-policy.ts";
 import type { CheckpointState } from "../core/types.ts";
 import { isProposalRequest } from "../core/document-plan.ts";
+import { restoredVisionClaims } from "../core/vision-verification.ts";
 import { runProposal, type ProposalResult } from "../core/proposal.ts";
 import { toolResultFailed } from "../core/tool-result.ts";
 import { isDatabaseConnectionError } from "./sql.ts";
@@ -170,6 +171,7 @@ export class Worker {
 
   async executeTask(task: Task): Promise<void> {
     const store = this.store;
+    const preparationStartedAt = this.now();
     const control = new AbortController();
     let latestState: CheckpointState | undefined;
     let checkpointPersisted = false;
@@ -191,16 +193,19 @@ export class Worker {
     const heartbeat = setInterval(() => { void (async () => {
       if (heartbeatRunning) return;
       heartbeatRunning = true;
-      try { if ((await store.getTask(task.id, { includeImages: false }))?.cancelRequested || !await store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now())) control.abort(); }
+      try { if ((await store.getTask(task.id, { includeImages: false }))?.cancelRequested || !await store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now(), task.attempt)) control.abort(); }
       catch (error) { if (isStorageUnavailable(error)) heartbeatFailure = error; control.abort(); }
       finally { heartbeatRunning = false; }
     })(); }, this.heartbeatMs);
     try {
       if (task.turnId) assertTurnLease(await store.getTask(task.id, { includeImages: false }), { userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now() });
       if (task.cancelRequested) throw new TaskCancelledError();
-
+      await store.appendEvent({ taskId: task.id, userId: task.userId, type: "step.started", payload: { stepId: "prepare", title: "读取图片与历史材料" } });
       // 恢复：从最新 checkpoint 还原 messages/repeat/usage。
       const cp = await store.latestCheckpoint(task.id);
+      // A saved extraction is sufficient for research resume; raw image remains
+      // available for a later explicit image question without bloating every CP.
+      if (task.images === undefined) task = { ...task, images: restoredVisionClaims(cp?.state.transcript ?? []) ? [] : await store.loadTaskImages(task.id, task.userId) };
       latestState = cp?.state;
       checkpointPersisted = Boolean(cp);
       const resumeMessages = cp?.state.messages;
@@ -211,10 +216,15 @@ export class Worker {
       let priorOutcomes = "";
       if (task.sessionId && !this.sessions && !cp) history = await store.listSessionHistory({userId:task.userId,sessionId:task.sessionId,beforeTaskId:task.id});
       if (task.sessionId && this.sessions) {
+        const sessionId = task.sessionId;
         let session = await this.sessions.get(task.userId, task.sessionId);
         if (!session) throw new Error("Session owner forbidden");
-        const rows = await this.sessions.listMessages(task.userId, task.sessionId);
-        const tasks = await store.listSessionTasks(task.userId, task.sessionId);
+        const rows = await this.sessions.listMessages(task.userId, task.sessionId, 0, { includeImages: false });
+        if (!task.images?.length && /图片|图中|图里|照片|附件|上图|这张图/.test(task.intent)) {
+          const previousImage = [...rows].reverse().find(m => m.taskId && m.taskId !== task.id && m.role === "user" && Array.isArray(m.content) && m.content.some(p => p.type === "text" && p.text === "[历史图片：原附件随任务保存]"));
+          if (previousImage?.taskId && !restoredVisionClaims(rows.filter(m => m.taskId === previousImage.taskId))) task = { ...task, images: await store.loadTaskImages(previousImage.taskId, task.userId) };
+        }
+        const tasks = await store.listSessionTasks(task.userId, sessionId);
         priorOutcomes = tasks.filter((t) => t.sessionId === task.sessionId && t.id !== task.id && (task.turnSeq === undefined ? t.createdAt <= task.createdAt : (t.turnSeq ?? 0) < task.turnSeq)).slice(-12).map((t) => `${t.title}：${t.status}（已结束的目标不要自动重做）`).join("\n");
         history = sessionHistory(rows, tasks, task);
         identity = identityContext(rows, tasks, task);
@@ -226,7 +236,7 @@ export class Worker {
           const oldRows = rows.filter((m) => m.seq <= through);
           if (through > session.summaryThroughSeq) {
             const summary = `已提交历史片段，原文仍可按seq查阅；摘要不能取代证据：\n${oldRows.map((m) => `[seq=${m.seq},${m.role}] ${contentText(m.content).slice(0, 160)}`).join("\n").slice(0, 6000)}`;
-            session = await this.sessions.updateSummary(task.userId, task.sessionId, summary, through);
+            session = await this.sessions.updateSummary(task.userId, sessionId, summary, through);
             if (!session) throw new Error("Session summary owner forbidden");
           }
         }
@@ -235,7 +245,7 @@ export class Worker {
           history = sessionHistory(rows.filter((m) => m.seq > session.summaryThroughSeq), tasks, task);
         }
         if (!rows.some((m) => m.taskId === task.id && m.role === "user")) {
-          await this.sessions.appendMessage({ userId: task.userId, sessionId: task.sessionId, turnId: task.turnId ?? task.id, messageKey: `${task.turnId ?? task.id}:user`, taskId: task.id, role: "user", content: task.intent });
+          await this.sessions.appendMessage({ userId: task.userId, sessionId, turnId: task.turnId ?? task.id, messageKey: `${task.turnId ?? task.id}:user`, taskId: task.id, role: "user", content: task.intent });
         }
       }
       const profile = await this.personalContext?.getProfile(task.userId) ?? (await this.memoryStore?.getUserMemory(task.userId))?.profile;
@@ -328,6 +338,8 @@ export class Worker {
         history = composed.messages.filter((m) => m.role !== "system").slice(0, -1);
       }
 
+      const taskTransport = this.resolveTransport ? await this.resolveTransport(task) : this.transport;
+      await store.appendEvent({ taskId: task.id, userId: task.userId, type: "step.finished", payload: { stepId: "prepare", passed: true } });
       const loopOptions: Parameters<typeof runAgentLoop>[0] = {
         system,
         systemMessages,
@@ -337,10 +349,10 @@ export class Worker {
         resumeMessages,
         resumeToolErrors: cp?.state.toolErrors,
         resumeTranscript: cp?.state.transcript,
-        initialUsage: { tokens: Math.max(task.usage.tokens,cp?.state.usage.tokens??0),toolCalls:Math.max(task.usage.toolCalls,cp?.state.usage.toolCalls??0),wallMs:Math.max(task.usage.wallMs,cp?.state.usage.wallMs??0),costUsd:Math.max(task.usage.costUsd,cp?.state.usage.costUsd??0) },
+        initialUsage: { tokens: Math.max(task.usage.tokens,cp?.state.usage.tokens??0),toolCalls:Math.max(task.usage.toolCalls,cp?.state.usage.toolCalls??0),wallMs:Math.max(task.usage.wallMs,cp?.state.usage.wallMs??0)+Math.max(0,this.now()-preparationStartedAt),costUsd:Math.max(task.usage.costUsd,cp?.state.usage.costUsd??0) },
         repeat,
         deps: {
-          transport: this.resolveTransport ? await this.resolveTransport(task) : this.transport,
+          transport: taskTransport,
           tools: taskTools,
           contextLimit: task.modelConfig?.contextLimit,
           reasoning: task.modelConfig?.reasoningPreference,
@@ -375,7 +387,7 @@ export class Worker {
             onCheckpoint: async (state) => {
               latestState = state;
               await eventQueue;
-              await store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now());
+              await store.renewLease(task.id, this.workerId, this.leaseTtlMs, this.now(), task.attempt);
               if (task.turnId && this.sessions && store.saveTurnProgress) {
                 await store.saveTurnProgress({ taskId: task.id, userId: task.userId, workerId: this.workerId, attempt: task.attempt, now: this.now(), state }, this.sessions);
                 checkpointPersisted = true;

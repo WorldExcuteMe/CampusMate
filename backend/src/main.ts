@@ -39,7 +39,7 @@ server.listen(port, "0.0.0.0", () => console.log(`[api] http://0.0.0.0:${port} (
     personalContext: ctx.personalContext,
     artifactStore: ctx.artifactStore,
     buildSystem: () => CAMPUS_SYSTEM,
-    executeTool: async (task, name, args) => executeCloudTool(name, args, { taskId: task.id, userId: task.userId, evidenceStore, opportunityStore, artifactStore: ctx.artifactStore, documents: ctx.documents }),
+    executeTool: async (task, name, args) => executeCloudTool(name, args, { taskId: task.id, userId: task.userId, intent: task.intent, campusRecords: ctx.campusRecords, evidenceStore, opportunityStore, artifactStore: ctx.artifactStore, documents: ctx.documents }),
     concurrency: Number(env.WORKER_CONCURRENCY ?? 2),
     leaseTtlMs: Number(env.LEASE_TTL_MS ?? 60000),
     heartbeatMs: Number(env.HEARTBEAT_MS ?? 15000),

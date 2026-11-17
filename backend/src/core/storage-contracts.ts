@@ -16,7 +16,7 @@ export interface SessionStore {
   get(userId: string, id: string): Promise<StoredSession | null>;
   list(userId: string): Promise<StoredSession[]>;
   appendMessage(input: AppendSessionMessage): Promise<StoredSessionMessage>;
-  listMessages(userId: string, sessionId: string, afterSeq?: number): Promise<StoredSessionMessage[]>;
+  listMessages(userId: string, sessionId: string, afterSeq?: number, options?: { includeImages?: boolean }): Promise<StoredSessionMessage[]>;
   updateSummary(userId: string, sessionId: string, summary: string, throughSeq: number): Promise<StoredSession | null>;
 }
 

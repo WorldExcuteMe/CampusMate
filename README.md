@@ -37,6 +37,29 @@ npm run preview    # 预览构建产物
 
 `web/` 的 `npm run dev` / `npm run preview` 会监督启动本地模型代理；`npm run dev:api` 仅用于独立调试。生产鉴权、密钥、0002 数据库升级与验证边界见 [AI_BACKEND_SETUP](docs/AI_BACKEND_SETUP.md)。已有数据库需先执行 0002；本次代码修复不代表云端已升级。
 
+## Headless Agent 评测（无需 Computer Use）
+
+工作 Agent 不再需要打开网页、定位输入框、读取截图来验证 CampusMate。评测系统直接调用后端 Runtime（HTTP API + Worker）或进程内 `runAgentLoop`，批量执行数据集、收集结构化 Trace、确定性评分、失败分析、版本对比与回归 Gate。完整设计与边界见 [EVALUATION_SYSTEM](docs/EVALUATION_SYSTEM.md)。
+
+```bash
+cd backend
+node scripts/eval.ts validate --suite baseline --suite security --suite business --suite live --suite conversation
+node scripts/eval.ts run --suite baseline --suite security --target scripted   # 毫秒级核心回归
+node scripts/eval.ts run --suite business --target api-memory                  # HTTP+Worker 集成
+node scripts/eval.ts run --suite conversation --target api-memory              # 多轮同一 session
+node scripts/eval.ts run --suite live --target live --concurrency 1            # 真实模型（需 .env Key）
+node scripts/eval.ts run --suite conversation --target live --concurrency 1    # 真实模型多轮对话
+node scripts/eval.ts report  --run latest
+node scripts/eval.ts analyze --run latest
+node scripts/eval.ts gate --candidate <run> --baseline <run> --holdout-run <run>
+node scripts/eval.ts parity --eval latest-live --case <caseId> --human-file human-task.json  # 人类等价对照
+```
+
+留出集（`backend/evaluation/holdout/`）不参与调优，只在 Gate 时显式运行；负样本/探索性用例不计入通过率，但失败仍可见。`conversation` 用例走真实 session/turn 语义（创建会话、逐轮提交），并支持每轮独立检查。`parity` 把真实 UI 任务的工具序列/状态/参数哈希/来源/用量与评测 trace 做结构化对照，用于校准「评测 ≈ 人类真实使用」。Scripted/集成结果不代表真实模型成功率，真实结论以 `live` 运行报告为准。
+
+**Computer Use 的定位**：只用于三种低频场景——① 制造真实人类基线（供 `parity` 对照）；② UI/视觉/前端验收（转 Playwright）；③ 探索新反例（再沉淀为评测用例/E2E）。批量能力回归、评分、版本对比、Gate 一律走 Headless CLI。给调优 Agent 的完整启动 Prompt 见 [EVALUATION_AGENT_STARTUP_PROMPT](docs/EVALUATION_AGENT_STARTUP_PROMPT.md)。
+
+
 ## 第一条业务闭环
 
 导入校园通知 → 文本解析 → AI 提取 → 分类 → 优先级 → 用户确认 → 保存 Inbox → 生成待办 → Dashboard 展示。
@@ -58,7 +81,7 @@ project.md           # 长期项目状态文档（实时更新）
 
 ## 工程文档
 
-见 `docs/`：PRODUCT_SPEC、ARCHITECTURE、BUSINESS_WORKFLOW、AGENT_DESIGN、DATABASE_DESIGN、SECURITY、TEST_PLAN、DEVELOPMENT_PLAN。
+见 `docs/`：PRODUCT_SPEC、ARCHITECTURE、BUSINESS_WORKFLOW、AGENT_DESIGN、DATABASE_DESIGN、SECURITY、TEST_PLAN、DEVELOPMENT_PLAN、EVALUATION_SYSTEM（Headless 评测与自动优化闭环）、EVALUATION_AGENT_STARTUP_PROMPT（交给调优 Agent 的完整启动 Prompt）。
 
 ## 团队
 

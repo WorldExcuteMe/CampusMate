@@ -1,5 +1,40 @@
 # CampusMate · project.md
 
+## 2026-11-17 v22真实文稿交付与本轮收尾
+
+- 固定live连续两次9/9、真实conversation3/3，CONV-006最终1条；两项原10步任务均完成并实际下载MD/DOCX/PDF，耗时16.2/13.5分钟。最后格式定向复测2/2、6文件复读，PDF四页独立渲染检查；原稿短引用避免模型为导出重写整篇，普通正文提前断流有一次只读恢复。详细runId、源码版本边界与样件见[七项收尾报告](docs/AGENT_DRAFT_DELIVERY_20261117.md)。
+- 最后排版修正后串行后端560项=559 pass/0 fail/1外部DB skip，类型通过；fast16/16，business7/7、conversation api-memory3/3及回放1/1。原Gate五项PASS，留出live3/4、api-memory2/2；固定compare无目标类别回归，不宣称留出全过。最后标题修正仅涉及原稿转换分支，两次固定live在该格式修正前，非相同字节最终候选重复验收。
+- 整体质量尚未全达：工具均值0.667→1.0超+20%目标，单轮Parity来源100%→83%，多轮Parity60%低于80%而FAIL；原29例全批26/29，新31例84轮全部exploratory、无人工晋升，后续原失败定向通过不拼成全批100%。离线可信核验语义过强/预算占位、其他Provider、云PG/RLS、新UI及Word原生视觉仍有边界。
+- 用户要求的TokenEconomizer已通过官方CLI安装、Windows启动适配和标准TUI信任5个hook；核实为Microsoft/UC Berkeley项目。后续新Codex会话启用，真实净节省未测。仍由主代理独立执行，分支`codex/agent-evaluation-quality-20261116`保持未提交；没有push、合并main、认证密钥改动、云端业务写入或重启日常服务，不宣称网页已运行新后端。
+
+## 2026-11-17 正文断流与v21候选（历史，已收集）
+
+- v20未通过：固定第二次live8/9、留出live3/4、探索26/29；Gate因LIVE-007拒绝，两个10步任务在第9轮断流，0真实文件。保留全部失败，不改期望/阈值，不提交发布。
+- v21允许提前EOF后的普通正文一次无工具续写，保护取消/预算/工具片段/检查点；明确私有指令请求由Runtime拒绝。全后端552 pass/0 fail/1外部DB skip（553项）、类型通过，fast16/16、业务/对话/回放11/11。两项原长任务与原失败15轮会话使用真实API复测中，尚未宣布交付通过。
+- 主代理独立，原分支保留；无云端业务写入、凭证变更、push或main合并。最新证据及未达标项见[实测](docs/AGENT_STREAM_RECOVERY_20261117.md)。
+
+## 2026-11-16 Agent质量迭代（候选实测进行中）
+
+- 当前统一事实见[质量实测记录](docs/AGENT_EVAL_QUALITY_20261116.md)：22:42候选后端541 pass/0 fail/1外部DB skip（542项），前端227/227、类型/构建通过；fast16/16、业务/对话/回放11/11。已增加有界活跃SSE时限、暂停会话新轮次拦截与UI说明、发送前预算检查及完整逐轮证据。当前候选真实固定集重复、长任务文件验收与Gate尚未收尾，不提交、不push、不合并main、不重启云业务Worker。以下保留早期进展，不能当最终结论。
+
+- 用户切换到Headless CLI常规能力评测，主代理单独执行。新分支`codex/agent-evaluation-quality-20261116`保留之前未提交工作；不push、不合并main、不改认证/密钥、不写云端业务库，不阅读holdout内容或修改既有期望/Gate阈值。
+- 真实复现`20261116-202706_live_quality-before-p0-p1-202_46fa20`：LIVE-005检索无URL，CONV-006跨日期更正出现2条。新增按owner+已有itemId更新通知、列表定位、旧工具唯一匹配兼容、原文/已确认状态保护；保留同名独立场次。P0真实复测`20261116-204910_live_quality-p0-manifest-rete_44b743`18/18检查，succeeded，3轮153.2s、2工具，原id不变、最终1条；仍需固定集重复证明稳定性。
+- 修正年份分词/泛类目过滤、多来源请求路径、只请求名称链接时的摘要范围；证据门槛不放宽。第一版LIVE-005虽然现有断言通过，实际任务仍failed且有引用不匹配，明确不宣称完成。流式工具协议偶发错误仍在定位。
+- 新增5套探索数据共22例/75轮（含两段15轮会话、两项10步骤三格式文档），全部validate；不自动晋升固定集。新增同owner跨session入口、产物授权下载/哈希/复读检查、逐例结果与业务事实持久落盘。组件148/148、入口/runner定向38/38、类型检查通过；api-memory计分10/10、跨日期失败回放1/1。脚本通过不当模型能力结论。
+- 固定live与探索live正在运行，合计最多2个真实请求并行，数据只在内存；完整回归、连续两次稳定live、holdout/Gate尚未完成，暂不提交候选。证据与边界见[评测文档](docs/EVALUATION_SYSTEM.md)和[规格](docs/specs/agent-evaluation-quality.md)。
+
+## 2026-11-16 Headless Agent 评测与自动优化闭环
+
+- 用户要求工作 Agent 不再用 Computer Use/浏览器模拟用户验证 CampusMate，而是直接调用后端 Runtime 完成批量评测、Trace 评分与自动迭代。主代理执行，分支保持 `codex/vision-and-agent-acceptance-20261116`，未 push/合并 main、未改认证与云端数据。
+- 新增独立评测子系统 `backend/src/evaluation/` + CLI `backend/scripts/eval.ts`：三级通道 `scripted`（真实 runAgentLoop，毫秒级）、`api-memory`（真实 HTTP/JWT/Worker/状态机/事件/幂等/审批/执行期 Evaluator，模型脚本回放，内存库）、`live`（真实 Provider/真实工具，业务数据写内存库，不写云端 PG）；另有 `legacy` 兼容既有 30 任务。
+- 对话级（人类聊天等价）已支持：数据集 `turns` 多轮用例走真实 `POST /v1/sessions` + 逐轮 `POST /v1/tasks(sessionId,turnId)`，Worker 注入历史/身份；`--reasoning/--provider/--session` 对齐 UI 入口；每轮独立检查 + 会话级检查；`trace.turns/session` 保留每轮轨迹。新增 `conversation` 数据集（api-memory 3 例 + live 3 例）。
+- Parity 对照已实现：把真实 UI 任务/会话的事件与评测 trace 归一成行为指纹，比较状态/工具序列（含 LCS 相似度）/参数哈希/来源/用量；支持 `--human-file` 或 `--human-task/--human-session + --token`。实测单轮真实 UI 任务（3b84）：状态一致、工具序列 100%、来源 100%、LLM 请求 0 差、tokens 0.98×；6 轮真实会话（8b8e）：状态一致、工具序列相似度 80%、集合 50%（人类会话含一次错误写入机会雷达、后被纠正，评测未复现该错误），据此明确“行为结构等价、文本不逐字等价”的边界。
+- 新增数据集 `backend/evaluation/datasets/`（baseline 12、security 6、business 7、live 9）与留出集 `holdout/`（live-holdout、harness-smoke）；声明式 18 类确定性检查 + 隐式运行时检查（区分业务失败与基础设施失败）+ 失败归因；负样本/探索性用例不计通过率但失败可见。
+- 自动迭代链路已打通：`validate → run(fast/integration/live) → report/analyze → compare → gate`；运行 Manifest 记录 git/模型/prompt/工具/数据集哈希；Gate 含绝对通过率、相对下降、holdout、security/evidence 硬门槛；失败分析输出规则化优化建议与校准样本；可选独立 LLM Judge（`--judge`）已实测。系统不自动改代码，候选修改仍由工作 Agent 在独立分支完成，生产发布保留人工 Release Gate。
+- 实跑证据：fast（baseline+security 18 例）计分 16/16、2 条负样本按设计失败且可见，平均 4ms；integration（business 7 例）7/7、平均 96ms；**live（真实 Gemma 9 例）8/9、平均 63.7s、总 29015 tokens，无浏览器/Computer Use**；对话级：conversation 脚本 3/3（真实 session + 逐轮检查）、真实模型多轮 2/3（CONV-006 暴露多轮重复写入真实缺口，2 条记录）；live 留出集 4/4（平均 20.9s）；Parity 单轮/6 轮对照见上；LIVE-005 真实失败（4 次 web_search 后回复无 URL，format_error）由 analyze 直接定位并沉淀为 replay 用例；legacy 30/30；独立 Judge 单例评分实测生效。所有 live 均使用内存业务库，未写云端数据库。
+- 验证：后端全套 517 项 = 514 pass / 2 fail / 1 skip；2 个失败为既有沙箱限制（Playwright Chromium 与子进程 spawn EPERM），与本轮代码无关；评测子系统自身 129 项单测全绿；`tsc --noEmit` 通过；既有 `run-benchmark` 30/30；CI 增加确定性评测步骤。详见 [EVALUATION_SYSTEM](docs/EVALUATION_SYSTEM.md) 与 `backend/evaluation/datasets/README.md`。
+- 边界：不覆盖浏览器 UI/DOM/视觉（仍由 Playwright/人工验收）；live 不写云端 PG，持久化回归独立；AMD Gemma 延迟 100–180s/次且偶发 429，live 结论按当次报告解释，不宣称稳定性能。Computer Use 仅保留三种低频用途（人类基线 parity / UI 视觉验收 / 探索反例），协议见 EVALUATION_SYSTEM 13.1；交给调优 Agent 的完整启动 Prompt 见 [EVALUATION_AGENT_STARTUP_PROMPT](docs/EVALUATION_AGENT_STARTUP_PROMPT.md)。
+
 ## 2026-11-16 真实内部浏览器回归
 
 - 分支 `codex/platform-reliability-20261116`，主代理执行。真实Gemma+云Supabase+平台界面复现“成功但来源错误”，修正主题/正文判断、摘要隔离与一次纠正、检查点真实提示、旧failed恢复入口。

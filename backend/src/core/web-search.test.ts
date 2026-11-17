@@ -1,6 +1,11 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {executeCloudTool} from "./cloud-tools.ts";
+test("broad contest discovery rejects year-calendar drift instead of accepting it as source quota",async t=>{
+  t.mock.method(globalThis,"fetch",async()=>new Response('<h2><a href="https://www.gov.cn/holiday.html">国务院2026年节假日安排</a></h2><h2><a href="https://football.example/">2026国际足联世界杯比赛赛程</a></h2><h2><a href="https://icpc.pku.edu.cn/">ICPC International Collegiate Programming Contest</a></h2>'));
+  const result=JSON.parse(await executeCloudTool("web_search",{query:"2026年大学生计算机竞赛 官网"}));
+  assert.equal(result.results.length,1); assert.equal(result.results[0].url,"https://icpc.pku.edu.cn/");
+});
 test("R9 unrelated generic Bing results trigger one exact-entity search, rather than misleading the model",async t=>{
   const queries:string[]=[];
   t.mock.method(globalThis,"fetch",async(input:string|URL)=>{
@@ -35,4 +40,14 @@ test("R9 still-unrelated results stay empty with an uncertainty warning; HTTP er
   const result=JSON.parse(await executeCloudTool("web_search",{query:"物联网设计竞赛 2026 官网"}));assert.equal(calls,2);assert.deepEqual(result.results,[]);assert.match(result.warning,/不代表.*不存在/);
   fetchMock.mock.mockImplementation(async()=>new Response("blocked",{status:403}));
   const denied=JSON.parse(await executeCloudTool("web_search",{query:"物联网设计竞赛"}));assert.match(denied.error,/403/);assert.equal(denied.attempts,1);
+});
+
+test("short contest name is retained when the first search drifts to enrollment pages", async t => {
+  const queries: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+    queries.push(new URL(String(input)).searchParams.get("q")!);
+    return new Response(queries.length === 1 ? '<h2><a href="https://gaokao.chsi.com.cn/">2026高考报名时间</a></h2>' : '<h2><a href="https://dasai.lanqiao.cn/">蓝桥杯官网</a></h2>');
+  });
+  const result = JSON.parse(await executeCloudTool("web_search", { query: "2026 蓝桥杯 报名时间 官网" }));
+  assert.deepEqual(queries, ["2026 蓝桥杯 报名时间 官网", '"蓝桥杯"']); assert.equal(result.results[0].title, "蓝桥杯官网");
 });

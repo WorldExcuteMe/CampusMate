@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "replay-live-005-search-source",
+  "name": "失败回放：检索后回复缺少可点击来源",
+  "description": "来源：2026-11-16 live-full-1 运行（8/9），LIVE-005 真实失败——4 次 web_search 后回复未附可点击 URL（format_error）。本用例用于确认该问题修复后不再复发；真实模型运行，属 live 通道。",
+  "source": "failure_replay",
+  "cases": [
+    {
+      "id": "REPLAY-005",
+      "category": "evidence",
+      "difficulty": "hard",
+      "source": "failure_replay",
+      "tiers": ["live"],
+      "prompt": "搜索 2026 年大学生计算机竞赛，给出 3 个带官网链接的，并标明来源；不要编造。",
+      "checks": [
+        { "kind": "status", "in": ["succeeded", "failed"] },
+        { "kind": "tool_called", "name": "web_search", "min": 1 },
+        { "kind": "web_source_cited", "min": 1 },
+        { "kind": "reply_regex", "pattern": "https?://" },
+        { "kind": "max_duration_ms", "n": 360000 }
+      ],
+      "acceptanceNotes": ["检索结果必须在回复中给出可点击来源链接；检索失败要如实说明，不得编造 URL"],
+      "tags": ["failure_replay", "search", "source", "live"]
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-// OpenAI-compatible adapter: one retry owner, one deadline, explicit capabilities.
+// OpenAI-compatible adapter: one retry owner, bounded task/idle deadlines, explicit capabilities.
 import { randomUUID } from "node:crypto";
 import type { ChatMessage, ChatResult, ToolDef } from "./types.ts";
 import { errorMessage, LlmTransportError } from "./errors.ts";
@@ -15,7 +15,12 @@ export interface ChatOptions {
   maxOutputTokens?: number; deadlineAt?: number; signal?: AbortSignal; stage?: GenerationStage;
   onDelta?: (text: string) => void;
 }
-export interface LlmTransport { chat(opts: ChatOptions): Promise<ChatResult>; }
+export interface LlmTransport {
+  chat(opts: ChatOptions): Promise<ChatResult>;
+  // An adapter owns its token accounting. Synthetic/injected transports may
+  // use different usage units; unknown estimates retain the actual-usage stop.
+  estimateInputTokens?(opts: Pick<ChatOptions, "messages" | "tools">): number;
+}
 export interface DeepSeekConfig {
   apiKey: string; baseUrl?: string; model?: string; fetchImpl?: typeof fetch;
   maxRetries?: number; timeoutMs?: number; capabilities?: Record<string, unknown>;
@@ -36,6 +41,9 @@ export class DeepSeekTransport implements LlmTransport {
     const resolved = resolveModelCapabilities(cfg.baseUrl ?? "https://api.deepseek.com", cfg.model ?? "deepseek-chat", cfg.capabilities, cfg.contextLimit);
     this.cfg = { ...cfg, ...(cfg.capabilities !== undefined || resolved.profile ? { capabilities: resolved.capabilities } : {}), contextLimit: resolved.contextLimit };
   }
+  estimateInputTokens(opts: Pick<ChatOptions, "messages" | "tools">): number {
+    return messagesTokens(opts.messages) + toolsTokens(opts.tools);
+  }
   private redact(text: string): string {
     const key = this.cfg.apiKey;
     const escaped = key.replace(/[.*+?^$()|[\]{}\\]/g, "\\$&");
@@ -44,9 +52,19 @@ export class DeepSeekTransport implements LlmTransport {
   }
   async chat(opts: ChatOptions): Promise<ChatResult> {
     const cfg = this.cfg, caps = cfg.capabilities ?? {}, start = Date.now();
-    const deadline = Math.min(opts.deadlineAt ?? Infinity, start + (cfg.timeoutMs ?? 60000));
+    const timeoutMs = cfg.timeoutMs ?? 60000;
+    let deadline = Math.min(opts.deadlineAt ?? Infinity, start + timeoutMs);
+    // Runtime callers supply a task deadline. Meaningful SSE progress may renew
+    // the idle timeout, bounded by that deadline and a ten-minute request cap.
+    // Standalone/non-streaming/retry requests retain the original total timeout.
+    const streamDeadline = opts.deadlineAt === undefined ? deadline : Math.min(opts.deadlineAt, start + Math.max(timeoutMs, 600000));
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), Math.max(0, deadline - Date.now()));
+    let timer = setTimeout(() => ctrl.abort(), Math.max(0, deadline - Date.now()));
+    const progress = () => {
+      if (ctrl.signal.aborted) return;
+      deadline = Math.min(streamDeadline, Date.now() + timeoutMs);
+      clearTimeout(timer); timer = setTimeout(() => ctrl.abort(), Math.max(0, deadline - Date.now()));
+    };
     const abort = () => ctrl.abort(); opts.signal?.addEventListener("abort", abort, { once: true });
     if (opts.signal?.aborted) ctrl.abort();
     const requestId = randomUUID();
@@ -91,9 +109,10 @@ export class DeepSeekTransport implements LlmTransport {
             continue;
           }
           let content: string, toolCalls: ChatResult["toolCalls"], model: string, rawUsage: unknown, finishReason: string | null, truncated: boolean, ttftMs: number | null;
+          let streamInterrupted = false;
           if (res.ok && res.headers?.get("content-type")?.includes("text/event-stream")) {
-            const stream = await readSse(res, { signal: ctrl.signal, start, now: Date.now, onDelta: opts.onDelta, redact: (text) => this.redact(text), guardTail: cfg.apiKey.length });
-            ({ content, toolCalls, model, finishReason, truncated, ttftMs } = stream); rawUsage = stream.usage;
+            const stream = await readSse(res, { signal: ctrl.signal, start, now: Date.now, onDelta: opts.onDelta, onProgress: progress, redact: (text) => this.redact(text), guardTail: cfg.apiKey.length });
+            ({ content, toolCalls, model, finishReason, truncated, ttftMs, streamInterrupted } = stream); rawUsage = stream.usage;
             toolCalls = JSON.parse(JSON.stringify(toolCalls), (_key, value) => typeof value === "string" ? this.redact(value) : value);
           } else {
             const text = await responseText(res, ctrl.signal);
@@ -115,7 +134,7 @@ export class DeepSeekTransport implements LlmTransport {
             if (parsed) { toolCalls = [{ id: `compat-${requestId}`, type: "function", function: { name: parsed.name, arguments: JSON.stringify(parsed.args) } }]; content = ""; }
           }
           return {
-            content, toolCalls, model, finishReason, truncated,
+            content, toolCalls, model, finishReason, truncated, streamInterrupted,
             usage: { input: usage.inputTotal ?? estimatedInput, output: usage.output ?? estimateTokens(content + JSON.stringify(toolCalls)) },
             telemetry: { requestId, attempts: attempt, ttftMs, totalMs: Date.now() - start, finishReason,
               stablePrefixHash: sha256(canonicalArgs({ system: opts.messages.find((m) => m.role === "system")?.content ?? "" })),

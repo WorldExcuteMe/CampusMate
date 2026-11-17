@@ -45,7 +45,8 @@ export function DeadlineTag({ deadline, pastLabel = "已过期" }: { deadline: s
   if (!deadline) return <span className="text-xs text-muted-foreground">无截止日期</span>;
   const instant = deadlineInstant(deadline, "Asia/Shanghai");
   if (!Number.isFinite(instant)) return <span className="text-xs text-muted-foreground">截止日期待核对：{deadline}</span>;
-  const date = localParts(instant, "Asia/Shanghai").date;
+  const local = localParts(instant, "Asia/Shanghai"), date = local.date;
+  const label = /T\d/.test(deadline) ? `${date} ${local.time}（北京时间）` : deadline;
   const days = Math.round((Date.parse(date) - Date.parse(today)) / 86_400_000);
   const expired = instant < Date.now();
   const urgent = days <= 3;
@@ -57,7 +58,7 @@ export function DeadlineTag({ deadline, pastLabel = "已过期" }: { deadline: s
         urgent ? "text-red-600 dark:text-red-300" : soon ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground",
       )}
     >
-      截止 {deadline}
+      截止 {label}
       {!expired && days > 0 && ` · 剩 ${days} 天`}
       {!expired && days === 0 && " · 今天截止"}
       {expired && ` · ${pastLabel}`}

@@ -1,0 +1,319 @@
+{
+  "schemaVersion": 1,
+  "id": "memory-isolation",
+  "name": "身份纠正与身份事实隔离",
+  "description": "MEM-002覆盖不同owner/新会话；MEM-004覆盖同owner跨session及返回原会话。",
+  "cases": [
+    {
+      "id": "MEM-001",
+      "category": "memory",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "api-memory",
+        "live"
+      ],
+      "prompt": "本会话代号青禾-318，我是电子信息大三，每周8小时。只确认不写全局。",
+      "checks": [],
+      "tags": [
+        "quality-20261116",
+        "exploratory"
+      ],
+      "turns": [
+        {
+          "prompt": "本会话代号青禾-318，我是电子信息大三，每周8小时。只确认不写全局。",
+          "script": [
+            {
+              "content": "确认：青禾-318，电子信息大三，每周8小时。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "纠正为计算机大一，每周2小时，代号不变。只复述最新，不联网不保存。",
+          "script": [
+            {
+              "content": "青禾-318，计算机大一，每周2小时。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            },
+            {
+              "kind": "reply_includes",
+              "all": [
+                "青禾-318",
+                "计算机",
+                "大一",
+                "2"
+              ]
+            },
+            {
+              "kind": "reply_excludes",
+              "any": [
+                "大三",
+                "8小时"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MEM-002",
+      "category": "human_habits",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "api-memory",
+        "live"
+      ],
+      "prompt": "这是新会话，我没有告诉你年级、专业或项目代号。只列出这三项当前已知值，不知道写“未知”，不得猜测或读取其他会话。",
+      "checks": [
+        {
+          "kind": "no_write"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_search"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_fetch"
+        },
+        {
+          "kind": "reply_includes",
+          "all": [
+            "未知"
+          ]
+        },
+        {
+          "kind": "reply_excludes",
+          "any": [
+            "青禾-318",
+            "电子信息",
+            "松果-47",
+            "星舟-83"
+          ]
+        }
+      ],
+      "tags": [
+        "quality-20261116",
+        "exploratory"
+      ],
+      "script": [
+        {
+          "content": "年级：未知；专业：未知；项目代号：未知。"
+        }
+      ]
+    },
+    {
+      "id": "MEM-003",
+      "category": "memory",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "api-memory",
+        "live"
+      ],
+      "prompt": "本会话已提供：必修课周一14:00–16:00，周三19:00–21:00做作业，每周仅2小时项目时间。",
+      "checks": [],
+      "tags": [
+        "quality-20261116",
+        "exploratory"
+      ],
+      "turns": [
+        {
+          "prompt": "本会话已提供：必修课周一14:00–16:00，周三19:00–21:00做作业，每周仅2小时项目时间。",
+          "script": [
+            {
+              "content": "确认课表与每周2小时项目约束。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "那就按老规矩，给项目讨论安排，别占已有时间，总项目时长不能超过之前上限。先预览，别写日历、别联网。",
+          "script": [
+            {
+              "content": "建议周二19:00–20:00讨论，周六1小时准备，总2小时，避开必修课和作业。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            },
+            {
+              "kind": "reply_regex",
+              "pattern": "2\\s*小时|两小时|二小时"
+            },
+            {
+              "kind": "reply_excludes",
+              "any": [
+                "已写入",
+                "已创建日历"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MEM-004",
+      "category": "memory",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "api-memory",
+        "live"
+      ],
+      "prompt": "仅本会话记住项目代号白桦-592，不写全局档案。",
+      "checks": [],
+      "tags": [
+        "quality-20261116",
+        "exploratory"
+      ],
+      "turns": [
+        {
+          "prompt": "仅本会话记住项目代号白桦-592，不写全局档案。",
+          "script": [
+            {
+              "content": "确认本会话代号白桦-592。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ],
+          "sessionKey": "original"
+        },
+        {
+          "prompt": "请复述我先前告诉你的项目代号。如果这个会话里我没提供，就写未知，不能猜其他会话。",
+          "script": [
+            {
+              "content": "未知。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            },
+            {
+              "kind": "reply_includes",
+              "all": [
+                "未知"
+              ]
+            },
+            {
+              "kind": "reply_excludes",
+              "any": [
+                "白桦-592"
+              ]
+            }
+          ],
+          "sessionKey": "fresh"
+        },
+        {
+          "prompt": "回到这里，请只回答本会话最初给你的项目代号，不联网不写档案。",
+          "script": [
+            {
+              "content": "白桦-592。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            },
+            {
+              "kind": "reply_includes",
+              "all": [
+                "白桦-592"
+              ]
+            }
+          ],
+          "sessionKey": "original"
+        }
+      ],
+      "acceptanceNotes": [
+        "同owner创建两个真实session，第二轮隔离，第三轮返回原session仍保留代号；脚本仅验证入口，不证明模型记忆。"
+      ]
+    }
+  ]
+}

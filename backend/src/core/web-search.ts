@@ -1,6 +1,6 @@
 import { errorMessage } from "./errors.ts";
 import { abortable, responseText } from "./llm-stream.ts";
-import { informationTopic, matchesTopic } from "./source-match.ts";
+import { informationTopic, matchesInformationRequest } from "./source-match.ts";
 interface SearchResult { title: string; url: string; snippet: string; }
 const decode = (s: string) => s.replace(/&(?:ensp|nbsp);/g, " ").replace(/&#0183;/g, "·").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
 const strip = (s: string) => decode(s.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
@@ -14,8 +14,8 @@ function parseResults(html: string): SearchResult[] {
   }
   return results;
 }
-function relevant(results: SearchResult[], focus?: string) {
-  return results.filter(result => matchesTopic(focus, result.title + " " + result.snippet));
+function relevant(results: SearchResult[], query: string) {
+  return results.filter(result => matchesInformationRequest(query, result.title + " " + result.snippet));
 }
 export async function searchWeb(query: string, limit = 6) {
   const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 12000);
@@ -30,9 +30,10 @@ export async function searchWeb(query: string, limit = 6) {
       return parseResults(await responseText(res, ctrl.signal, 2_000_000));
     };
     const focus = informationTopic(query);
-    let results = relevant(await search(query), focus);
-    const fallback = focus ? `"${focus}"` : undefined;
-    if (!results.length && fallback && fallback !== query.trim() && !ctrl.signal.aborted) results = relevant(await search(fallback), focus);
+    let results = relevant(await search(query), query);
+    const broad = query.replace(/20\d{2}\s*年?|官网|官方/g, " ").replace(/\s+/g, " ").trim();
+    const fallback = focus ? `"${focus}"` : /竞赛|大赛|比赛/.test(query) && broad ? `"${broad}"` : undefined;
+    if (!results.length && fallback && fallback !== query.trim() && !ctrl.signal.aborted) results = relevant(await search(fallback), query);
     return { engine: "bing", query, effectiveQuery, attempts, results: results.slice(0, limit), ...(!results.length ? { warning: "未取得与主题相关的搜索结果；这不代表目标不存在，可简化关键词或查官方入口。" } : {}) };
   } catch (error) { return { engine: "bing", query, effectiveQuery, attempts, results: [], error: `web_search 失败：${errorMessage(error)}` }; }
   finally { clearTimeout(timer); }

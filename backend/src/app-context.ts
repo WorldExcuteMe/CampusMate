@@ -25,6 +25,7 @@ import { PostgresOpportunityStore } from "./runtime/postgres-opportunity-store.t
 import { PostgresSessionStore } from "./runtime/postgres-session-store.ts";
 import { PostgresProviderStore } from "./runtime/postgres-provider-store.ts";
 import { PostgresArtifactStore } from "./runtime/postgres-artifact-store.ts";
+import { CampusRecords } from "./core/campus-records.ts";
 import { ProviderService } from "./core/providers.ts";
 
 export interface AppContext {
@@ -36,6 +37,7 @@ export interface AppContext {
   memoryStore: MemoryStore;
   personalContext: PersonalContextStore;
   opportunityStore: OpportunityStore;
+  campusRecords: CampusRecords;
   sessionStore: SessionStore;
   providerStore: ProviderStore;
   providers: ProviderService;
@@ -72,6 +74,7 @@ export function buildContext(env: Record<string, string | undefined>, options: {
     memoryStore: new InMemoryMemoryStore(),
     personalContext: pool ? new PostgresPersonalContextStore(pool) : new ValidatedMemoryPersonalContextStore(),
     opportunityStore: pool ? new PostgresOpportunityStore(pool) : new InMemoryOpportunityStore(),
+    campusRecords: new CampusRecords(pool),
     sessionStore: pool ? new PostgresSessionStore(pool) : new MemorySessionStore(store),
     providerStore,
     providers: new ProviderService(providerStore, env, options.providerFetch),

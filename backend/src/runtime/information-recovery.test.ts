@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runAgentLoop } from "../core/agent-loop.ts";
 import type { ToolDef } from "../core/types.ts";
+import { webPageText } from "../core/ssrf.ts";
 const tools: ToolDef[] = ["web_search", "web_fetch"].map(name => ({ type: "function", function: { name, description: name, parameters: { type: "object", properties: {} } } }));
 const candidates = ["https://official.example.edu/notice", "https://school.example.edu/notice", "https://third.example.edu/notice"];
 
@@ -32,6 +33,15 @@ test("brief collection reads bounded real search candidates before another model
   assert.equal(result.toolErrors, 0); assert.equal(result.recoveredReadErrors, 1); assert.match(result.reply, /读取失败/);
   assert.equal(result.usage.toolCalls, 3);
   assert.equal(result.transcript.filter(m => m.role === "tool").length, 3);
+});
+
+test("university navigation cannot hide an advance notice and promote its schedule to actual completion", async () => {
+  for (const hasTitle of [true, false]) {
+    const navigation = "首页学院概况师资队伍科学研究人才培养校友服务 ".repeat(25);
+    const sourceText = webPageText(`<html><head>${hasTitle ? "<title>竞赛参赛通知</title>" : ""}</head><body>${navigation}2026年竞赛参赛通知。计划8月举行总决赛，每队不超过4人。</body></html>`);
+    const { result, deltas } = await run("收集竞赛的信息", false, 10, { sourceText, summary: "竞赛已结束，每队不超过4人。 https://school.example.edu/notice" });
+    assert(!result.reply.includes("竞赛已结束")); assert(!deltas.join("").includes("竞赛已结束")); assert.match(result.reply, /实际举办.*未核实/);
+  }
 });
 test("unreadable search candidates cannot be presented as a completed sourced answer", async () => {
   const { result, fetched } = await run("收集竞赛的信息", true);

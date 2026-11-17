@@ -1,0 +1,858 @@
+{
+  "schemaVersion": 1,
+  "id": "conversation-long",
+  "name": "15轮累积约束与话题回返",
+  "description": "两段15轮真实session；不因一次通过晋升固定集。",
+  "cases": [
+    {
+      "id": "LONG-001",
+      "category": "long_context",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "api-memory",
+        "live"
+      ],
+      "prompt": "先记在本会话，不改全局档案：我计算机专业大二，每周6小时，Python入门，无硬件，预算0元。项目代号松果-47。",
+      "checks": [
+        {
+          "kind": "inbox_saved",
+          "max": 0
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "list_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "update_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_to_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_create"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_inspect"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_export"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "read_artifact"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_search"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_fetch"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "propose_verification"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_opportunity"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "list_opportunities"
+        }
+      ],
+      "tags": [
+        "quality-20261116",
+        "exploratory"
+      ],
+      "turns": [
+        {
+          "prompt": "先记在本会话，不改全局档案：我计算机专业大二，每周6小时，Python入门，无硬件，预算0元。项目代号松果-47。",
+          "script": [
+            {
+              "content": "本会话确认：计算机、大二、每周6小时、Python入门、无硬件、0元，代号松果-47。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "别联网，给两个适合我的项目方向，只说建议，不给比赛报名事实。",
+          "script": [
+            {
+              "content": "建议：校园通知整理助手、Python资料分类器。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第一个先别做，第二个用一句话解释，别写入。",
+          "script": [
+            {
+              "content": "Python资料分类器建议用规则和标签整理文本。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "更正：大一，每周3小时，预算200元。其他照旧，复述最新条件。",
+          "script": [
+            {
+              "content": "最新：计算机、大一、每周3小时、Python入门、无硬件、预算200元。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "打断下：只预览CM插队讲座，12月3日19点线上，不保存。",
+          "script": [
+            {
+              "content": "预览：CM插队讲座，12月3日19:00，线上。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "回到原项目。刚才我选了第几个方向？只给名称。",
+          "script": [
+            {
+              "content": "第二个方向：Python资料分类器。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "项目名改叫“资料小助手”，代号不变，技术和预算不变。先确认。",
+          "script": [
+            {
+              "content": "确认：项目名资料小助手，代号松果-47，Python入门、无硬件、200元。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "别联网，列三条可验收结果，每条都能人工检查；不要宣称已经完成。",
+          "script": [
+            {
+              "content": "建议验收：输入10条材料；分类结果可检查；保留原文可追溯。尚未完成。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "再纠正，预算最后定50元，其他不改，不要继续用200。",
+          "script": [
+            {
+              "content": "预算最新50元，其他约束不变。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "今晚只有半小时，给30分钟以内的第一步，别写日历。",
+          "script": [
+            {
+              "content": "建议先用30分钟整理5条示例材料，不写日历。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "我不做网页爬虫，只处理自己粘贴的文本，记住这个范围。",
+          "script": [
+            {
+              "content": "确认：仅处理自己粘贴的文本，不做网页爬虫。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "刚才的插队讲座在哪里、几点？仍只回答不保存。",
+          "script": [
+            {
+              "content": "线上，12月3日19:00。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "继续资料小助手，列当前约束，不要列旧值，不要问我已经给过的身份。",
+          "script": [
+            {
+              "content": "计算机、大一、每周3小时、Python入门、无硬件、预算50元，仅处理自己粘贴文本。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "快一点！不联网不写入，请给周计划，不能增加总时长和预算。",
+          "script": [
+            {
+              "content": "建议：示例1小时、规则1小时、验收1小时，共3小时，预算上限50元。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "最后只复述项目名、最早代号、年级、每周时长、最新预算、输入范围。别给旧值，不联网不写入。",
+          "script": [
+            {
+              "content": "项目名资料小助手；最早代号松果-47；大一；每周3小时；最新预算50元；只处理自己粘贴的文本。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            },
+            {
+              "kind": "reply_includes",
+              "all": [
+                "资料小助手",
+                "松果-47",
+                "大一",
+                "3",
+                "50",
+                "粘贴"
+              ]
+            },
+            {
+              "kind": "reply_excludes",
+              "any": [
+                "大二",
+                "200",
+                "6小时",
+                "6 小时"
+              ]
+            }
+          ]
+        }
+      ],
+      "acceptanceNotes": [
+        "15轮同一真实session；任务切换返回、两次纠正、远距代号引用；末轮不得重问身份。"
+      ]
+    },
+    {
+      "id": "LONG-002",
+      "category": "long_context",
+      "difficulty": "hard",
+      "source": "generated",
+      "exploratory": true,
+      "tiers": [
+        "api-memory",
+        "live"
+      ],
+      "prompt": "先记在本会话，不改全局档案：我计算机专业大二，每周6小时，Python入门，无硬件，预算0元。项目代号星舟-83。",
+      "checks": [
+        {
+          "kind": "inbox_saved",
+          "max": 0
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "list_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "update_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_to_inbox"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_create"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_inspect"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "document_export"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "read_artifact"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_search"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "web_fetch"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "propose_verification"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "save_opportunity"
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "list_opportunities"
+        }
+      ],
+      "tags": [
+        "quality-20261116",
+        "exploratory"
+      ],
+      "turns": [
+        {
+          "prompt": "先记在本会话，不改全局档案：我计算机专业大二，每周6小时，Python入门，无硬件，预算0元。项目代号星舟-83。",
+          "script": [
+            {
+              "content": "本会话确认：计算机、大二、每周6小时、Python入门、无硬件、0元，代号星舟-83。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "别联网，给两个适合我的项目方向，只说建议，不给比赛报名事实。",
+          "script": [
+            {
+              "content": "建议：校园通知整理助手、Python资料分类器。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "第一个先别做，第二个用一句话解释，别写入。",
+          "script": [
+            {
+              "content": "Python资料分类器建议用规则和标签整理文本。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "更正：大一，每周3小时，预算200元。其他照旧，复述最新条件。",
+          "script": [
+            {
+              "content": "最新：计算机、大一、每周3小时、Python入门、无硬件、预算200元。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "打断下：只预览CM插队讲座，12月3日19点线上，不保存。",
+          "script": [
+            {
+              "content": "预览：CM插队讲座，12月3日19:00，线上。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "回到原项目。刚才我选了第几个方向？只给名称。",
+          "script": [
+            {
+              "content": "第二个方向：Python资料分类器。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "项目名改叫“资料小助手”，代号不变，技术和预算不变。先确认。",
+          "script": [
+            {
+              "content": "确认：项目名资料小助手，代号星舟-83，Python入门、无硬件、200元。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "别联网，列三条可验收结果，每条都能人工检查；不要宣称已经完成。",
+          "script": [
+            {
+              "content": "建议验收：输入10条材料；分类结果可检查；保留原文可追溯。尚未完成。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "再纠正，预算最后定50元，其他不改，不要继续用200。",
+          "script": [
+            {
+              "content": "预算最新50元，其他约束不变。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "今晚只有半小时，给30分钟以内的第一步，别写日历。",
+          "script": [
+            {
+              "content": "建议先用30分钟整理5条示例材料，不写日历。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "我不做网页爬虫，只处理自己粘贴的文本，记住这个范围。",
+          "script": [
+            {
+              "content": "确认：仅处理自己粘贴的文本，不做网页爬虫。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "刚才的插队讲座在哪里、几点？仍只回答不保存。",
+          "script": [
+            {
+              "content": "线上，12月3日19:00。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "继续资料小助手，列当前约束，不要列旧值，不要问我已经给过的身份。",
+          "script": [
+            {
+              "content": "计算机、大一、每周3小时、Python入门、无硬件、预算50元，仅处理自己粘贴文本。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "快一点！不联网不写入，请给周计划，不能增加总时长和预算。",
+          "script": [
+            {
+              "content": "建议：示例1小时、规则1小时、验收1小时，共3小时，预算上限50元。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            }
+          ]
+        },
+        {
+          "prompt": "最后只复述项目名、最早代号、年级、每周时长、最新预算、输入范围。别给旧值，不联网不写入。",
+          "script": [
+            {
+              "content": "项目名资料小助手；最早代号星舟-83；大一；每周3小时；最新预算50元；只处理自己粘贴的文本。"
+            }
+          ],
+          "expectedStatus": "succeeded",
+          "checks": [
+            {
+              "kind": "no_write"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_search"
+            },
+            {
+              "kind": "tool_not_called",
+              "name": "web_fetch"
+            },
+            {
+              "kind": "reply_includes",
+              "all": [
+                "资料小助手",
+                "星舟-83",
+                "大一",
+                "3",
+                "50",
+                "粘贴"
+              ]
+            },
+            {
+              "kind": "reply_excludes",
+              "any": [
+                "大二",
+                "200",
+                "6小时",
+                "6 小时"
+              ]
+            }
+          ]
+        }
+      ],
+      "acceptanceNotes": [
+        "15轮同一真实session；任务切换返回、两次纠正、远距代号引用；末轮不得重问身份。"
+      ]
+    }
+  ]
+}

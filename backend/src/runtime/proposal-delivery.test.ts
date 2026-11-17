@@ -50,7 +50,9 @@ test("策划书真实Worker按资料/提纲/7章/检查/交付保存同版文档
   const checkpoint = (await ctx.store.latestCheckpoint(task.id))!; assert.equal(checkpoint.state.documentRun?.plan.acceptanceFrozen, true);
   assert.ok(checkpoint.state.documentRun?.plan.steps.every((s) => s.acceptance.length));
   assert.ok(inspectDocument(document, checkpoint.state.documentRun!.requirements).every((c) => c.passed));
-  assert.equal((await ctx.store.listEvents(task.id)).filter((e) => e.type === "step.finished").length, 11);
+  const stages = (await ctx.store.listEvents(task.id)).filter(e => e.type === "step.finished");
+  assert.equal(stages.filter(e => e.payload.stepId !== "prepare").length, 11);
+  assert.equal(stages.filter(e => e.payload.stepId === "prepare" && e.payload.passed).length, 1);
 });
 test("不支持原生tool_calls的JSON工具路径仍能记录已取得来源", async () => {
   const ctx = contextFor(), model = scriptedModel(-1, true);

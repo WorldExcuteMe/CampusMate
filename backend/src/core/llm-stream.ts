@@ -16,7 +16,7 @@ export async function responseText(res: Response, signal: AbortSignal, cap = 4_0
     return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
   } catch (error) { void reader.cancel().catch(() => {}); throw error; }
 }
-export async function readSse(res: Response, opts: { signal: AbortSignal; start: number; now: () => number; onDelta?: (text: string) => void; redact: (text: string) => string; guardTail?: number }) {
+export async function readSse(res: Response, opts: { signal: AbortSignal; start: number; now: () => number; onDelta?: (text: string) => void; onProgress?: () => void; redact: (text: string) => string; guardTail?: number }) {
   const reader = res.body?.getReader(); if (!reader) throw new Error("模型流缺少响应体");
   const decoder = new TextDecoder(); let buffer = "", content = "", pending = "", model = "unknown";
   let doneMarker = false, finishReason: string | null = null, usage: unknown, ttftMs: number | null = null, bytes = 0, sentAt = opts.start;
@@ -44,12 +44,15 @@ export async function readSse(res: Response, opts: { signal: AbortSignal; start:
     const choice = data.choices?.[0];
     if (choice?.finish_reason) finishReason = choice.finish_reason;
     const delta = choice?.delta;
+    if (typeof delta?.reasoning_content === "string" && delta.reasoning_content.length) opts.onProgress?.();
     if (typeof delta?.content === "string") {
-      ttftMs ??= opts.now() - opts.start; content += delta.content; pending += delta.content;
+      if (delta.content.length) { ttftMs ??= opts.now() - opts.start; opts.onProgress?.(); }
+      content += delta.content; pending += delta.content;
       if (pending.length >= 64 || opts.now() - sentAt >= 250) flush();
     }
     for (const piece of delta?.tool_calls ?? []) {
-      if (!Number.isInteger(piece.index) || piece.index < 0 || piece.index >= 64) throw new LlmTransportError("工具流索引无效", { reason: "protocol" });
+      if (!Number.isInteger(piece.index) || piece.index < 0 || piece.index >= 64) throw new LlmTransportError(`工具流索引无效：indexType=${typeof piece.index}, hasId=${typeof piece.id === "string"}, fields=${Object.keys(piece).sort().join(",")}`, { reason: "protocol" });
+      if (piece.function?.name || piece.function?.arguments) { ttftMs ??= opts.now() - opts.start; opts.onProgress?.(); }
       let key = active.get(piece.index);
       if (piece.id) {
         if (typeof piece.id !== "string" || piece.id.length > 256) throw new LlmTransportError("工具流ID无效", { reason: "protocol" });
@@ -82,14 +85,14 @@ export async function readSse(res: Response, opts: { signal: AbortSignal; start:
     for (;;) {
       const chunk = await abortable(reader.read(), opts.signal);
       if (chunk.done) break;
-      bytes += chunk.value.byteLength; if (bytes > 4_000_000) throw new Error("模型流超过大小限制");
+      bytes += chunk.value.byteLength; if (bytes > 4_000_000) throw new LlmTransportError("模型流超过大小限制", { reason: "protocol" });
       buffer += decoder.decode(chunk.value, { stream: true });
       let boundary: RegExpExecArray | null;
       while ((boundary = /\r?\n\r?\n/.exec(buffer))) { frame(buffer.slice(0, boundary.index)); buffer = buffer.slice(boundary.index + boundary[0].length); if (doneMarker) break; }
       if (doneMarker) break;
     }
     if (!doneMarker) { buffer += decoder.decode(); if (buffer.trim()) frame(buffer); }
-  } catch (error) { if (error instanceof LlmTransportError || (!content && !calls.size)) throw error; broken = true; }
+  } catch (error) { if (error instanceof LlmTransportError || error instanceof SyntaxError || (!content && !calls.size)) throw error; broken = true; }
   finally { flush(true); void reader.cancel().catch(() => {}); }
-  return { content: opts.redact(content), toolCalls: [...calls.values()], model, usage, ttftMs, finishReason, truncated: broken || !doneMarker || finishReason === "length" || !finishReason };
+  return { content: opts.redact(content), toolCalls: [...calls.values()], model, usage, ttftMs, finishReason, streamInterrupted: !opts.signal.aborted && !finishReason && (broken || !doneMarker), truncated: broken || !doneMarker || finishReason === "length" || !finishReason };
 }

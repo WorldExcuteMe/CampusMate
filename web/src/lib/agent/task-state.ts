@@ -17,7 +17,9 @@ function bounded(records: NonNullable<ChatSession["taskViews"]>) {
 }
 export function mergeTask(session: ChatSession, incoming: AgentTask): ChatSession {
   const previous = session.taskViews?.[incoming.id];
-  const combined = { ...previous?.task, ...incoming };
+  // GET snapshots omit undefined JSON properties. Absence of an error means
+  // it was cleared by resume/completion, rather than an unchanged old error.
+  const combined = { ...previous?.task, ...incoming, error: incoming.error };
   const keys = ["id", "userId", "title", "sessionId", "turnId", "turnSeq", "status", "usage", "budget", "result", "error", "promptUsage", "modelConfig", "modelRuntime", "cancelRequested", "createdAt", "updatedAt"] as const;
   const task = Object.fromEntries(keys.filter((key) => combined[key] !== undefined).map((key) => [key, combined[key]])) as unknown as AgentTask;
   const events = previous?.events ?? [];

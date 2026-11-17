@@ -29,6 +29,26 @@ npm run typecheck
 > 不可达/未迁移自动 skip。本开发环境直连 Supabase 5432 被重置（ECONNRESET），故默认 skip；
 > 在有直连权限的环境应用迁移后即可运行。
 
+## Headless Agent 评测（无需浏览器/Computer Use）
+
+`src/evaluation/` + `scripts/eval.ts` 提供独立评测子系统：数据集 → 批量执行 → 结构化 Trace → 确定性检查/混合评分 → 失败分析 → 版本对比与回归 Gate。三级通道：
+
+- `scripted`：进程内 `runAgentLoop`，脚本回放模型，毫秒级，CI 用；
+- `api-memory`：真实 HTTP + JWT + Worker + 任务状态机 + 审批 + 执行期证书，模型脚本回放，数据写内存库；
+- `live`：同一运行时换真实 Provider/真实工具，业务数据仍写内存库（不写云端 PG），用于真实模型端到端能力验证。
+
+```bash
+node scripts/eval.ts run --suite baseline --suite security --target scripted
+node scripts/eval.ts run --suite business --target api-memory
+node scripts/eval.ts run --suite conversation --target api-memory     # 多轮同一 session
+node scripts/eval.ts run --suite live --target live --concurrency 1
+node scripts/eval.ts run --suite conversation --target live --concurrency 1   # 真实模型多轮
+node scripts/eval.ts report --run latest && node scripts/eval.ts analyze --run latest
+node scripts/eval.ts parity --eval latest-live --case <caseId> --human-file human-task.json
+```
+
+多轮用例（`turns`）与人类聊天一致：创建真实 session、逐轮提交 `task(sessionId,turnId)`，Worker 注入历史/身份；`--reasoning/--provider/--session` 可让入口进一步对齐 UI。`parity` 把真实 UI 任务事件与评测 trace 归一为行为指纹，比较状态/工具序列/参数哈希/来源/用量。完整说明见 [EVALUATION_SYSTEM](../docs/EVALUATION_SYSTEM.md)；运行产物在 `.local/eval/`（gitignored）。既有 30 任务基准保留：`node scripts/run-benchmark.ts`，也可用 `node scripts/eval.ts run --target legacy` 走统一报告。
+
 ## 环境变量
 
 | 变量 | 说明 |

@@ -76,3 +76,5 @@ jobs:
         run: node scripts/validate-migration.ts
       - name: Benchmark Smoke (30 tasks)
         run: node scripts/run-benchmark.ts
+      - name: Headless Evaluation (fast deterministic suites)
+        run: node scripts/eval.ts run --suite baseline --suite security --target scripted --quiet

@@ -6,8 +6,25 @@ import type { ChatResult, ToolDef } from "./types.ts";
 import { DEFAULT_BUDGET } from "./types.ts";
 import { LlmTransportError } from "./errors.ts";
 
+test("search-only runtimes report real search leads for both native and JSON protocols", async () => {
+  const search: ToolDef[] = [{ type: "function", function: { name: "web_search", description: "search", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } }];
+  for (const native of [true, false]) {
+    let requests = 0, executed = 0;
+    const transport = { chat: async (): Promise<ChatResult> => { requests++; return { content: requests === 1 ? native ? "" : '{"tool":"web_search","args":{"query":"竞赛"}}' : "根据真实搜索结果找到候选链接，日期仍需核对。", toolCalls: requests === 1 && native ? [tc("web_search", {query:"竞赛"})] : [], model: "contract", usage: {input:1,output:1} }; } };
+    const result = await runAgentLoop({ system: "s", user: "收集竞赛信息", deps: { transport, tools: search, budget: DEFAULT_BUDGET, executeTool: async () => { executed++; return JSON.stringify({results:[{title:"竞赛线索",url:"https://example.org/notice"}]}); } } });
+    assert.equal(executed,1); assert.equal(result.stopReason,"completed"); assert.ok(result.actions.includes("web_search")); assert.match(result.reply,/搜索/);
+  }
+});
+
 const tools: ToolDef[] = [{ type: "function", function: { name: "save_to_inbox", description: "x", parameters: { type: "object", properties: {} } } }];
 const tc = (name: string, args: Record<string, unknown>, id = "c1") => ({ id, type: "function" as const, function: { name, arguments: JSON.stringify(args) } });
+test("insufficient input budget pauses before any text or vision model request", async () => {
+  for (const images of [undefined, ["data:image/png;base64,AAAA"]]) {
+    let calls = 0; const events: string[] = [];
+    const result = await runAgentLoop({ system: "校园通知助手", user: images ? "核验这张通知图片" : "给一个方案", ...(images ? {images} : {}), deps: { tools, budget: { tokens: 1, toolCalls: 5, wallMs: 60000, costUsd: 1 }, transport: {estimateInputTokens:()=>2300,chat:async()=>{calls++;return {content:"不该花费这些tokens",toolCalls:[],model:"contract",usage:{input:2300,output:1}};}}, executeTool:async()=>"{}", hooks: {onEvent:type=>{events.push(type);}} } });
+    assert.equal(calls,0); assert.equal(result.usage.tokens,0); assert.equal(result.budgetExceeded,true); assert.equal(events.filter(type=>type==="llm.request").length,0);
+  }
+});
 
 class FakeTransport implements LlmTransport {
   i = 0;

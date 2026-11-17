@@ -7,6 +7,10 @@ import { DeadlineTag } from "@/components/shared";
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("Beijing calendar deadline policy", () => {
+  it("renders equivalent timestamp offsets as the same explicit Beijing clock", () => {
+    render(<><DeadlineTag deadline="2026-11-22T10:00:00Z" /><DeadlineTag deadline="2026-11-22T18:00:00+08:00" /></>);
+    expect(screen.getAllByText(/截止 2026-11-22 18:00（北京时间）/)).toHaveLength(2);
+  });
   it("uses Beijing midnight, not UTC or the host's calendar", () => {
     expect(beijingDay(new Date("2026-11-14T15:59:59Z"))).toBe("2026-11-14");
     expect(beijingDay(new Date("2026-11-14T16:00:00Z"))).toBe("2026-11-15");

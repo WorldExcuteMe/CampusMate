@@ -25,6 +25,25 @@ async function fixture(t: TestContext, postgres: boolean) {
 
 for (const postgres of [false, true]) {
   const mode = postgres ? "postgres" : "memory";
+  test(`${mode}：暂停后新轮次必须立即提示恢复或取消，不能接受一个永不认领的排队任务`, async t => {
+    const { ctx, post, input, session } = await fixture(t, postgres);
+    const body = input("需要暂停的前轮");
+    const first = await (await post("/v1/tasks", body)).json() as { taskId: string };
+    const claimed = await ctx.store.claimNext({ workerId: "one", leaseTtlMs: 60000, now: Date.now() });
+    assert.equal(claimed?.id, first.taskId);
+    await ctx.store.updateTask(first.taskId, { status: "paused" });
+    const blocked = await post("/v1/tasks", input("新的后轮"));
+    assert.equal(blocked.status, 409); assert.match((await blocked.json() as {error:string}).error, /恢复.*取消/);
+    assert.equal((await ctx.store.listSessionTasks(OWNER, session.id)).length, 1);
+    assert.equal((await ctx.sessionStore.listMessages(OWNER, session.id)).length, 1);
+    const retry = await post("/v1/tasks", body);
+    assert.equal(retry.status, 201, "保留既有HTTP契约");
+    const retried = await retry.json() as { taskId: string; deduped: boolean };
+    assert.equal(retried.taskId, first.taskId); assert.equal(retried.deduped, true, "同turn网络重试仍幂等，不被新轮屏障拒绝");
+    await ctx.store.requestCancel(first.taskId, OWNER);
+    const next = await (await post("/v1/tasks", input("取消后继续"))).json() as {taskId:string};
+    assert.equal((await ctx.store.claimNext({ workerId:"two", leaseTtlMs:60000, now:Date.now() }))?.id,next.taskId);
+  });
   test(`${mode}：同turn并发网络重试原子接受一个任务和一条用户消息`, async (t) => {
     const { ctx, post, input, session } = await fixture(t, postgres);
     const body = input("我是计算机大二，擅长Python");

@@ -33,6 +33,7 @@ export interface TaskStore {
   saveTurnProgress?(input: TurnProgress, sessions: SessionStore): Promise<Task>;
   finishSessionTurn?(input: TurnProgress & { patch: Partial<Task> }, sessions: SessionStore): Promise<Task>;
   getTask(id: string, options?: { includeImages?: boolean }): Promise<Task | null>;
+  loadTaskImages(id: string, userId: string): Promise<string[]>;
   pauseTaskIfOwned?(input: { taskId: string; userId: string; workerId: string; attempt: number; now: number; error: string }): Promise<boolean>;
   updateTask(id: string, patch: Partial<Task>): Promise<Task>;
   listTasksByUser(userId: string): Promise<Task[]>;
@@ -40,7 +41,7 @@ export interface TaskStore {
   listSessionTasks(userId: string, sessionId: string): Promise<Task[]>;
   listSessionHistory(query: SessionHistoryQuery): Promise<import("../core/types.ts").ChatMessage[]>;
   claimNext(opts: { workerId: string; leaseTtlMs: number; now: number }): Promise<Task | null>;
-  renewLease(id: string, workerId: string, leaseTtlMs: number, now: number): Promise<boolean>;
+  renewLease(id: string, workerId: string, leaseTtlMs: number, now: number, attempt?: number): Promise<boolean>;
   requestCancel(id: string, userId: string): Promise<boolean>;
   appendEvent(input: { taskId: string; userId: string; stepId?: string; type: EventType; payload?: Record<string, unknown> }): Promise<AgentEvent>;
   listEvents(taskId: string, afterSeq?: number): Promise<AgentEvent[]>;
@@ -86,6 +87,7 @@ export class InMemoryStore implements TaskStore {
       const turns = [...this.tasks.values()].filter((t) => t.userId === input.userId && t.sessionId === input.sessionId);
       const existing = turns.find((t) => t.turnId === input.turnId);
       if (existing) { if (existing.inputHash !== hash) throw new SessionConflict("同一轮次的输入冲突"); return { task: existing, deduped: true }; }
+      if (turns.some(task => task.status === "paused" || task.status === "needs_input")) throw new SessionConflict("当前会话有暂停或等待输入的任务，请先恢复或取消该任务，再发送新消息；原记录已保留。");
       const scratch = new InMemoryStore();
       const task = await scratch.createTask({ ...input, inputHash: hash, turnSeq: Math.max(0, ...turns.map((t) => t.turnSeq ?? 0)) + 1 });
       const memory = sessions as MemorySessionStore;
@@ -104,7 +106,7 @@ export class InMemoryStore implements TaskStore {
     if (!task || task.userId !== userId) throw new Error("Task owner forbidden");
     return this.sessionTransaction(task.sessionId ?? id, async () => {
       if (task.status === "failed" && task.turnSeq !== undefined && [...this.tasks.values()].some((t) => t.userId === userId && t.sessionId === task.sessionId && (t.turnSeq ?? 0) > task.turnSeq!)) throw new SessionConflict("后续对话已开始，请用新消息继续；原任务记录已保留。");
-      return this.updateTask(id, { status: "queued", transcriptCommitted: false, ...(budget ? { budget } : {}), error: "" });
+      return this.updateTask(id, { status: "queued", attempt: task.attempt + 1, maxAttempts: Math.max(task.maxAttempts, task.attempt + 1), transcriptCommitted: false, ...(budget ? { budget } : {}), error: "" });
     });
   }
 
@@ -173,6 +175,11 @@ export class InMemoryStore implements TaskStore {
     this.tasks.set(id, next);
     return next;
   }
+  async loadTaskImages(id: string, userId: string): Promise<string[]> {
+    const task = this.tasks.get(id);
+    if (!task || task.userId !== userId) throw new Error("Task owner forbidden");
+    return structuredClone(task.images ?? []);
+  }
 
   // Compatibility projection for pre-turn tasks; the Worker uses full SessionStore transcripts.
   async listSessionHistory(query: SessionHistoryQuery): Promise<import("../core/types.ts").ChatMessage[]> {
@@ -201,6 +208,12 @@ export class InMemoryStore implements TaskStore {
     const t = eligible[0];
     if (!t) return null;
     const reclaimed = t.status === "running";
+    if (reclaimed && t.attempt >= t.maxAttempts) {
+      const message = "执行租约连续失效，已停止自动重试；原请求和记录已保留，请恢复任务或用新消息继续。";
+      this.tasks.set(t.id, { ...t, status: "paused", error: message, lease: { ...t.lease, owner: null }, updatedAt: opts.now });
+      await this.appendEvent({ taskId: t.id, userId: t.userId, type: "task.needs_input", payload: { reason: "execution_interrupted", message } });
+      return null;
+    }
     const next: Task = {
       ...t,
       status: "running",
@@ -210,12 +223,12 @@ export class InMemoryStore implements TaskStore {
     };
     this.tasks.set(t.id, next);
     await this.appendEvent({ taskId: t.id, userId: t.userId, type: "task.claimed", payload: { workerId: opts.workerId, reclaimed } });
-    return next;
+    const { images: _images, ...state } = next; return state;
   }
 
-  async renewLease(id: string, workerId: string, leaseTtlMs: number, now: number): Promise<boolean> {
+  async renewLease(id: string, workerId: string, leaseTtlMs: number, now: number, attempt?: number): Promise<boolean> {
     const t = this.tasks.get(id);
-    if (!t || t.lease.owner !== workerId || t.status !== "running") return false;
+    if (!t || t.lease.owner !== workerId || t.status !== "running" || (attempt !== undefined && t.attempt !== attempt) || (t.lease.expiresAt ?? 0) <= now) return false;
     this.tasks.set(id, { ...t, lease: { owner: workerId, expiresAt: now + leaseTtlMs, heartbeatAt: now }, updatedAt: now });
     return true;
   }

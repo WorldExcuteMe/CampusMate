@@ -3,7 +3,7 @@ import type { AppendSessionMessage, SessionStore, StoredSession, StoredSessionMe
 import type { ChatMessage } from "../core/types.ts";
 import type { SqlPool } from "./sql.ts";
 import { readQuery } from "./sql.ts";
-import { assertTaskOwner, json, messageEnvelope, millis, optionalText, requireUuid, sameJson, type DbRow } from "./postgres-shared.ts";
+import { assertTaskOwner, json, messageEnvelope, millis, optionalText, requireUuid, type DbRow } from "./postgres-shared.ts";
 
 function session(r: DbRow): StoredSession { return { id: String(r.id), userId: String(r.user_id), title: String(r.title), mode: r.mode as StoredSession["mode"], summary: String(r.summary ?? ""), summaryThroughSeq: Number(r.summary_through_seq), createdAt: millis(r.created_at), updatedAt: millis(r.updated_at) }; }
 function message(r: DbRow): StoredSessionMessage { return { ...(r.content as ChatMessage), id: String(r.id), userId: String(r.user_id), sessionId: String(r.session_id), turnId: String(r.turn_id), messageKey: String(r.message_key), taskId: optionalText(r.task_id), seq: Number(r.seq), createdAt: millis(r.created_at) }; }
@@ -23,19 +23,26 @@ export class PostgresSessionStore implements SessionStore {
       const parent = await client.query<DbRow>("select * from agent_sessions where id=$1 and user_id=$2 for update", [input.sessionId, input.userId]);
       if (!parent.rows[0]) throw new Error("Session owner forbidden");
       if (input.taskId) await assertTaskOwner(client, input.userId, input.taskId, input.sessionId);
-      const old = await client.query<DbRow>("select * from agent_session_messages where user_id=$1 and session_id=$2 and message_key=$3", [input.userId, input.sessionId, input.messageKey]);
+      const old = await client.query<DbRow>("select id,user_id,session_id,turn_id,message_key,task_id,seq,role,created_at,content=$4::jsonb as envelope_match from agent_session_messages where user_id=$1 and session_id=$2 and message_key=$3", [input.userId, input.sessionId, input.messageKey, json(messageEnvelope(input))]);
       if (old.rows[0]) {
-        const found = message(old.rows[0]);
-        if (found.turnId !== input.turnId || found.taskId !== input.taskId || !sameJson(messageEnvelope(found), messageEnvelope(input))) throw new Error("Message key conflict");
+        const found = message({ ...old.rows[0], content: messageEnvelope(input) });
+        if (found.turnId !== input.turnId || found.taskId !== input.taskId || !old.rows[0].envelope_match) throw new Error("Message key conflict");
         return found;
       }
       await client.query("insert into agent_session_turns(user_id,session_id,turn_id) values($1,$2,$3) on conflict do nothing", [input.userId, input.sessionId, input.turnId]);
-      const r = await client.query<DbRow>("insert into agent_session_messages(id,user_id,session_id,turn_id,message_key,task_id,seq,role,content) values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) returning *", [randomUUID(), input.userId, input.sessionId, input.turnId, input.messageKey, input.taskId ?? null, Number(parent.rows[0].next_seq), input.role, json(messageEnvelope(input))]);
+      const r = await client.query<DbRow>("insert into agent_session_messages(id,user_id,session_id,turn_id,message_key,task_id,seq,role,content) values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) returning id,user_id,session_id,turn_id,message_key,task_id,seq,role,created_at", [randomUUID(), input.userId, input.sessionId, input.turnId, input.messageKey, input.taskId ?? null, Number(parent.rows[0].next_seq), input.role, json(messageEnvelope(input))]);
       await client.query("update agent_sessions set next_seq=next_seq+1,updated_at=now() where id=$1 and user_id=$2", [input.sessionId, input.userId]);
-      return message(r.rows[0]);
+      return message({ ...r.rows[0], content: messageEnvelope(input) });
     });
   }
-  async listMessages(userId: string, sessionId: string, afterSeq = 0) { requireUuid(sessionId); const r = await readQuery<DbRow>(this.pool, "select * from agent_session_messages where user_id=$1 and session_id=$2 and seq>$3 order by seq", [userId, sessionId, afterSeq]); return r.rows.map(message); }
+  async listMessages(userId: string, sessionId: string, afterSeq = 0, options?: { includeImages?: boolean }) {
+    requireUuid(sessionId);
+    const content = options?.includeImages === false ? `case when jsonb_typeof(content->'content')='array' then jsonb_set(content,'{content}',
+      coalesce((select jsonb_agg(case when part->>'type'='image_url' then jsonb_build_object('type','text','text','[历史图片：原附件随任务保存]') else part end order by ordinal)
+        from jsonb_array_elements(content->'content') with ordinality as parts(part,ordinal)), '[]'::jsonb)) else content end` : "content";
+    const r = await readQuery<DbRow>(this.pool, `select id,user_id,session_id,turn_id,message_key,task_id,seq,role,created_at,${content} as content from agent_session_messages where user_id=$1 and session_id=$2 and seq>$3 order by seq`, [userId, sessionId, afterSeq]);
+    return r.rows.map(message);
+  }
   async updateSummary(userId: string, sessionId: string, summary: string, throughSeq: number) {
     requireUuid(sessionId); if (!Number.isInteger(throughSeq) || throughSeq < 0) throw new Error("Invalid summary sequence");
     const r = await this.pool.query<DbRow>("update agent_sessions set summary=$3,summary_through_seq=$4,updated_at=now() where user_id=$1 and id=$2 and summary_through_seq<=$4 and next_seq>$4 returning *", [userId, sessionId, summary, throughSeq]);

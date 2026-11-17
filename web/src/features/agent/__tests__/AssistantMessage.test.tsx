@@ -40,3 +40,11 @@ it("Markdown task lists are display-only, not mutations of application tasks", (
   expect(checkboxes).toHaveLength(2);
   checkboxes.forEach(checkbox => expect(checkbox).toBeDisabled());
 });
+
+it("Chinese annotations after an automatic URL stay outside the actual destination", () => {
+  const { container } = render(<AssistantMessage content={'网址：www.caai-contest.cn（图片声称）。\n\n[中文路径](https://example.org/活动（报名）)\n\n`www.code.example（保留代码）`'} />);
+  expect(screen.getByRole("link", { name: "www.caai-contest.cn" })).toHaveAttribute("href", "http://www.caai-contest.cn/");
+  expect(container.querySelector("p")?.textContent).toBe("网址：www.caai-contest.cn（图片声称）。");
+  expect(decodeURI(screen.getByRole("link", { name: "中文路径" }).getAttribute("href")!)).toBe("https://example.org/活动（报名）");
+  expect(container.querySelector("code")).toHaveTextContent("www.code.example（保留代码）");
+});

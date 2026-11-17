@@ -46,3 +46,19 @@ it("新消息尚未回包时显示提交中，不把上轮已完成显示成当�
   mounted.unmount(); mount(s);
   expect(screen.queryByText(/正在提交新任务/)).toBeNull();
 });
+
+it("legacy cached successes do not display a stale attempt's failure as current state", () => {
+  const s = session("completed"); s.taskViews!.t1.task.status = "succeeded"; s.taskViews!.t1.task.error = "HTTP 429 old attempt";
+  mount(s);
+  expect(screen.getAllByText("已完成").length).toBeGreaterThan(0);
+  expect(screen.queryByText("HTTP 429 old attempt")).toBeNull();
+});
+
+it.each(["paused", "needs_input"] as const)("%s任务提供取消与处理说明，不引导提交会被拒绝的新轮次", async status => {
+  const s = session("output_incomplete"); s.taskViews!.t1.task.status = status;
+  mount(s);
+  expect(screen.queryByRole("button", { name: "用新消息继续" })).toBeNull();
+  expect(screen.getByText(/先恢复、处理或取消此任务/)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "取消任务" }));
+  await waitFor(() => expect(api.cancel).toHaveBeenCalledWith("t1"));
+});
