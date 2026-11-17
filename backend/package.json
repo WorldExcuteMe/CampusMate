@@ -22,7 +22,9 @@
     "eval:holdout": "node scripts/eval.ts run --suite all-holdout --target api-memory --holdout",
     "eval:report": "node scripts/eval.ts report --run latest",
     "eval:analyze": "node scripts/eval.ts analyze --run latest",
-    "eval:gate": "node scripts/eval.ts gate --run latest"
+    "eval:gate": "node scripts/eval.ts gate --run latest",
+    "documents:setup": "playwright install --no-remove chromium",
+    "documents:check": "node scripts/check-document-sandbox.ts"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.16",

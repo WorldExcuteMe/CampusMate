@@ -17,6 +17,12 @@ it("renders emphasis, headings, lists, GFM tables and code rather than literal M
   expect(container.querySelector("p:last-child")?.textContent).toBe("普通文本第一行\n第二行");
 });
 
+it('隐藏历史原始工具标记并说明未确认执行，不把协议当Markdown正文', () => {
+  render(<AssistantMessage content={'<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name="create_daily_task">{}</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>'} />);
+  expect(screen.getByRole('alert')).toHaveTextContent('不能视为已完成');
+  expect(screen.queryByText(/DSML/)).toBeNull();
+});
+
 it("ignores raw HTML and never auto-loads model-provided images", () => {
   const { container } = render(<AssistantMessage content={'<script>alert(1)</script>\n\n<iframe src="https://example.org"></iframe>\n\n<img src=x onerror="alert(2)">\n\n![示意图](https://tracker.example/pixel.png)\n\n正常文字'} />);
   expect(container.querySelector("script, iframe, img")).toBeNull();

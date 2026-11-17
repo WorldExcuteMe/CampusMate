@@ -8,7 +8,10 @@ import subsetFont from "subset-font";
 import { blockText, documentErrors, documentMarkdown, type DocumentAst, type DocumentBlock } from "../../../shared/document.ts";
 
 export type DocumentFormat = "md" | "docx" | "pdf";
-export const RENDERER_VERSION = "campusmate-doc-3-docx9.6.1-chromium1254-subset2.9";
+export const RENDERER_VERSION = "campusmate-doc-4-docx9.6.1-chromium1254-newheadless-subset2.9";
+// Launch the same pinned full Chromium that executablePath()/format discovery checks.
+// Default headless launch selects a separate headless-shell binary instead.
+export const DOCUMENT_CHROMIUM_OPTIONS = Object.freeze({ channel: "chromium", headless: true, chromiumSandbox: true, timeout: 15000 });
 export const MIME: Record<DocumentFormat, string> = { md: "text/markdown; charset=utf-8", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pdf: "application/pdf" };
 const FONT_FILE = new URL("../../assets/fonts/NotoSansCJKsc-Regular.otf", import.meta.url);
 const FONT_HASH = "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b";
@@ -57,7 +60,7 @@ async function withPrintPage<T>(content: string, work: (page: import("playwright
   let browser: Browser | undefined;
   const timeout = setTimeout(() => { void browser?.close().catch(() => {}); }, 30000);
   try {
-    browser = await chromium.launch({ headless: true, chromiumSandbox: true, timeout: 15000 });
+    browser = await chromium.launch(DOCUMENT_CHROMIUM_OPTIONS);
     const context = await browser.newContext({ javaScriptEnabled: false, serviceWorkers: "block", viewport: { width: 816, height: 1056 } });
     await context.route("**/*", (route) => route.abort());
     const page = await context.newPage(); page.setDefaultTimeout(15000);
@@ -65,7 +68,7 @@ async function withPrintPage<T>(content: string, work: (page: import("playwright
     await page.evaluate("document.fonts.ready");
     if (!await page.evaluate("Array.from(document.images).every(image => image.complete && image.naturalWidth > 0)")) throw new DocumentRenderUnavailable("图片数据无法解码，请使用有效的PNG/JPEG");
     return await work(page);
-  } catch (e) { if (e instanceof DocumentRenderUnavailable) throw e; throw new DocumentRenderUnavailable("打印环境不可用或超过30秒，请检查固定Chromium及中文字体资源", { cause: e }); }
+  } catch (e) { if (e instanceof DocumentRenderUnavailable) throw e; throw new DocumentRenderUnavailable("打印环境不可用或超过30秒；请在仓库根目录运行 npm run documents:setup，再运行 npm run documents:check，检查固定Chromium及中文字体资源", { cause: e }); }
   finally { clearTimeout(timeout); await browser?.close().catch(() => {}); }
 }
 function pngDimensions(bytes: Buffer): { width: number; height: number } {

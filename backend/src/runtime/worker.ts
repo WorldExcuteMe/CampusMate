@@ -1,6 +1,7 @@
 // Durable Worker：认领(lease)→执行 agent-loop→事件/检查点→心跳续 lease→Evaluator→终态。
 // 成功记录可去重；结果未知的非幂等操作需核对，不能据此声称分布式exactly-once。
 import { randomUUID } from "node:crypto";
+import { BUSINESS_TOOL_NAMES } from '../core/business-tools.ts';
 import type { AcceptanceCriterion, CompletionCertificate, Task, ToolDef, ToolInvocation } from "../core/types.ts";
 import type { LlmTransport } from "../core/llm.ts";
 import { CheckpointWriteError, TaskCancelledError, runAgentLoop, type AgentLoopResult } from "../core/agent-loop.ts";
@@ -45,7 +46,7 @@ function executionFailure(result: AgentLoopResult): string {
   if (result.error === "llm_protocol") return "模型响应协议无效";
   if (result.error === "llm_cancelled" || result.stopReason === "cancelled") return "任务已取消";
   if (result.mock) return "模型连接未成功";
-  if (result.toolErrors) return `有${result.toolErrors}项工具执行失败`;
+  if (result.toolErrors) return `工具执行失败：仍有${result.toolErrors}次工具失败未恢复，成功的部分已保留`;
   if (result.budgetExceeded) return "任务预算已耗尽";
   if (result.truncated) return "模型输出未完成";
   return "执行尚未满足验收条件";
@@ -141,8 +142,8 @@ export class Worker {
       return this.independentEvaluator.evaluate(task.id, criteria, input);
     }
     if (criteria.some((c) => c.required)) return { taskId: task.id, evaluatedBy: "evaluator", passed: false, criteria: criteria.map((c) => ({ id: c.id, passed: false, evidenceIds: [], note: "未配置独立验收存储，无法证明此条件" })), evaluatedAt: this.now() };
-    const passed = !result.mock && !result.error && !result.truncated && !result.budgetExceeded && !result.toolErrors;
-    return { taskId: task.id, evaluatedBy: "evaluator", passed, criteria: [{ id: "model_reachable", passed, evidenceIds: [], note: passed ? "模型真实答复" : executionFailure(result) }], evaluatedAt: this.now() };
+    const passed = !result.mock && result.model !== 'unreachable' && result.model !== 'unknown';
+    return { taskId: task.id, evaluatedBy: "evaluator", passed, criteria: [{ id: "model_reachable", passed, evidenceIds: [], note: passed ? "已收到模型真实答复；工具执行状态单独验收" : result.mock ? "模型请求失败，未取得正常答复" : "本轮尚未取得模型答复" }], evaluatedAt: this.now() };
   }
 
   // 认领并执行至多 concurrency 个任务，返回处理数。
@@ -413,14 +414,27 @@ export class Worker {
         }) : await runAgentLoop(loopOptions);
       await eventQueue;
       await checkCurrent();
+      const recoveredCalls = new Set((await store.listEvents(task.id)).filter(e => e.type === 'tool.recovered').map(e => String(e.payload.callInstanceId)));
       if (!result.delivery && this.artifacts) {
-        const events = (await store.listEvents(task.id)).filter((e) => e.type === "tool.result" && String(e.payload.name).startsWith("document_"));
+        const events = (await store.listEvents(task.id)).filter((e) => e.type === "tool.result" && String(e.payload.name).startsWith("document_") && !recoveredCalls.has(String(e.payload.callInstanceId)));
         if (events.length) {
           const latest = new Map(events.map((e) => [String(e.payload.invocationId ?? e.payload.callInstanceId), e]));
           const documents = (await this.artifacts.listByTask(task.userId, task.id)).filter((a) => a.kind === "document");
           const byDocument = new Map<string, typeof documents[number]>(); for (const a of documents) if ((byDocument.get(a.documentId)?.revision ?? 0) < a.revision) byDocument.set(a.documentId, a);
           const checks = [{ id: "document_tools", passed: [...latest.values()].every((e) => e.payload.ok === true), detail: "文档工具请求均有真实成功结果；失败保留为未完成" }, { id: "document_artifact", passed: !events.some((e) => e.payload.name === "document_create") || documents.length > 0, detail: "创建请求必须存在可读取的文档产物" }];
           result.delivery = { artifactIds: [...byDocument.values()].map((a) => a.id).slice(-8), checks, passed: checks.every((c) => c.passed) };
+        }
+      }
+      const businessEvents = (await store.listEvents(task.id)).filter(e => e.type === 'tool.result' && BUSINESS_TOOL_NAMES.some(name => name === e.payload.name) && !recoveredCalls.has(String(e.payload.callInstanceId)));
+      if (businessEvents.length) {
+        const latest = new Map(businessEvents.map(e => [String(e.payload.invocationId ?? e.payload.callInstanceId), e]));
+        const passed = [...latest.values()].every(e => e.payload.ok === true);
+        const check = { id: 'business_tools', passed, detail: '通知、待办、目标与合并请求必须收到实际保存成功结果，模型口头承诺不算完成' };
+        result.delivery = { artifactIds: result.delivery?.artifactIds ?? [], checks: [...(result.delivery?.checks ?? []), check], passed: (result.delivery?.passed ?? true) && passed };
+        if (!passed) {
+          result.reply = '任务未通过验收：本轮业务操作未全部确认成功。已提交的部分结果会保留，请查看执行记录及通知/待办列表，核实后重试；不能把模型口头答复当作保存成功。';
+          if (/只.*预览|(?:不要|不|勿)(?:写入|保存)/.test(task.intent)) result.reply = '本轮要求仅预览，写入请求未获成功确认。' + result.reply;
+          for (const messages of [result.messages, result.transcript]) { const last = messages.at(-1); if (last?.role === 'assistant') last.content = result.reply; }
         }
       }
       latestState = { messages: result.messages, transcript: result.transcript, documentRun: latestState?.documentRun, stepProgress: latestState?.stepProgress ?? {}, repeat: latestState?.repeat ?? {}, usage: result.usage, pendingApprovals: [] };
@@ -449,7 +463,7 @@ export class Worker {
 
       let certificate = await this.evaluator(task, result);
       const executionPassed = !result.error && !result.mock && !result.truncated && !result.budgetExceeded && !result.toolErrors && (!result.stopReason || result.stopReason === "completed");
-      certificate = { ...certificate, passed: certificate.passed && executionPassed, criteria: [...certificate.criteria, { id: "runtime_execution", passed: executionPassed, evidenceIds: [], note: executionPassed ? "正常结束，未观测到工具失败" : executionFailure(result) }] };
+      certificate = { ...certificate, passed: certificate.passed && executionPassed, criteria: [...certificate.criteria, { id: "runtime_execution", passed: executionPassed, evidenceIds: [], note: executionPassed ? recoveredCalls.size ? `正常结束，${recoveredCalls.size}次工具失败已由同一操作的成功重试恢复` : "正常结束，未观测到工具失败" : executionFailure(result) }] };
       if (result.delivery) certificate = { ...certificate, passed: certificate.passed && result.delivery.passed, criteria: [...certificate.criteria, ...result.delivery.checks.map((c) => ({ id: c.id, passed: c.passed, evidenceIds: [], note: c.detail }))] };
       await store.appendEvent({ taskId: task.id, userId: task.userId, type: certificate.passed ? "eval.passed" : "eval.failed", payload: { certificate } });
 
@@ -460,7 +474,7 @@ export class Worker {
         });
       } else {
         const summary = result.delivery ? result.reply : `任务未通过验收（${[...new Set(certificate.criteria.filter(c => !c.passed).map(c => c.note))].join("；")}）。\n${result.reply}`;
-        await finishTurn({ status: "failed", error: summary, result: { summary, certificate, artifactIds: result.delivery?.artifactIds ?? [], ...(result.delivery ? { partial: true, completion: { state: "partial", reason: "document_checks_failed", checks: result.delivery.checks } as const } : {}) } });
+        await finishTurn({ status: "failed", error: summary, result: { summary, certificate, artifactIds: result.delivery?.artifactIds ?? [], ...(result.delivery ? { partial: true, completion: { state: "partial", reason: result.delivery.checks.some(c => c.id === 'business_tools' && !c.passed) ? 'business_tools_failed' : "document_checks_failed", checks: result.delivery.checks } as const } : result.error === 'tool_protocol_error' ? { partial: true, completion: { state: 'partial', reason: 'tool_protocol_error' } as const } : {}) } });
       }
     } catch (err) {
       if (isStorageUnavailable(err) || isStorageUnavailable(heartbeatFailure)) {

@@ -9,6 +9,7 @@ import { canonicalArgs, sha256 } from "../runtime/idempotency.ts";
 import { messagesTokens, toolsTokens, estimateTokens } from "./context.ts";
 import { resolveModelCapabilities } from "./model-capabilities.ts";
 import { parseTextToolCall } from "./tool-protocol.ts";
+import { hasRawToolMarkup, TOOL_PROTOCOL_ERROR, protocolSafeStream } from '../../../shared/tool-protocol.ts';
 
 export interface ChatOptions {
   messages: ChatMessage[]; tools?: ToolDef[]; reasoning?: string; temperature?: number;
@@ -71,17 +72,31 @@ export class DeepSeekTransport implements LlmTransport {
     const estimatedInput = messagesTokens(opts.messages) + toolsTokens(opts.tools);
     const maxOutput = Math.max(1, Math.min(opts.maxOutputTokens ?? 8192, Number(caps.maxOutputTokens) || 8192, cfg.contextLimit ? cfg.contextLimit - estimatedInput : Infinity));
     const policy = generationPolicy(caps, opts.reasoning ?? cfg.reasoningPreference, opts.stage ?? "simple", maxOutput);
+    const thinking = caps.reasoning === 'deepseek_thinking';
+    // Provider/model-bound opaque continuation; never forward another model's trace.
+    const reasoningSource = sha256(canonicalArgs({ baseUrl: (cfg.baseUrl ?? 'https://api.deepseek.com').replace(/\/+$/, ''), model: cfg.model ?? 'deepseek-chat' }));
     const tools = [...(opts.tools ?? [])].sort((a, b) => a.function.name.localeCompare(b.function.name));
     const jsonTools = tools.length > 0 && !["native", "none"].includes(String(caps.tools)) && cfg.capabilities !== undefined;
+    // Old malformed assistant turns are not executable instructions or successful
+    // observations. Preserve the user's text; quarantine only model output.
+    const history = opts.messages.map(message => message.role === 'assistant' && typeof message.content === 'string' && hasRawToolMarkup(message.content) ? { ...message, content: TOOL_PROTOCOL_ERROR } : message);
+    const wireHistory = history.map(message => {
+      const { reasoning_content, reasoning_source, ...plain } = message;
+      // Non-thinking historical replies legitimately have no trace. The empty
+      // field makes that explicit, rather than fabricating missing reasoning.
+      return thinking && message.role === 'assistant' ? { ...plain, reasoning_content: reasoning_source === reasoningSource && typeof reasoning_content === 'string' ? reasoning_content : '' } : plain;
+    });
     const protocol = '工具协议：需要工具时仅输出一个严格JSON {"tool":"名称","args":{...}}，等待真实观测再继续；不要额外闭括号或裸控制标记。仅可使用以下工具及参数；普通文本不是工具结果：\n' + JSON.stringify(tools);
     const messages = jsonTools || caps.singleSystem === true ? [
-      { role: "system" as const, content: opts.messages.filter(m => m.role === "system").map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).concat(jsonTools ? [protocol] : []).join("\n\n") },
-      ...opts.messages.filter(m => m.role !== "system"),
-    ] : opts.messages;
+      { role: "system" as const, content: wireHistory.filter(m => m.role === "system").map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).concat(jsonTools ? [protocol] : []).join("\n\n") },
+      ...wireHistory.filter(m => m.role !== "system"),
+    ] : wireHistory;
     const body = {
       model: cfg.model ?? "deepseek-chat", messages,
       ...(caps.temperature === true ? { temperature: opts.temperature ?? 0.2 } : {}),
       ...policy.params,
+      // Explicit endpoint configuration only; never infer this from model names.
+      ...(!thinking && caps.thinking === false ? { thinking: { type: 'disabled' } } : {}),
       ...(caps.outputParameter === "max_tokens" ? { max_tokens: maxOutput } : caps.outputParameter === "max_completion_tokens" ? { max_completion_tokens: maxOutput } : {}),
       ...(tools.length && (caps.tools === "native" || cfg.capabilities === undefined) ? { tools, tool_choice: "auto" } : {}),
       ...(caps.streaming === true ? { stream: true, ...(caps.streamUsage === true ? { stream_options: { include_usage: true } } : {}) } : {}),
@@ -108,11 +123,12 @@ export class DeepSeekTransport implements LlmTransport {
             await this.delay(Math.min(10000, retryMs), ctrl.signal, deadline);
             continue;
           }
-          let content: string, toolCalls: ChatResult["toolCalls"], model: string, rawUsage: unknown, finishReason: string | null, truncated: boolean, ttftMs: number | null;
+          let content: string, toolCalls: ChatResult["toolCalls"], model: string, rawUsage: unknown, finishReason: string | null, truncated: boolean, ttftMs: number | null, reasoningContent: string | undefined;
           let streamInterrupted = false;
           if (res.ok && res.headers?.get("content-type")?.includes("text/event-stream")) {
-            const stream = await readSse(res, { signal: ctrl.signal, start, now: Date.now, onDelta: opts.onDelta, onProgress: progress, redact: (text) => this.redact(text), guardTail: cfg.apiKey.length });
-            ({ content, toolCalls, model, finishReason, truncated, ttftMs, streamInterrupted } = stream); rawUsage = stream.usage;
+            const safe = protocolSafeStream(opts.onDelta);
+            const stream = await readSse(res, { signal: ctrl.signal, start, now: Date.now, onDelta: text => safe.push(text), captureReasoning: thinking, onProgress: progress, redact: (text) => this.redact(text), guardTail: cfg.apiKey.length });
+            ({ content, toolCalls, model, finishReason, truncated, ttftMs, streamInterrupted } = stream); rawUsage = stream.usage; reasoningContent = stream.reasoningContent; safe.finish();
             toolCalls = JSON.parse(JSON.stringify(toolCalls), (_key, value) => typeof value === "string" ? this.redact(value) : value);
           } else {
             const text = await responseText(res, ctrl.signal);
@@ -123,6 +139,7 @@ export class DeepSeekTransport implements LlmTransport {
             const message = data.choices?.[0]?.message;
             if (!message || typeof message !== "object") throw new LlmTransportError("模型响应协议无效：缺少choices/message", { reason: "protocol" });
             content = typeof message.content === "string" ? message.content : "";
+            if (thinking && typeof message.reasoning_content === 'string') reasoningContent = message.reasoning_content;
             toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
             model = typeof data.model === "string" ? data.model : "unknown"; rawUsage = data.usage;
             finishReason = data.choices[0].finish_reason ?? null; truncated = finishReason === "length";
@@ -135,6 +152,7 @@ export class DeepSeekTransport implements LlmTransport {
           }
           return {
             content, toolCalls, model, finishReason, truncated, streamInterrupted,
+            ...(thinking && reasoningContent !== undefined ? { reasoningContent, reasoningSource } : {}),
             usage: { input: usage.inputTotal ?? estimatedInput, output: usage.output ?? estimateTokens(content + JSON.stringify(toolCalls)) },
             telemetry: { requestId, attempts: attempt, ttftMs, totalMs: Date.now() - start, finishReason,
               stablePrefixHash: sha256(canonicalArgs({ system: opts.messages.find((m) => m.role === "system")?.content ?? "" })),

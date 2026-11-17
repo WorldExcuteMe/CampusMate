@@ -16,10 +16,11 @@ export async function responseText(res: Response, signal: AbortSignal, cap = 4_0
     return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
   } catch (error) { void reader.cancel().catch(() => {}); throw error; }
 }
-export async function readSse(res: Response, opts: { signal: AbortSignal; start: number; now: () => number; onDelta?: (text: string) => void; onProgress?: () => void; redact: (text: string) => string; guardTail?: number }) {
+export async function readSse(res: Response, opts: { signal: AbortSignal; start: number; now: () => number; onDelta?: (text: string) => void; onProgress?: () => void; redact: (text: string) => string; guardTail?: number; captureReasoning?: boolean }) {
   const reader = res.body?.getReader(); if (!reader) throw new Error("模型流缺少响应体");
   const decoder = new TextDecoder(); let buffer = "", content = "", pending = "", model = "unknown";
   let doneMarker = false, finishReason: string | null = null, usage: unknown, ttftMs: number | null = null, bytes = 0, sentAt = opts.start;
+  let reasoningContent: string | undefined;
   const calls = new Map<string, ToolCall>();
   const active = new Map<number, string>(), byId = new Map<string, string>();
   let serial = 0;
@@ -45,6 +46,10 @@ export async function readSse(res: Response, opts: { signal: AbortSignal; start:
     if (choice?.finish_reason) finishReason = choice.finish_reason;
     const delta = choice?.delta;
     if (typeof delta?.reasoning_content === "string" && delta.reasoning_content.length) opts.onProgress?.();
+    if (opts.captureReasoning && typeof delta?.reasoning_content === 'string') {
+      ttftMs ??= opts.now() - opts.start;
+      reasoningContent = (reasoningContent ?? '') + delta.reasoning_content;
+    }
     if (typeof delta?.content === "string") {
       if (delta.content.length) { ttftMs ??= opts.now() - opts.start; opts.onProgress?.(); }
       content += delta.content; pending += delta.content;
@@ -94,5 +99,5 @@ export async function readSse(res: Response, opts: { signal: AbortSignal; start:
     if (!doneMarker) { buffer += decoder.decode(); if (buffer.trim()) frame(buffer); }
   } catch (error) { if (error instanceof LlmTransportError || error instanceof SyntaxError || (!content && !calls.size)) throw error; broken = true; }
   finally { flush(true); void reader.cancel().catch(() => {}); }
-  return { content: opts.redact(content), toolCalls: [...calls.values()], model, usage, ttftMs, finishReason, streamInterrupted: !opts.signal.aborted && !finishReason && (broken || !doneMarker), truncated: broken || !doneMarker || finishReason === "length" || !finishReason };
+  return { content: opts.redact(content), toolCalls: [...calls.values()], model, usage, ttftMs, finishReason, ...(reasoningContent !== undefined ? { reasoningContent: opts.redact(reasoningContent) } : {}), streamInterrupted: !opts.signal.aborted && !finishReason && (broken || !doneMarker), truncated: broken || !doneMarker || finishReason === "length" || !finishReason };
 }

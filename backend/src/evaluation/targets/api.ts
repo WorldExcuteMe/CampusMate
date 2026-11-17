@@ -142,7 +142,7 @@ export class ApiTarget implements EvalTarget {
         out = await executeCloudTool(name, args, {
           taskId: task.id, userId: task.userId, intent: task.intent,
           campusRecords: ctx.campusRecords, evidenceStore: ctx.evidenceStore, opportunityStore: ctx.opportunityStore,
-          artifactStore: ctx.artifactStore, documents: ctx.documents,
+          artifactStore: ctx.artifactStore, documents: ctx.documents, businessStore: ctx.businessStore,
         });
       }
     } catch (error) {

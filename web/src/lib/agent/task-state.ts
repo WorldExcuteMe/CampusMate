@@ -1,5 +1,6 @@
 import type { AgentEvent, AgentTask } from "./api-client";
 import type { ChatSession, SessionMsg } from "./sessions";
+import { hasRawToolMarkup, TOOL_PROTOCOL_ERROR } from '../../../../shared/tool-protocol';
 export const stoppedTask = (status: string) => ["paused", "needs_input", "succeeded", "failed", "cancelled"].includes(status);
 export function taskReason(task: AgentTask, events: AgentEvent[]): string {
   const last = [...events].reverse().find((event) => event.type === "task.needs_input");
@@ -16,11 +17,13 @@ function bounded(records: NonNullable<ChatSession["taskViews"]>) {
   return Object.fromEntries(Object.entries(records).sort(([, a], [, b]) => (b.task.turnSeq ?? 0) - (a.task.turnSeq ?? 0) || (b.task.createdAt ?? 0) - (a.task.createdAt ?? 0)).slice(0, 40));
 }
 export function mergeTask(session: ChatSession, incoming: AgentTask): ChatSession {
+  if (hasRawToolMarkup(incoming.result?.summary ?? '')) incoming = { ...incoming, status: 'failed', error: TOOL_PROTOCOL_ERROR, result: { ...incoming.result!, summary: TOOL_PROTOCOL_ERROR, partial: true, completion: { state: 'partial', reason: 'tool_protocol_error' } } };
   const previous = session.taskViews?.[incoming.id];
+  if (previous?.task.historyRevision && incoming.historyRevision && BigInt(incoming.historyRevision)<BigInt(previous.task.historyRevision)) return session;
   // GET snapshots omit undefined JSON properties. Absence of an error means
   // it was cleared by resume/completion, rather than an unchanged old error.
   const combined = { ...previous?.task, ...incoming, error: incoming.error };
-  const keys = ["id", "userId", "title", "sessionId", "turnId", "turnSeq", "status", "usage", "budget", "result", "error", "promptUsage", "modelConfig", "modelRuntime", "cancelRequested", "createdAt", "updatedAt"] as const;
+  const keys = ["id", "userId", "title", "sessionId", "turnId", "turnSeq", "status", "usage", "budget", "result", "error", "promptUsage", "modelConfig", "modelRuntime", "cancelRequested", "createdAt", "updatedAt", "historyRevision"] as const;
   const task = Object.fromEntries(keys.filter((key) => combined[key] !== undefined).map((key) => [key, combined[key]])) as unknown as AgentTask;
   const events = previous?.events ?? [];
   const taskViews = bounded({ ...session.taskViews, [task.id]: { ...previous, task, events, lastSeq: previous?.lastSeq ?? 0 } });
@@ -31,8 +34,11 @@ export function mergeTask(session: ChatSession, incoming: AgentTask): ChatSessio
   const messages = [...session.messages];
   const index = messages.findIndex((m) => m.role === "assistant" && m.taskId === task.id);
   const user = task.turnId ? messages.findIndex((m) => m.role === "user" && m.turnId === task.turnId) : -1;
-  if (index >= 0) messages[index] = reply;
-  else if (user >= 0) messages.splice(user + 1, 0, reply);
+  // The task monitor can see more tasks than the loaded history page. Cache
+  // their execution state, but never append orphan replies or recount usage.
+  if (session.historyPage && index<0 && user<0) return { ...next,taskTokenUsage:{...session.taskTokenUsage,[task.id]:task.usage?.tokens??0} };
+  if (index >= 0) messages[index] = { ...messages[index], ...reply };
+  else if (user >= 0) messages.splice(user + 1, 0, { ...reply, ...(messages[user].historyKey ? { historyKey: messages[user].historyKey, historyOrder: messages[user].historyOrder, historyVersion: messages[user].historyVersion } : {}) });
   else messages.push(reply);
   const total = task.usage?.tokens ?? 0;
   const baseline = session.taskTokenUsage?.[task.id] ?? (index >= 0 ? total : 0);

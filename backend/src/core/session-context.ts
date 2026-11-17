@@ -35,7 +35,7 @@ export function sessionHistory(rows: StoredSessionMessage[], tasks: Task[], curr
   const byId = new Map(tasks.map((t) => [t.id, t]));
   return rows.filter((m) => m.role !== "system" && m.taskId !== current.id && (current.turnSeq === undefined || !m.taskId || (byId.get(m.taskId)?.turnSeq ?? 0) < current.turnSeq))
     .sort((a, b) => ((byId.get(a.taskId ?? "")?.turnSeq ?? 0) - (byId.get(b.taskId ?? "")?.turnSeq ?? 0)) || a.seq - b.seq)
-    .map(({ role, content, tool_calls, tool_call_id }) => ({ role, content, ...(tool_calls ? { tool_calls } : {}), ...(tool_call_id ? { tool_call_id } : {}) }));
+    .map(({ role, content, tool_calls, tool_call_id, reasoning_content, reasoning_source }) => ({ role, content, ...(tool_calls ? { tool_calls } : {}), ...(tool_call_id ? { tool_call_id } : {}), ...(role === 'assistant' && reasoning_content !== undefined ? { reasoning_content, reasoning_source } : {}) }));
 }
 
 // Preserve direct user statements, with provenance and correction order; never infer a profile.

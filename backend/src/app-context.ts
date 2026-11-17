@@ -27,6 +27,9 @@ import { PostgresProviderStore } from "./runtime/postgres-provider-store.ts";
 import { PostgresArtifactStore } from "./runtime/postgres-artifact-store.ts";
 import { CampusRecords } from "./core/campus-records.ts";
 import { ProviderService } from "./core/providers.ts";
+import type { BusinessStore } from './core/business-tools.ts';
+import { PostgresBusinessStore } from './runtime/postgres-business-store.ts';
+import { SessionFeed } from './runtime/session-feed.ts';
 
 export interface AppContext {
   store: TaskStore;
@@ -43,6 +46,8 @@ export interface AppContext {
   providers: ProviderService;
   artifactStore: ArtifactStore;
   documents: DocumentService;
+  sessionFeed: SessionFeed;
+  businessStore?: BusinessStore;
   storeKind: "postgres" | "memory";
   dispose: () => Promise<void>;
 }
@@ -64,6 +69,7 @@ export function buildContext(env: Record<string, string | undefined>, options: {
   const artifactStore: ArtifactStore = pool ? new PostgresArtifactStore(pool) : new MemoryArtifactStore(store);
   const providerStore: ProviderStore = pool ? new PostgresProviderStore(pool) : new MemoryProviderStore();
   const capabilityRegistry = new CapabilityRegistry();
+  const sessionStore = pool ? new PostgresSessionStore(pool) : new MemorySessionStore(store);
   registerCloudDefaults(capabilityRegistry);
   return {
     store,
@@ -75,11 +81,13 @@ export function buildContext(env: Record<string, string | undefined>, options: {
     personalContext: pool ? new PostgresPersonalContextStore(pool) : new ValidatedMemoryPersonalContextStore(),
     opportunityStore: pool ? new PostgresOpportunityStore(pool) : new InMemoryOpportunityStore(),
     campusRecords: new CampusRecords(pool),
-    sessionStore: pool ? new PostgresSessionStore(pool) : new MemorySessionStore(store),
+    sessionStore,
+    sessionFeed: new SessionFeed(sessionStore, store, pool),
     providerStore,
     providers: new ProviderService(providerStore, env, options.providerFetch),
     artifactStore,
     documents: new DocumentService(artifactStore, { pdfEnabled: env.DOCUMENT_PDF_ENABLED !== "0" }),
+    businessStore: pool ? new PostgresBusinessStore(pool) : undefined,
     storeKind: pool ? "postgres" : "memory",
     dispose: async () => { if (pool && !options.pool) await pool.end(); },
   };

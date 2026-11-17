@@ -27,6 +27,7 @@ export interface CreateTaskInput {
 }
 
 export interface TaskStore {
+  sessionTransaction?<T>(sessionId: string, fn: () => Promise<T>): Promise<T>;
   createTask(input: CreateTaskInput): Promise<Task>;
   createSessionTask?(input: CreateTaskInput & { sessionId: string; turnId: string }, sessions: SessionStore): Promise<{ task: Task; deduped: boolean }>;
   resumeSessionTask?(id: string, userId: string, budget?: Budget): Promise<Task>;
@@ -39,6 +40,8 @@ export interface TaskStore {
   listTasksByUser(userId: string): Promise<Task[]>;
   // Session metadata only; image inputs remain available through getTask.
   listSessionTasks(userId: string, sessionId: string): Promise<Task[]>;
+  listTasksBySession?(userId: string, sessionId: string, limit?: number): Promise<Task[]>;
+  findSessionTurn?(userId: string, sessionId: string, turnId: string): Promise<Task | null>;
   listSessionHistory(query: SessionHistoryQuery): Promise<import("../core/types.ts").ChatMessage[]>;
   claimNext(opts: { workerId: string; leaseTtlMs: number; now: number }): Promise<Task | null>;
   renewLease(id: string, workerId: string, leaseTtlMs: number, now: number, attempt?: number): Promise<boolean>;
@@ -71,7 +74,7 @@ export class InMemoryStore implements TaskStore {
   private eventId = 0;
   private sessionTails = new Map<string, Promise<void>>();
 
-  private async sessionTransaction<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  async sessionTransaction<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.sessionTails.get(sessionId) ?? Promise.resolve();
     let release!: () => void;
     const tail = new Promise<void>((resolve) => { release = resolve; });
@@ -82,7 +85,7 @@ export class InMemoryStore implements TaskStore {
 
   async createSessionTask(input: CreateTaskInput & { sessionId: string; turnId: string }, sessions: SessionStore): Promise<{ task: Task; deduped: boolean }> {
     return this.sessionTransaction(input.sessionId, async () => {
-      if (!await sessions.get(input.userId, input.sessionId)) throw new Error("Session owner forbidden");
+      const parent = await sessions.get(input.userId, input.sessionId); if (!parent || parent.deletedAt) throw new Error("Session owner forbidden");
       const hash = sessionInputHash(input);
       const turns = [...this.tasks.values()].filter((t) => t.userId === input.userId && t.sessionId === input.sessionId);
       const existing = turns.find((t) => t.turnId === input.turnId);
@@ -198,6 +201,11 @@ export class InMemoryStore implements TaskStore {
   async listSessionTasks(userId: string, sessionId: string): Promise<Task[]> {
     return (await this.listTasksByUser(userId)).filter(t => t.sessionId === sessionId).map(({ images: _images, ...task }) => task);
   }
+  async listTasksBySession(userId: string, sessionId: string, limit?: number): Promise<Task[]> {
+    const rows = [...this.tasks.values()].filter(t => t.userId === userId && t.sessionId === sessionId).sort((a,b) => b.createdAt-a.createdAt || (b.turnSeq??0)-(a.turnSeq??0) || b.id.localeCompare(a.id));
+    return structuredClone(limit === undefined ? rows : rows.slice(0, limit));
+  }
+  async findSessionTurn(userId: string, sessionId: string, turnId: string) { return structuredClone([...this.tasks.values()].find(t => t.userId === userId && t.sessionId === sessionId && t.turnId === turnId) ?? null); }
 
   // 原子认领：queued 或 lease 过期的 running，按 priority↑ createdAt↑。单线程 JS 内原子；Postgres 用 FOR UPDATE SKIP LOCKED。
   async claimNext(opts: { workerId: string; leaseTtlMs: number; now: number }): Promise<Task | null> {

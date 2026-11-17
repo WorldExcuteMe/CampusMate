@@ -1,6 +1,10 @@
 // Backend API（Node http，零框架依赖）。JWT 校验 + owner 隔离 + CORS。
 // 不在请求内跑 Agent Loop：提交即写 queued 返回 taskId，Worker 异步认领。
 import http from "node:http";
+import { SessionManagementError, publicConversation, validateLegacyMessages } from '../core/session-management.ts';
+import { hasRawToolMarkup, TOOL_PROTOCOL_ERROR } from '../../../shared/tool-protocol.ts';
+import { imageLimitError } from '../../../shared/attachments.ts';
+import { SessionFeed } from '../runtime/session-feed.ts';
 import type { TaskStore } from "../runtime/store.ts";
 import type { ApprovalStore } from "../runtime/approval.ts";
 import type { CapabilityRegistry } from "../core/capability.ts";
@@ -37,6 +41,7 @@ export interface ApiDeps {
   personalContext?: PersonalContextStore;
   opportunityStore?: OpportunityStore;
   sessionStore?: SessionStore;
+  sessionFeed?: SessionFeed;
   providers?: ProviderService;
   artifactStore?: ArtifactStore;
   documents?: DocumentService;
@@ -44,8 +49,11 @@ export interface ApiDeps {
 
 
 function taskView(task: import("../core/types.ts").Task) {
+  // Historical false-success records remain unchanged for audit, but must not be
+  // presented as completed or re-executed automatically by clients.
+  if (hasRawToolMarkup(task.result?.summary ?? '')) task = { ...task, status: 'failed', error: TOOL_PROTOCOL_ERROR, result: { ...task.result!, summary: TOOL_PROTOCOL_ERROR, partial: true, completion: { state: 'partial', reason: 'tool_protocol_error' } } };
   const { id, userId, title, sessionId, turnId, turnSeq, status, usage, budget, result, error, promptUsage, modelConfig, modelRuntime, cancelRequested, createdAt, updatedAt } = task;
-  return { id, userId, title, sessionId, turnId, turnSeq, status, usage, budget, result, error, promptUsage, modelConfig, modelRuntime, cancelRequested, createdAt, updatedAt };
+  return { id, userId, title, sessionId, turnId, turnSeq, status, usage, budget, result, error, promptUsage, modelConfig, modelRuntime, cancelRequested, createdAt, updatedAt, historyRevision: task.historyRevision };
 }
 
 function json(res: http.ServerResponse, code: number, obj: unknown): void {
@@ -71,12 +79,14 @@ function boundedInitialBudget(value: unknown): Budget {
 }
 export function createApiServer(deps: ApiDeps): http.Server {
   const { store, jwtSecret } = deps;
+  const sessionFeed = deps.sessionFeed ?? (deps.sessionStore ? new SessionFeed(deps.sessionStore,store) : undefined);
+  const sessionTasks = (owner: string, id: string, limit?: number) => store.listTasksBySession ? store.listTasksBySession(owner,id,limit) : store.listTasksByUser(owner).then(rows=>rows.filter(t=>t.sessionId===id).sort((a,b)=>b.createdAt-a.createdAt).slice(0,limit));
   const documents = deps.documents ?? (deps.artifactStore ? new DocumentService(deps.artifactStore) : undefined);
   const cors = deps.corsOrigin ?? "*";
   return http.createServer(async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", cors);
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Session-Owner");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
     const url = new URL(req.url ?? "/", "http://local");
@@ -92,6 +102,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
       const claims = verifySupabaseJwt(token, jwtSecret);
       if (!claims) return json(res, 401, { error: "unauthorized" });
       const uid = claims.sub;
+      if (path.startsWith('/v1/sessions') && req.headers['x-session-owner'] && req.headers['x-session-owner'] !== uid) return json(res, 403, { error: '会话身份已切换，请重新操作' });
 
       if (deps.providers) {
         if (path === "/v1/providers" && req.method === "GET") return json(res, 200, { providers: await deps.providers.list(uid) });
@@ -107,6 +118,15 @@ export function createApiServer(deps: ApiDeps): http.Server {
 
       if (deps.sessionStore) {
         const sessions = deps.sessionStore;
+        const feedMatch = path.match(/^\/v1\/sessions\/([^/]+)\/history\/(page|changes)$/);
+        if (feedMatch && req.method==='GET') {
+          const id=feedMatch[1]; requireUuid(id);
+          if (feedMatch[2]==='changes' && !url.searchParams.has('after')) return json(res,400,{error:'增量同步缺少after游标'});
+          if (feedMatch[2]==='page' && (url.searchParams.has('after') || url.searchParams.has('next'))) return json(res,400,{error:'分页参数无效'});
+          const page=await sessionFeed!.read(uid,id,Object.fromEntries(['limit','before','after','next'].filter(k=>url.searchParams.has(k)).map(k=>[k,url.searchParams.get(k)!])));
+          const parent=await sessions.get(uid,id);if(!parent || parent.deletedAt)return json(res,404,{error:'会话不存在或已删除'});
+          return json(res,200,{...page,session:parent,items:page.items.map(item=>({...item,task:item.task?taskView(item.task):undefined}))});
+        }
         if (req.method === "POST" && path === "/v1/sessions") {
           const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           if (body.id !== undefined) requireUuid(body.id);
@@ -114,14 +134,27 @@ export function createApiServer(deps: ApiDeps): http.Server {
           return json(res, 201, { session });
         }
         if (req.method === "GET" && path === "/v1/sessions") return json(res, 200, { sessions: await sessions.list(uid) });
+        const manageMatch = path.match(/^\/v1\/sessions\/([^/]+)(\/(history|import))?$/);
+        if (manageMatch) {
+          const id = manageMatch[1]; requireUuid(id);
+          if (!manageMatch[2] && req.method === 'PATCH') { const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024); return json(res, 200, { session: await sessions.patch(uid, id, { expectedRevision: body.expectedRevision, ...(body.title !== undefined ? { title: body.title } : {}), ...(body.mode !== undefined ? { mode: body.mode } : {}), ...(body.archived !== undefined ? { archived: body.archived } : {}) }) }); }
+          if (!manageMatch[2] && req.method === 'DELETE') { const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024); return json(res, 200, { session: await sessions.remove(uid, id, body.expectedRevision) }); }
+          if (manageMatch[3] === 'import' && req.method === 'POST') { const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024); await sessions.importLegacy(uid, id, validateLegacyMessages(body.messages)); return json(res, 200, { ok: true }); }
+          if (manageMatch[3] === 'history' && req.method === 'GET') {
+            const parent = await sessions.get(uid, id); if (!parent || parent.deletedAt) return json(res, 404, { error: 'session not found' });
+            const tasks = (await sessionTasks(uid,id)).sort((a, b) => (a.turnSeq ?? 0) - (b.turnSeq ?? 0) || a.createdAt - b.createdAt);
+            return json(res, 200, { session: parent, messages: publicConversation(tasks, await sessions.listMessages(uid, id), await sessions.legacyHistory(uid, id)), tasks: tasks.map(taskView) });
+          }
+        }
         const sessionMatch = path.match(/^\/v1\/sessions\/([^/]+)\/(messages|tasks)$/);
         if (req.method === "GET" && sessionMatch) {
           requireUuid(sessionMatch[1]);
-          if (!await sessions.get(uid, sessionMatch[1])) return json(res, 404, { error: "session not found" });
-          if (sessionMatch[2] === "tasks") return json(res, 200, { tasks: (await store.listSessionTasks(uid, sessionMatch[1])).sort((a, b) => (b.turnSeq ?? 0) - (a.turnSeq ?? 0) || b.createdAt - a.createdAt).slice(0, 40).map(taskView) });
+          const parent = await sessions.get(uid, sessionMatch[1]); if (!parent || parent.deletedAt) return json(res, 404, { error: "session not found" });
+          if (sessionMatch[2] === "tasks") return json(res, 200, { tasks: (await sessionTasks(uid,sessionMatch[1],40)).map(taskView) });
           const after = Number(url.searchParams.get("afterSeq") ?? 0);
           if (!Number.isSafeInteger(after) || after < 0) return json(res, 400, { error: "invalid afterSeq" });
-          return json(res, 200, { messages: await sessions.listMessages(uid, sessionMatch[1], after) });
+          // Opaque model continuation stays on the server, not in browser history.
+          return json(res, 200, { messages: (await sessions.listMessages(uid, sessionMatch[1], after)).map(({ reasoning_content: _privateReasoning, reasoning_source: _providerScope, ...message }) => message) });
         }
       }
 
@@ -129,20 +162,25 @@ export function createApiServer(deps: ApiDeps): http.Server {
         const body = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
         if (!body.title || typeof body.title !== "string") return json(res, 400, { error: "title required" });
         if (body.intent !== undefined && typeof body.intent !== "string") return json(res, 400, { error: "invalid_intent" });
+        // Validate before provider lookup/task creation: accepting a prefix would
+        // make the saved turn differ from the user's submitted attachments.
+        if (body.images !== undefined && (!Array.isArray(body.images) || body.images.some((image: unknown) => typeof image !== 'string' || !image.trim()))) return json(res, 400, { error: '图片列表格式无效，请重新添加图片；不会忽略无效附件。' });
+        const images: string[] | undefined = body.images;
+        const imageError = imageLimitError(images?.length ?? 0);
+        if (imageError) return json(res, 400, { error: imageError });
         if (body.sessionId !== undefined) {
           requireUuid(body.sessionId);
-          if (deps.sessionStore && !await deps.sessionStore.get(uid, body.sessionId)) return json(res, 404, { error: "session not found" });
+          if (deps.sessionStore) { const parent = await deps.sessionStore.get(uid, body.sessionId); if (!parent || parent.deletedAt) return json(res, 404, { error: "session not found" }); }
         }
         if (body.turnId !== undefined) requireUuid(body.turnId);
         if (body.providerId !== undefined && typeof body.providerId !== "string") return json(res, 400, { error: "providerId must be a string" });
-        const prior = body.sessionId && body.turnId ? (await store.listSessionTasks(uid, body.sessionId)).find((t) => t.turnId === body.turnId) : undefined;
+        const prior = body.sessionId && body.turnId ? store.findSessionTurn ? await store.findSessionTurn(uid,body.sessionId,body.turnId) : (await sessionTasks(uid,body.sessionId)).find(t=>t.turnId===body.turnId) : undefined;
         const requestedProvider = body.providerId === "builtin-deepseek" ? "builtin" : body.providerId;
         const sameSelection = prior && (!requestedProvider || prior.modelConfig?.providerId === requestedProvider);
         const selectedConfig = sameSelection ? prior.modelConfig : deps.providers && (requestedProvider !== undefined || (await deps.providers.list(uid)).length > 0) ? await deps.providers.snapshot(uid, requestedProvider) : undefined;
         const modelConfig = selectedConfig ? structuredClone(selectedConfig) : undefined;
         if (body.reasoning !== undefined && !["auto", "low", "medium", "high"].includes(body.reasoning)) return json(res, 400, { error: "reasoning must be auto|low|medium|high" });
         if (modelConfig && (!sameSelection || body.reasoning !== undefined)) modelConfig.reasoningPreference = body.reasoning ?? "auto";
-        const images = Array.isArray(body.images) ? body.images.filter((x: unknown) => typeof x === "string").slice(0, 4) : undefined;
         const input = {
           userId: uid, title: body.title, intent: body.intent, sessionId: body.sessionId,
           images, priority: body.priority, budget: body.budget === undefined ? undefined : boundedInitialBudget(body.budget),
@@ -178,7 +216,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         if (!task) return json(res, 404, { error: "task not found" });
         if (task.userId !== uid) return json(res, 403, { error: "forbidden" }); // 跨用户隔离
 
-        if (req.method === "GET" && !sub) return json(res, 200, { task });
+        if (req.method === "GET" && !sub) return json(res, 200, { task: taskView(task) });
         if (req.method === "GET" && sub === "/events") {
           const after = Number(url.searchParams.get("after") ?? 0);
           return json(res, 200, { events: await store.listEvents(id, after) });
@@ -337,6 +375,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
 
       return json(res, 404, { error: "not found" });
     } catch (err) {
+      if (err instanceof SessionManagementError) return json(res, err.status, { error: err.message });
       if (err instanceof DocumentRenderUnavailable) return json(res, 503, { error: err.message });
       if (err instanceof ProviderError) return json(res, err.status, { error: err.message });
       if (err instanceof ApiInputError) return json(res, err.status, { error: err.message });

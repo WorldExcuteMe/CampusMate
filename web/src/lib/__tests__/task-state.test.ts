@@ -3,6 +3,15 @@ import { mergeTask, mergeEvent, taskReply } from "../agent/task-state";
 import { newSession } from "../agent/sessions";
 import type { AgentTask } from "../agent/api-client";
 import type { ChatSession } from "../agent/sessions";
+it('历史DSML假成功转换为可重发的未完成，不展示或执行原始标记', () => {
+  const task: AgentTask = { id: 'old-dsml', userId: 'u', title: '创建班会待办', status: 'succeeded', usage: { tokens: 1, toolCalls: 0, wallMs: 0, costUsd: 0 }, result: { summary: '<｜｜DSML｜｜ calls>工具标记</｜｜DSML｜｜ calls>', artifactIds: [], partial: false } };
+  const next = mergeTask(newSession(), task);
+  expect(next.taskViews?.[task.id].task.status).toBe('failed');
+  expect(next.taskViews?.[task.id].task.result?.completion?.reason).toBe('tool_protocol_error');
+  expect(next.messages[0].content).not.toContain('DSML');
+  expect(next.messages[0].content).toContain('不能视为已完成');
+  expect(task.status).toBe('succeeded');
+});
 it("任务恢复只替换本轮回复，按turn插入且累计用量不重复", () => {
   const a: AgentTask = { id: "a", userId: "u", title: "A", turnId: "turn-a", status: "paused", usage: { tokens: 10, toolCalls: 0, wallMs: 0, costUsd: 0 }, result: { summary: "草稿", artifactIds: [], partial: true, completion: { state: "partial", reason: "output_incomplete" } } };
   let s: ChatSession = { ...newSession(), messages: [{ role: "user" as const, content: "A", turnId: "turn-a" }, { role: "user" as const, content: "B", turnId: "turn-b" }] };

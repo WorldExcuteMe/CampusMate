@@ -24,7 +24,7 @@ const worker = new Worker({
   personalContext: ctx.personalContext,
     artifactStore: ctx.artifactStore,
   buildSystem: () => CAMPUS_SYSTEM,
-  executeTool: async (task, name, args) => executeCloudTool(name, args, { taskId: task.id, userId: task.userId, intent: task.intent, campusRecords: ctx.campusRecords, evidenceStore: ctx.evidenceStore, opportunityStore: ctx.opportunityStore, artifactStore: ctx.artifactStore, documents: ctx.documents }),
+  executeTool: async (task, name, args) => executeCloudTool(name, args, { taskId: task.id, userId: task.userId, intent: task.intent, campusRecords: ctx.campusRecords, evidenceStore: ctx.evidenceStore, opportunityStore: ctx.opportunityStore, artifactStore: ctx.artifactStore, documents: ctx.documents, businessStore: ctx.businessStore }),
   concurrency: Number(env.WORKER_CONCURRENCY ?? 2),
   leaseTtlMs: Number(env.LEASE_TTL_MS ?? 60000),
   heartbeatMs: Number(env.HEARTBEAT_MS ?? 15000),

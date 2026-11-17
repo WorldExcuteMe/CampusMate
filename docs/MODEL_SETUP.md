@@ -4,6 +4,16 @@ CampusMate的认证后端管理默认模型和用户自定义OpenAI兼容端点�
 
 ## 默认模型
 
+### DeepSeek 原生工具模式
+
+官方 Chat Completions 使用请求 `tools` 和响应 `message.tool_calls`，不是把工具 schema 塞进聊天正文后执行 DSML 文本。参考 [官方 Tool Calls](https://api-docs.deepseek.com/guides/tool_calls/)。确认实际端点后，可设置服务端 `LLM_CAPABILITIES={"tools":"native","reasoning":"deepseek_thinking","outputParameter":"max_tokens"}` 并重启 Runtime/Worker；不要仅凭模型名字推断兼容性。自定义连接可在设置中选择 `DeepSeek thinking + effort`。
+
+Runtime 已按[官方文档](https://api-docs.deepseek.com/guides/thinking_mode/)接入 `thinking.type=enabled`、`reasoning_effort` 和 `reasoning_content` 回传。UI低/中/高对应官方 low/high/max；自动按任务阶段选择，输出预算不足时会在用量说明中明确报告降档。普通JSON和SSE响应均捕获不透明的思考上下文，原样保存到服务端checkpoint与会话消息的JSON envelope，完整恢复后继续工具轮次；无需SQL迁移。
+
+这些字段仅用于同一端点/模型的协议续接：不混入聊天正文、进度delta、摘要或公开消息API，不向其他模型转发。旧非思考回复使用空字段标明无历史思考，不伪造内容。服务端按思考上下文实际长度计入窗口预算；压缩按完整消息/工具组进行，不截断仍保留的思考字段。不要手动设置 `thinking:false` 来代替协议修复。
+
+如响应泄漏 DSML 内部标记，Runtime 会明确判为未完成，不从任意文本解析或执行工具；历史错误记录的 API/界面会显示协议异常，原始审计记录保留，绝不自动重放。
+
 设置服务端`LLM_API_KEY`、`LLM_BASE_URL`和`LLM_MODEL`。API地址是Chat Completions路径的前缀，例如`https://gateway.example/v1`；运行时追加`/chat/completions`。显示名称默认取实际配置的模型ID，可用`LLM_DISPLAY_NAME`自定义。旧`builtin-deepseek`是兼容别名，不能表示模型厂商。
 
 例如实际请求Gemma时应填写服务商给出的Gemma模型ID；不能仅修改显示名。聊天中的“最近返回”取上游响应`model`字段；缺失则未知，并不假定服务商实际运行了配置模型。

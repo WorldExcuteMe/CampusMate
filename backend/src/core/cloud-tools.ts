@@ -11,12 +11,14 @@ import { DocumentService, saveFetchedSource } from "./document-service.ts";
 import type { DocumentBlock } from "../../../shared/document.ts";
 import { searchWeb } from "./web-search.ts";
 import type { CampusRecords, InboxInput } from "./campus-records.ts";
+import { BUSINESS_TOOLS, BUSINESS_TOOL_NAMES, type BusinessStore, type BusinessToolName } from './business-tools.ts';
 import { TOOL_SPECS } from "./tool-registry.ts";
 
 export const CLOUD_TOOLS: ToolDef[] = [
+  ...BUSINESS_TOOLS.filter(tool => tool.function.name !== "save_to_inbox"),
   { type: "function", function: { name: "list_inbox", description: "只读列出本人信息中心的已有通知（含itemId和截止）。用户要改刚才/已有通知时先从历史实际结果或本工具取得itemId；不得猜ID或用新建代替更新。", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "update_inbox", description: "按已有itemId更新本人待确认通知的截止日期/时间；保留原id、原文、标题，不会新建。用于更正刚才那条的截止，日期变动也必须更新而不是save_to_inbox。itemId须来自真实保存/列表结果；已确认记录由用户人工修改。", parameters: { type: "object", properties: { itemId: { type: "string" }, deadline: { type: "string", description: "最新截止YYYY-MM-DD或ISO时间" }, deadlineTime: { type: "string", description: "北京时间HH:mm；未知不填" } }, required: ["itemId", "deadline"] } } },
-  { type: "function", function: { name: "save_to_inbox", description: "把用户明确要求保存的通知写入信息中心Inbox（与机会雷达不同）。先预览，用户明确要求保存后再调用。保留通知原文/更正依据、最新截止、地点和材料；未知链接/主办方不可补造。重复相同标题+截止+地点仅保留一条，待用户确认。", parameters: { type: "object", properties: { title: { type: "string" }, rawText: { type: "string" }, summary: { type: "string" }, category: { type: "string" }, deadline: { type: "string", description: "截止日期YYYY-MM-DD；有时分优先用deadlineTime，未知不填" }, deadlineTime: { type: "string", description: "北京时间HH:mm，例如18:00；勿将本地18点误写为18:00Z；未知不填" }, location: { type: "string" }, sourceUrl: { type: "string" }, materials: { type: "array", items: { type: "string" } } }, required: ["title", "rawText"] } } },
+  { type: "function", function: { name: "save_to_inbox", description: "把用户明确要求保存的通知写入信息中心Inbox（与机会雷达不同）。先预览，用户明确要求保存后再调用。保留通知原文/更正依据、最新截止、地点和材料；未知链接/主办方不可补造。重复相同标题+截止+地点仅保留一条，待用户确认。", parameters: { type: "object", properties: { title: { type: "string" }, rawText: { type: "string" }, summary: { type: "string" }, category: { type: "string" }, deadline: { type: ["string", "null"], description: "截止日期YYYY-MM-DD；有时分优先用deadlineTime，未知不填" }, deadlineTime: { type: "string", description: "北京时间HH:mm，例如18:00；勿将本地18点误写为18:00Z；未知不填" }, location: { type: "string" }, sourceUrl: { type: "string" }, materials: { type: "array", items: { type: "string" } } }, required: ["title"] } } },
   { type: "function", function: { name: "document_create", description: "创建通用文档并保存真实产物。blocks只接受heading(level,text)、paragraph(text,claimType,sourceIds)、list(items)、table(headers,rows)、image(data PNG/JPEG,alt)、chart(title,labels,values)、reference(sourceId)。外部事实须用web_fetch返回的sourceId，不可自填已核实来源。长文先分章节准备再创建；可用previousArtifactId追加同任务的新版本。", parameters: { type: "object", properties: { title: { type: "string" }, blocks: { type: "array", items: { type: "object" } }, sourceIds: { type: "array", items: { type: "string" } }, previousArtifactId: { type: "string" } }, required: ["title", "blocks"] } } },
   { type: "function", function: { name: "document_inspect", description: "读取本人文档的结构、版本、来源及可用导出格式。结构检查不代表内容事实/视觉均已验收。", parameters: { type: "object", properties: { artifactId: { type: "string" } }, required: ["artifactId"] } } },
   { type: "function", function: { name: "document_export", description: "把已保存文档真实导出为MD/DOCX/PDF，重开核对并缓存文件，返回字节哈希和授权下载路径。缺环境会明确报错；只有成功后才能声称可下载。", parameters: { type: "object", properties: { artifactId: { type: "string" }, format: { type: "string", enum: ["md", "docx", "pdf"] } }, required: ["artifactId", "format"] } } },
@@ -67,7 +69,7 @@ export const CLOUD_TOOLS: ToolDef[] = [
           organizer: { type: "string" },
           description: { type: "string" },
           conditions: { type: "array", items: { type: "string" } },
-          deadline: { type: "string", description: "YYYY-MM-DD 或 null" },
+          deadline: { type: ["string", "null"], description: "YYYY-MM-DD；未知用null或省略，不要猜测日期" },
           sourceUrl: { type: "string" },
         },
         required: ["title"],
@@ -84,12 +86,17 @@ export const CLOUD_TOOLS: ToolDef[] = [
   },
 ];
 
-export interface CloudToolCtx { taskId: string; userId: string; intent?: string; campusRecords?: CampusRecords; evidenceStore?: EvidenceStore; opportunityStore?: OpportunityStore; artifactStore?: ArtifactStore; documents?: DocumentService; }
+export interface CloudToolCtx { taskId: string; userId: string; intent?: string; businessStore?: BusinessStore; campusRecords?: CampusRecords; evidenceStore?: EvidenceStore; opportunityStore?: OpportunityStore; artifactStore?: ArtifactStore; documents?: DocumentService; }
 
 export async function executeCloudTool(name: string, args: Record<string, unknown>, ctx?: CloudToolCtx): Promise<string> {
   const noPersistence = /只.*预览|(?:不要|不|勿)(?:写入|保存)(?:到任何|任何|[，。；！？\s]|$)|(?:不要|不|勿)(?:创建|生成|保存)(?:任何)?(?:文件|文档)/.test(ctx?.intent ?? "");
   if (TOOL_SPECS[name]?.permission.startsWith("write_") && noPersistence) return JSON.stringify({ error: "用户要求只预览或不持久化，禁止写入" });
   if (["save_to_inbox", "update_inbox", "save_opportunity"].includes(name) && ctx?.intent && /(?:不要|不|勿)(?:写入|保存)|只.*预览/.test(ctx.intent)) return JSON.stringify({ error: "用户要求只预览，禁止写入" });
+  if (BUSINESS_TOOL_NAMES.includes(name as BusinessToolName) && (name !== "save_to_inbox" || !ctx?.campusRecords)) {
+    if (!ctx?.businessStore) return JSON.stringify({ error: '业务持久化服务未配置，需要 Postgres；未保存任何更改。' });
+    try { return JSON.stringify(await ctx.businessStore.execute(name as BusinessToolName, args, { userId: ctx.userId, taskId: ctx.taskId })); }
+    catch { return JSON.stringify({ error: '业务操作未能确认成功：请检查标题、日期、分类和本人数据访问权限，核实保存结果后重试。' }); }
+  }
   if (name === "list_inbox" || name === "update_inbox") {
     if (!ctx?.campusRecords) return JSON.stringify({ error: "信息中心服务不可用，尚未更新" });
     try {
@@ -100,6 +107,9 @@ export async function executeCloudTool(name: string, args: Record<string, unknow
   if (name === "save_opportunity" && ctx?.intent && /信息中心|inbox/i.test(ctx.intent) && !/雷达|机会中心/.test(ctx.intent)) return JSON.stringify({ error: "信息中心和机会雷达是不同去处，请使用save_to_inbox" });
   if (name === "save_to_inbox") {
     if (!ctx?.campusRecords) return JSON.stringify({ error: "信息中心持久化不可用，尚未保存" });
+    const rawText = typeof args.rawText === "string" && args.rawText.trim() ? args.rawText : typeof args.summary === "string" && args.summary.trim() ? [ctx.intent, args.summary, args.source].filter(value => typeof value === "string" && value.trim()).join("\n") : "";
+    if (!rawText) return JSON.stringify({ error: "通知需要rawText原文或非空summary，未保存任何更改" });
+    args = { ...args, rawText, ...(!args.sourceUrl && typeof args.source === "string" && /^https?:\/\//i.test(args.source) ? { sourceUrl: args.source } : {}) };
     // Backward compatibility for saved/checkpointed calls using the old tool.
     // An explicit update may resolve exactly one literal title, never insert.
     if (ctx.intent && /只更新|更新已有|不要新增|不新增/.test(ctx.intent)) {
@@ -175,6 +185,9 @@ export async function executeCloudTool(name: string, args: Record<string, unknow
     if (!ctx?.opportunityStore) return JSON.stringify({ error: "机会存储未启用" });
     const title = String(args.title ?? "").trim();
     if (!title) return JSON.stringify({ error: "title 必填" });
+    const rawDeadline = typeof args.deadline === 'string' ? args.deadline.trim() : args.deadline;
+    const deadline = rawDeadline == null || rawDeadline === '' ? null : rawDeadline;
+    if (deadline !== null && (typeof deadline !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(deadline) || !Number.isFinite(Date.parse(deadline + 'T00:00:00Z')) || new Date(deadline + 'T00:00:00Z').toISOString().slice(0, 10) !== deadline)) return JSON.stringify({ error: '截止日期须为真实的YYYY-MM-DD日期，未知请用null或省略', class: 'tool_validation', field: 'deadline' });
     const rec = await ctx.opportunityStore.create({
       userId: ctx.userId,
       title,
@@ -182,7 +195,7 @@ export async function executeCloudTool(name: string, args: Record<string, unknow
       organizer: args.organizer ? String(args.organizer) : undefined,
       description: args.description ? String(args.description) : undefined,
       conditions: Array.isArray(args.conditions) ? (args.conditions as unknown[]).map(String) : undefined,
-      deadline: args.deadline ? String(args.deadline) : null,
+      deadline: deadline as string | null,
       sourceUrl: args.sourceUrl ? String(args.sourceUrl) : undefined,
     });
     return JSON.stringify({ ok: true, opportunity: rec, note: "已写入机会雷达，用户可在 Radar 页查看。" });

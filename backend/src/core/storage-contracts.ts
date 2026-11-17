@@ -1,8 +1,10 @@
 import type { ChatMessage } from "./types.ts";
+import type { SessionPatch, LegacyMessage } from './session-management.ts';
 
 export interface StoredSession {
   id: string; userId: string; title: string; mode: "auto" | "daily";
   summary?: string; summaryThroughSeq: number; createdAt: number; updatedAt: number;
+  archived?: boolean; deletedAt?: number | null; revision?: number;
 }
 export interface StoredSessionMessage extends ChatMessage {
   id: string; userId: string; sessionId: string; turnId: string; messageKey: string;
@@ -15,6 +17,10 @@ export interface SessionStore {
   create(input: { userId: string; id?: string; title?: string; mode?: "auto" | "daily" }): Promise<StoredSession>;
   get(userId: string, id: string): Promise<StoredSession | null>;
   list(userId: string): Promise<StoredSession[]>;
+  patch(userId: string, id: string, patch: SessionPatch): Promise<StoredSession>;
+  remove(userId: string, id: string, expectedRevision: number): Promise<StoredSession>;
+  importLegacy(userId: string, id: string, messages: LegacyMessage[]): Promise<void>;
+  legacyHistory(userId: string, id: string): Promise<LegacyMessage[]>;
   appendMessage(input: AppendSessionMessage): Promise<StoredSessionMessage>;
   listMessages(userId: string, sessionId: string, afterSeq?: number, options?: { includeImages?: boolean }): Promise<StoredSessionMessage[]>;
   updateSummary(userId: string, sessionId: string, summary: string, throughSeq: number): Promise<StoredSession | null>;

@@ -18,6 +18,8 @@ import { parseTextToolCall, looksLikeToolCall } from "./tool-protocol.ts";
 import { matchesInformationRequest, normalizeInformationRequest } from "./source-match.ts";
 import { VISION_CLAIMS, VISION_EXTRACTION_RULE, VISION_SUMMARY_RULE, parseVisionClaims, restoredVisionClaims, guardVisionVerdict } from "./vision-verification.ts";
 import { researchTarget, researchStatements, researchSummaryMessages, renderResearchSummary, RESEARCH_SUMMARY_MARKER, RESEARCH_REPAIR_MARKER, type ResearchSource } from "./research-summary.ts";
+import { assessToolOutcomes } from './tool-outcomes.ts';
+import { hasRawToolMarkup, TOOL_PROTOCOL_ERROR } from '../../../shared/tool-protocol.ts';
 
 export class CheckpointWriteError extends Error {
   constructor(cause: unknown) { super("任务历史保存失败，请恢复重试", { cause }); }
@@ -98,9 +100,12 @@ export async function runAgentLoop(opts: Parameters<typeof runAgentLoopInternal>
   const result = await runAgentLoopInternal(opts);
   const rawErrors = (messages: ChatMessage[]) => messages.filter((m) => m.role === "tool" ? toolResultFailed(String(m.content)) : m.role === "user" && typeof m.content === "string" && m.content.startsWith("[工具观测：") && toolResultFailed(m.content.replace(/^\[工具观测：[^\]]+\]\s*/, ""))).length;
   const requiredText = [opts.user, ...(opts.history ?? []).filter(m => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[工具观测")).map(m => String(m.content))].join("\n");
-  const recovered = !result.error && !result.mock && !result.truncated && !result.budgetExceeded && !result.paused ? recoveredFetchErrors(result.transcript, requiredText, result.reply, new Set(opts.deps.tools.map(t => t.function.name))) : 0;
+  const outcomes = assessToolOutcomes(result.transcript);
+  const unresolvedFetchUrls = new Set(outcomes.unresolved.filter(attempt => attempt.name === "web_fetch" && typeof attempt.args?.url === "string").map(attempt => String(attempt.args!.url)));
+  for (const recovery of outcomes.recovered) await opts.deps.hooks?.onEvent?.("tool.recovered", { ...recovery });
+  const recovered = !result.error && !result.mock && !result.truncated && !result.budgetExceeded && !result.paused ? recoveredFetchErrors(result.transcript, requiredText, result.reply, new Set(opts.deps.tools.map(t => t.function.name)), unresolvedFetchUrls) : 0;
   // Preserve errors whose original observations are absent from an old checkpoint.
-  result.toolErrors = Math.max(0, (opts.resumeToolErrors ?? 0) - rawErrors(opts.resumeTranscript ?? [])) + rawErrors(result.transcript) - recovered;
+  result.toolErrors = Math.max(0, (opts.resumeToolErrors ?? 0) - rawErrors(opts.resumeTranscript ?? [])) + outcomes.count - recovered;
   if (recovered) {
     const oldReply = result.reply;
     result.reply = `有${recovered}次网页读取失败；摘要采用已取得并列出的资料，未成功读取的链接仅作入口，未核实部分仍需核对。\n\n${oldReply}`;
@@ -178,9 +183,9 @@ function noticeStatusGuard(reply: string, sources: ReturnType<typeof fetchObserv
   ).join("\n").trim();
   return "资料时效：本次读取的是参赛通知；实际举办情况、最新报名状态及下一届安排尚未核实。\n\n" + supported;
 }
-function recoveredFetchErrors(messages: ChatMessage[], requiredText: string, reply: string, known: Set<string>): number {
+function recoveredFetchErrors(messages: ChatMessage[], requiredText: string, reply: string, known: Set<string>, unresolvedUrls?: Set<string>): number {
   const observations = fetchObservations(messages, known);
-  return observations.filter(o => o.failed && typeof o.call.args?.url === "string" && !requiredText.includes(o.call.args.url) && observations.some(later =>
+  return observations.filter(o => o.failed && typeof o.call.args?.url === "string" && (!unresolvedUrls || unresolvedUrls.has(o.call.args.url)) && !requiredText.includes(o.call.args.url) && observations.some(later =>
     later.index > o.index && !later.failed && Number(later.data.status) >= 200 && Number(later.data.status) < 300 && typeof later.data.text === "string" && later.data.text.trim().length > 0 && typeof later.data.url === "string" && reply.includes(later.data.url),
   )).length;
 }
@@ -214,7 +219,7 @@ async function runAgentLoopInternal(opts: {
     const tool = deps.tools.find((t) => t.function.name === name);
     if (!tool) return JSON.stringify({ error: "工具未在本轮授权范围内" });
     const invalid = argumentError(tool.function.parameters, args);
-    const out = invalid ? JSON.stringify({ error: `工具参数无效：${invalid}` }) : await deps.executeTool(name, args);
+    const out = invalid ? JSON.stringify({ error: `工具参数无效：${invalid}`, class: 'tool_validation' }) : await deps.executeTool(name, args);
     if (out.includes('tool_result_uncertain')) uncertainEffects = true;
     return out;
   };
@@ -272,7 +277,7 @@ async function runAgentLoopInternal(opts: {
     return out;
   };
   const snapshot = (): CheckpointState => ({
-    messages, transcript, stepProgress: {}, repeat: Object.fromEntries(repeat), usage: { ...usage }, pendingApprovals: [],
+    messages, transcript, stepProgress: {}, repeat: Object.fromEntries(repeat), usage: { ...usage }, pendingApprovals: [], toolErrors: assessToolOutcomes(transcript, opts.resumeToolErrors ?? 0).count,
   });
   const checkpoint = async () => {
     try { await hooks.onCheckpoint?.(structuredClone(snapshot())); }
@@ -459,6 +464,15 @@ async function runAgentLoopInternal(opts: {
       addUsage(res.usage);
       await hooks.beforeRequest?.();
       model = res.model;
+      const continuation = res.reasoningContent !== undefined ? { reasoning_content: res.reasoningContent, reasoning_source: res.reasoningSource } : {};
+      if (hasRawToolMarkup(res.content)) {
+        // Fail closed even for truncated/mixed responses; DSML text isn't a tool
+        // invocation and must never certify a successful write or run by parsing.
+        messages.push({ role: 'assistant', content: TOOL_PROTOCOL_ERROR });
+        transcript.push({ role: 'assistant', content: TOOL_PROTOCOL_ERROR });
+        await checkpoint();
+        return { reply: TOOL_PROTOCOL_ERROR, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: 'invalid_output', error: 'tool_protocol_error' };
+      }
       await emit("llm.response", { round: i, toolCalls: res.toolCalls.length, telemetry, truncated: res.truncated, streamInterrupted: res.streamInterrupted });
       let recoveredPrefix = "";
       if (pendingReply) {
@@ -477,7 +491,7 @@ async function runAgentLoopInternal(opts: {
           await emit("step.started", { stepId: "output-recovery", title: "续写中断正文" }); await checkpoint(); continue;
         }
         const reply = looksLikeToolCall(res.content) ? "工具指令尚未完整接收，未执行相应操作；请用新消息继续。" : res.content || "模型输出未完成，保留执行记录待继续。";
-        messages.push({ role: "assistant", content: reply }); transcript.push({ role: "assistant", content: `[未完成草稿] ${reply}` });
+        messages.push({ role: "assistant", content: reply, ...continuation }); transcript.push({ role: "assistant", content: `[未完成草稿] ${reply}`, ...continuation });
         await checkpoint();
         return { reply, actions, usage, model: res.model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, truncated: true, messages, transcript, telemetry };
       }
@@ -504,7 +518,7 @@ async function runAgentLoopInternal(opts: {
       }
 
       if (res.toolCalls.length > 0) {
-        const request: ChatMessage = { role: "assistant", content: res.content, tool_calls: res.toolCalls };
+        const request: ChatMessage = { role: "assistant", content: res.content, tool_calls: res.toolCalls, ...continuation };
         messages.push(request);
         transcript.push(structuredClone(request));
         for (const call of res.toolCalls) {
@@ -533,8 +547,8 @@ async function runAgentLoopInternal(opts: {
       }
       const jt = parseJsonTool(res.content, known);
       if (jt) {
-        messages.push({ role: "assistant", content: res.content });
-        transcript.push({ role: "assistant", content: res.content });
+        messages.push({ role: "assistant", content: res.content, ...continuation });
+        transcript.push({ role: "assistant", content: res.content, ...continuation });
         const ordinal = transcript.length - 1;
         const out = await tracedTool(jt.name, jt.args, `json:${ordinal}`, `json:${ordinal}`);
         usage.toolCalls += 1;
@@ -592,7 +606,7 @@ async function runAgentLoopInternal(opts: {
       if (briefVision && visionClaims && !offlineVision) finalReply = guardVisionVerdict(finalReply, visionClaims, fetchObservations(transcript, known).filter(o => !o.failed && Number(o.data.status) >= 200 && Number(o.data.status) < 300 && typeof o.data.text === "string" && typeof o.data.url === "string").map(o => ({ url: String(o.data.url), text: String(o.data.text) })));
       if (heldDelta) await emit("llm.delta", { text: recoveredPrefix && finalReply.startsWith(recoveredPrefix) ? finalReply.slice(recoveredPrefix.length) : finalReply, round: i });
       if (recoveredPrefix) await emit("step.finished", { stepId: "output-recovery", passed: true });
-      transcript.push({ role: "assistant", content: finalReply });
+      transcript.push({ role: "assistant", content: finalReply, ...continuation });
       return { reply: finalReply, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: overBudget(), paused: false, messages, transcript, telemetry, error: uncertainEffects ? warning : undefined };
     }
 
