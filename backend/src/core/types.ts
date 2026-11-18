@@ -199,6 +199,8 @@ export interface NormalizedLlmUsage {
 export interface LlmTelemetry {
   requestId: string; attempts: number; ttftMs: number | null; totalMs: number; finishReason: string | null;
   stablePrefixHash: string; toolsHash: string; usage: NormalizedLlmUsage;
+  /** 服务端返回的请求 ID（非流式响应的 data.id）；用于与供应商用量明细精确关联。 */
+  providerRequestId?: string | null;
   reasoning: { requested: string; effective: string | null; family: string; stage: string; reason: string };
 }
 

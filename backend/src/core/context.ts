@@ -13,6 +13,8 @@ export const TOOL_RESULT_CAP = 12_000;
 export const HEADROOM_TOKENS = 65_536;
 export const SPILL_HEAD_CHARS = 4096;
 export const SPILL_TAIL_CHARS = 1024;
+/** 压缩摘要消息的稳定前缀；前缀缓存观测据此识别段 D（历史压缩块）。 */
+export const COMPACTION_SUMMARY_MARKER = "【历史摘要：已压缩";
 export class ContextLimitError extends Error {}
 
 export function modelMaxContext(model?: string): number {
@@ -109,7 +111,7 @@ function summarizeDropped(groups: ChatMessage[][]): string {
     const c = contentText(m.content).replace(/\s+/g, " ").trim();
     if (c) lines.push(`[${m.role}] ${c.slice(0, 160)}`);
   }
-  return `【历史摘要：已压缩 ${groups.length} 组早期轮次，保留要点】\n${lines.join("\n").slice(0, 4000)}`;
+  return `${COMPACTION_SUMMARY_MARKER} ${groups.length} 组早期轮次，保留要点】\n${lines.join("\n").slice(0, 4000)}`;
 }
 
 export interface TrimResult { messages: ChatMessage[]; compressed: boolean; pruned: boolean; }

@@ -7,13 +7,14 @@ import { normalizeUsage } from "./llm-usage.ts";
 import { generationPolicy, type GenerationStage } from "./generation-policy.ts";
 import { canonicalArgs, sha256 } from "../runtime/idempotency.ts";
 import { messagesTokens, toolsTokens, estimateTokens } from "./context.ts";
+import { PrefixTracer, type PrefixScopeInput, type PrefixTelemetry, type ToolPlacement } from "./prefix-trace.ts";
 import { resolveModelCapabilities } from "./model-capabilities.ts";
 import { parseTextToolCall } from "./tool-protocol.ts";
 import { hasRawToolMarkup, TOOL_PROTOCOL_ERROR, protocolSafeStream } from '../../../shared/tool-protocol.ts';
 
 export interface ChatOptions {
   messages: ChatMessage[]; tools?: ToolDef[]; reasoning?: string; temperature?: number;
-  maxOutputTokens?: number; deadlineAt?: number; signal?: AbortSignal; stage?: GenerationStage;
+  maxOutputTokens?: number; deadlineAt?: number; signal?: AbortSignal; stage?: GenerationStage; round?: number;
   onDelta?: (text: string) => void;
 }
 export interface LlmTransport {
@@ -26,6 +27,12 @@ export interface DeepSeekConfig {
   apiKey: string; baseUrl?: string; model?: string; fetchImpl?: typeof fetch;
   maxRetries?: number; timeoutMs?: number; capabilities?: Record<string, unknown>;
   reasoningPreference?: string; contextLimit?: number | null;
+  /** Phase 2 候选：显式开启前缀稳定策略（等价 CM_PREFIX_POLICY=1）。默认关闭。 */
+  prefixPolicy?: boolean;
+  /** 显式用户/工作区/会话作用域；缺省时 trace 只带 endpoint 级 scope id。 */
+  prefixScope?: PrefixScopeInput;
+  /** 端点注入的思考提示词 tokens 估算，键为 effective 档位（如 {high:79, max:92}）。 */
+  reasoningPreambleTokens?: Record<string, number>;
 }
 
 // Compatibility helper. Runtime calls use explicit endpoint capabilities below.
@@ -37,10 +44,21 @@ export function reasoningParams(model: string | undefined, tier: string | undefi
 }
 export class DeepSeekTransport implements LlmTransport {
   private cfg: DeepSeekConfig;
+  private prefixPolicy: boolean;
+  private prefixTracer: PrefixTracer;
   constructor(cfg: DeepSeekConfig) {
     if (!cfg.apiKey) throw new Error("LLM_API_KEY missing (server-side)");
     const resolved = resolveModelCapabilities(cfg.baseUrl ?? "https://api.deepseek.com", cfg.model ?? "deepseek-chat", cfg.capabilities, cfg.contextLimit);
     this.cfg = { ...cfg, ...(cfg.capabilities !== undefined || resolved.profile ? { capabilities: resolved.capabilities } : {}), contextLimit: resolved.contextLimit };
+    // Phase 2 默认关闭：只有显式配置或 CM_PREFIX_POLICY=1 才改变请求形状；观测始终开启。
+    this.prefixPolicy = cfg.prefixPolicy ?? process.env.CM_PREFIX_POLICY === "1";
+    this.prefixTracer = new PrefixTracer({
+      baseUrl: cfg.baseUrl ?? "https://api.deepseek.com",
+      model: cfg.model ?? "deepseek-chat",
+      policy: this.prefixPolicy,
+      scope: cfg.prefixScope,
+      preambleTokens: cfg.reasoningPreambleTokens,
+    });
   }
   estimateInputTokens(opts: Pick<ChatOptions, "messages" | "tools">): number {
     return messagesTokens(opts.messages) + toolsTokens(opts.tools);
@@ -71,7 +89,6 @@ export class DeepSeekTransport implements LlmTransport {
     const requestId = randomUUID();
     const estimatedInput = messagesTokens(opts.messages) + toolsTokens(opts.tools);
     const maxOutput = Math.max(1, Math.min(opts.maxOutputTokens ?? 8192, Number(caps.maxOutputTokens) || 8192, cfg.contextLimit ? cfg.contextLimit - estimatedInput : Infinity));
-    const policy = generationPolicy(caps, opts.reasoning ?? cfg.reasoningPreference, opts.stage ?? "simple", maxOutput);
     const thinking = caps.reasoning === 'deepseek_thinking';
     // Provider/model-bound opaque continuation; never forward another model's trace.
     const reasoningSource = sha256(canonicalArgs({ baseUrl: (cfg.baseUrl ?? 'https://api.deepseek.com').replace(/\/+$/, ''), model: cfg.model ?? 'deepseek-chat' }));
@@ -87,11 +104,50 @@ export class DeepSeekTransport implements LlmTransport {
       return thinking && message.role === 'assistant' ? { ...plain, reasoning_content: reasoning_source === reasoningSource && typeof reasoning_content === 'string' ? reasoning_content : '' } : plain;
     });
     const protocol = '工具协议：需要工具时仅输出一个严格JSON {"tool":"名称","args":{...}}，等待真实观测再继续；不要额外闭括号或裸控制标记。仅可使用以下工具及参数；普通文本不是工具结果：\n' + JSON.stringify(tools);
-    const [stableSystem, ...dynamicSystem] = wireHistory.filter(m => m.role === "system").map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content));
-    const messages = jsonTools || caps.singleSystem === true ? [
-      { role: "system" as const, content: [stableSystem, ...(jsonTools ? [protocol] : []), ...dynamicSystem].filter((part) => part !== undefined).join("\n\n") },
-      ...wireHistory.filter(m => m.role !== "system"),
-    ] : wireHistory;
+    const mergeAllSystem = caps.singleSystem === true;
+    const wireText = (message: ChatMessage) => typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+    const policyNotes: string[] = [];
+    let leadingSystem = 0;
+    while (leadingSystem < wireHistory.length && wireHistory[leadingSystem].role === "system") leadingSystem++;
+    let messages: ChatMessage[];
+    let systemEnd: number;
+    if (jsonTools || mergeAllSystem) {
+      if (this.prefixPolicy && jsonTools && !mergeAllSystem) {
+        // Phase 2：只把头部连续 system 与工具协议合并；运行期追加的 system 观测留在原位。
+        // 旧行为会把尾部动态文本提升到历史之前，每轮追加都会让整段缓存前缀失效。
+        const [headStable, ...headDynamic] = wireHistory.slice(0, leadingSystem).map(wireText);
+        messages = [{ role: "system" as const, content: [headStable, ...(jsonTools ? [protocol] : []), ...headDynamic].filter((part) => part !== undefined).join("\n\n") }, ...wireHistory.slice(leadingSystem)];
+        systemEnd = 1;
+        policyNotes.push("tail-stable-system-merge");
+      } else {
+        const [stableSystem, ...dynamicSystem] = wireHistory.filter(m => m.role === "system").map(wireText);
+        messages = [
+          { role: "system" as const, content: [stableSystem, ...(jsonTools ? [protocol] : []), ...dynamicSystem].filter((part) => part !== undefined).join("\n\n") },
+          ...wireHistory.filter(m => m.role !== "system"),
+        ];
+        systemEnd = 1;
+        if (this.prefixPolicy && mergeAllSystem) policyNotes.push("single-system-endpoint-hoists-tail-system");
+      }
+    } else {
+      messages = wireHistory;
+      systemEnd = leadingSystem;
+    }
+    const toolsInBody = tools.length > 0 && (caps.tools === "native" || cfg.capabilities === undefined);
+    const toolPlacement: ToolPlacement = jsonTools ? "system" : toolsInBody ? "body" : "none";
+    const basePolicy = generationPolicy(caps, opts.reasoning ?? cfg.reasoningPreference, opts.stage ?? "simple", maxOutput);
+    let policy = basePolicy;
+    let effortLocked = false;
+    if (this.prefixPolicy && this.prefixTracer.phaseUnchanged(messages, systemEnd, tools, toolPlacement)) {
+      const prior = this.prefixTracer.previousEffort();
+      const priorParams = this.prefixTracer.previousEffortParams();
+      // Phase 2：同一任务阶段的 wire 前缀未变时保持思考档位。档位切换会让端点前置注入
+      // 不同的思考提示词，实测会使整段 KV 缓存失效；阶段前缀变化时照常采用新档位并记录失效。
+      if (prior && priorParams && prior.effective !== basePolicy.effective) {
+        policy = { ...basePolicy, effective: prior.effective, params: priorParams, reason: "CM_PREFIX_POLICY：任务阶段内保持思考档位，避免端点前置思考提示词变化导致整段缓存失效" };
+        effortLocked = true;
+        policyNotes.push("reasoning-effort-locked");
+      }
+    }
     const body = {
       model: cfg.model ?? "deepseek-chat", messages,
       ...(caps.temperature === true ? { temperature: opts.temperature ?? 0.2 } : {}),
@@ -102,19 +158,30 @@ export class DeepSeekTransport implements LlmTransport {
       ...(tools.length && (caps.tools === "native" || cfg.capabilities === undefined) ? { tools, tool_choice: "auto" } : {}),
       ...(caps.streaming === true ? { stream: true, ...(caps.streamUsage === true ? { stream_options: { include_usage: true } } : {}) } : {}),
     };
+    // 发送前一次序列化：prefix trace 只读取哈希/长度，请求体字节与逐次 JSON.stringify 完全一致。
+    const serializedBody = JSON.stringify(body);
+    const prefixTrace = this.prefixTracer.record({
+      requestId, round: opts.round ?? null, stage: policy.stage,
+      messages, systemEnd, tools, toolPlacement, sourceMessages: wireHistory,
+      effort: { requested: policy.requested, effective: policy.effective, family: policy.family, stage: policy.stage },
+      effortParams: policy.params, effortLocked, policyNotes,
+      bodyChars: serializedBody.length,
+      bodyTokens: messagesTokens(messages) + (toolPlacement === "body" ? toolsTokens(tools) : 0),
+    });
     let lastError: unknown;
     let attempts = 0;
     try {
       if (opts.signal?.aborted) throw new LlmTransportError("模型请求已由调用方取消", { reason: "cancelled" });
       if (opts.messages.some((m) => Array.isArray(m.content) && m.content.some((part) => part.type === "image_url")) && caps.vision === false) throw new LlmTransportError("当前端点已配置为不支持图片输入，请选择视觉模型或使用文字材料", { reason: "capability" });
       if (cfg.contextLimit && estimatedInput >= cfg.contextLimit) throw new LlmTransportError("上下文超出已配置窗口，请缩小输入", { reason: "input" });
+      this.prefixTracer.commit();
       const maxAttempts = Math.max(1, Math.min(3, (cfg.maxRetries ?? 2) + 1));
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         attempts = attempt;
         try {
           const res = await abortable((cfg.fetchImpl ?? fetch)((cfg.baseUrl ?? "https://api.deepseek.com").replace(/\/+$/, "") + "/chat/completions", {
             method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + cfg.apiKey },
-            redirect: "error", signal: ctrl.signal, body: JSON.stringify(body),
+            redirect: "error", signal: ctrl.signal, body: serializedBody,
           }), ctrl.signal);
           const retryable = [429, 500, 502, 503, 504].includes(res.status);
           if (retryable && attempt < maxAttempts) {
@@ -125,6 +192,7 @@ export class DeepSeekTransport implements LlmTransport {
             continue;
           }
           let content: string, toolCalls: ChatResult["toolCalls"], model: string, rawUsage: unknown, finishReason: string | null, truncated: boolean, ttftMs: number | null, reasoningContent: string | undefined;
+          let providerRequestId: string | null = null;
           let streamInterrupted = false;
           if (res.ok && res.headers?.get("content-type")?.includes("text/event-stream")) {
             const safe = protocolSafeStream(opts.onDelta);
@@ -143,6 +211,7 @@ export class DeepSeekTransport implements LlmTransport {
             if (thinking && typeof message.reasoning_content === 'string') reasoningContent = message.reasoning_content;
             toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
             model = typeof data.model === "string" ? data.model : "unknown"; rawUsage = data.usage;
+            providerRequestId = typeof data.id === "string" ? data.id : null;
             finishReason = data.choices[0].finish_reason ?? null; truncated = finishReason === "length";
             ttftMs = null; // Non-streaming responses do not expose first-token timing.
           }
@@ -151,13 +220,19 @@ export class DeepSeekTransport implements LlmTransport {
             const parsed = parseTextToolCall(content, new Set(tools.map(t => t.function.name)));
             if (parsed) { toolCalls = [{ id: `compat-${requestId}`, type: "function", function: { name: parsed.name, arguments: JSON.stringify(parsed.args) } }]; content = ""; }
           }
+          prefixTrace.observed = { inputTokens: usage.inputTotal, cachedTokens: usage.cacheRead };
+          const telemetry: PrefixTelemetry = {
+            requestId, attempts: attempt, ttftMs, totalMs: Date.now() - start, finishReason,
+            stablePrefixHash: sha256(canonicalArgs({ system: opts.messages.find((m) => m.role === "system")?.content ?? "" })),
+            toolsHash: sha256(canonicalArgs(tools)), usage, providerRequestId,
+            reasoning: { requested: policy.requested, effective: policy.effective, family: policy.family, stage: policy.stage, reason: policy.reason },
+            prefixTrace,
+          };
           return {
             content, toolCalls, model, finishReason, truncated, streamInterrupted,
             ...(thinking && reasoningContent !== undefined ? { reasoningContent, reasoningSource } : {}),
             usage: { input: usage.inputTotal ?? estimatedInput, output: usage.output ?? estimateTokens(content + JSON.stringify(toolCalls)) },
-            telemetry: { requestId, attempts: attempt, ttftMs, totalMs: Date.now() - start, finishReason,
-              stablePrefixHash: sha256(canonicalArgs({ system: opts.messages.find((m) => m.role === "system")?.content ?? "" })),
-              toolsHash: sha256(canonicalArgs(tools)), usage, reasoning: { requested: policy.requested, effective: policy.effective, family: policy.family, stage: policy.stage, reason: policy.reason } },
+            telemetry,
           };
         } catch (error) {
           lastError = error;
@@ -171,7 +246,14 @@ export class DeepSeekTransport implements LlmTransport {
     } catch (error) {
       const reason = opts.signal?.aborted ? "cancelled" : ctrl.signal.aborted ? "timeout" : error instanceof LlmTransportError ? error.reason : error instanceof SyntaxError ? "protocol" : "network";
       const message = reason === "timeout" ? `模型响应超时（本次请求限时${Math.max(0, Math.round((deadline - start) / 1000))}秒）` : reason === "cancelled" ? "模型请求已由调用方取消" : error instanceof Error ? error.message : errorMessage(error);
-      throw new LlmTransportError(errorMessage(this.redact(message)), { reason, status: error instanceof LlmTransportError ? error.status : undefined, telemetry: { requestId, attempts, ttftMs: null, totalMs: Date.now() - start, finishReason: null, stablePrefixHash: sha256(canonicalArgs({ system: opts.messages.find((m) => m.role === "system")?.content ?? "" })), toolsHash: sha256(canonicalArgs(tools)), usage: normalizeUsage(null), reasoning: { requested: policy.requested, effective: policy.effective, family: policy.family, stage: policy.stage, reason: policy.reason } } });
+      const errorTelemetry: PrefixTelemetry = {
+        requestId, attempts, ttftMs: null, totalMs: Date.now() - start, finishReason: null,
+        stablePrefixHash: sha256(canonicalArgs({ system: opts.messages.find((m) => m.role === "system")?.content ?? "" })),
+        toolsHash: sha256(canonicalArgs(tools)), usage: normalizeUsage(null), providerRequestId: null,
+        reasoning: { requested: policy.requested, effective: policy.effective, family: policy.family, stage: policy.stage, reason: policy.reason },
+        prefixTrace,
+      };
+      throw new LlmTransportError(errorMessage(this.redact(message)), { reason, status: error instanceof LlmTransportError ? error.status : undefined, telemetry: errorTelemetry });
     } finally { clearTimeout(timer); opts.signal?.removeEventListener("abort", abort); }
   }
   private async delay(ms: number, signal: AbortSignal, deadline: number) {
@@ -184,6 +266,13 @@ export class DeepSeekTransport implements LlmTransport {
 export function transportFromEnv(env: Record<string, string | undefined>, fetchImpl?: typeof fetch): LlmTransport {
   let capabilities: Record<string, unknown> = {};
   try { capabilities = JSON.parse(env.LLM_CAPABILITIES ?? "{}"); } catch { /* unknown */ }
+  let reasoningPreambleTokens: Record<string, number> | undefined;
+  try {
+    const parsed = JSON.parse(env.CM_PREFIX_PREAMBLE_TOKENS ?? "");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) reasoningPreambleTokens = parsed as Record<string, number>;
+  } catch { /* optional */ }
   return new DeepSeekTransport({ apiKey: env.LLM_API_KEY ?? "", baseUrl: env.LLM_BASE_URL, model: env.LLM_MODEL, fetchImpl, capabilities,
-    timeoutMs: env.LLM_TIMEOUT_MS ? Number(env.LLM_TIMEOUT_MS) : undefined, maxRetries: env.LLM_MAX_RETRIES ? Number(env.LLM_MAX_RETRIES) : undefined });
+    timeoutMs: env.LLM_TIMEOUT_MS ? Number(env.LLM_TIMEOUT_MS) : undefined, maxRetries: env.LLM_MAX_RETRIES ? Number(env.LLM_MAX_RETRIES) : undefined,
+    prefixPolicy: env.CM_PREFIX_POLICY === "1", reasoningPreambleTokens,
+    ...(env.CM_PREFIX_SCOPE_USER || env.CM_PREFIX_SCOPE_WORKSPACE ? { prefixScope: { userId: env.CM_PREFIX_SCOPE_USER, workspaceId: env.CM_PREFIX_SCOPE_WORKSPACE } } : {}) });
 }

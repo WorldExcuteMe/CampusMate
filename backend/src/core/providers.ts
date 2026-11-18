@@ -87,7 +87,7 @@ export class ProviderService {
     try { key = p.providerId === "builtin" ? this.env.LLM_API_KEY! : p.encryptedSecret ? this.vault.decrypt(p.encryptedSecret, task.userId, p.providerId) : ""; } catch (error) { throw new ProviderError((error as Error).message, 503); }
     if (!key) throw new ProviderError("所选供应商未配置API密钥");
     const fetchImpl: typeof fetch = p.providerId === "builtin" && this.fetch === providerFetch ? (url, init) => fetch(url, { ...init, redirect: "error" }) : this.fetch;
-    return new DeepSeekTransport({ apiKey: key, baseUrl: p.baseUrl, model: p.modelId, fetchImpl, capabilities: p.capabilities, contextLimit: p.contextLimit, reasoningPreference: task.modelConfig?.reasoningPreference, maxRetries: Number(this.env.LLM_MAX_RETRIES ?? 2), timeoutMs: Number(this.env.LLM_TIMEOUT_MS ?? 120000) });
+    return new DeepSeekTransport({ apiKey: key, baseUrl: p.baseUrl, model: p.modelId, fetchImpl, capabilities: p.capabilities, contextLimit: p.contextLimit, reasoningPreference: task.modelConfig?.reasoningPreference, maxRetries: Number(this.env.LLM_MAX_RETRIES ?? 2), timeoutMs: Number(this.env.LLM_TIMEOUT_MS ?? 120000), prefixScope: { userId: task.userId } });
   }
   async test(userId: string, id: string) {
     const modelConfig = await this.snapshot(userId, id);

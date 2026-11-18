@@ -64,3 +64,26 @@ test("上游回显凭证被清除，缺失真实model保持unknown，协议错�
   const bad = new DeepSeekTransport({ apiKey: key, maxRetries: 0, fetchImpl: async () => res(200, { status: "ok" }) });
   await assert.rejects(() => bad.chat({ messages: [] }), /协议无效/);
 });
+
+test("供应商响应ID与USD金额进入telemetry，可与用量明细精确对齐", async () => {
+  const fetchImpl = (async () => res(200, {
+    id: "req-provider-123",
+    choices: [{ message: { content: "ok", tool_calls: [] }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 11, completion_tokens: 2, cost: 0.000021, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } },
+    model: "self-dploy/DeepSeek-V4-Flash",
+  })) as unknown as typeof fetch;
+  const t = new DeepSeekTransport({ apiKey: "k", fetchImpl, maxRetries: 0 });
+  const r = await t.chat({ messages: [{ role: "user", content: "hi" }] });
+  assert.equal(r.telemetry?.providerRequestId, "req-provider-123");
+  assert.equal(r.telemetry?.usage.costUsd, 0.000021);
+  assert.equal(r.telemetry?.usage.cacheRead, 0);
+  assert.equal(r.telemetry?.usage.cacheWrite, 0);
+});
+
+test("用量缺少金额字段时costUsd保持未知，不按猜测价格折算", async () => {
+  const fetchImpl = (async () => res(200, { choices: [{ message: { content: "ok", tool_calls: [] } }], usage: { prompt_tokens: 3, completion_tokens: 1 } })) as unknown as typeof fetch;
+  const t = new DeepSeekTransport({ apiKey: "k", fetchImpl, maxRetries: 0 });
+  const r = await t.chat({ messages: [{ role: "user", content: "hi" }] });
+  assert.equal(r.telemetry?.usage.costUsd, null);
+  assert.equal(r.telemetry?.providerRequestId, null);
+});

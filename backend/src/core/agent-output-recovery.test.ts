@@ -29,8 +29,16 @@ test("two interruptions retain both draft parts and never loop a third time", as
   assert.equal(f.requests.length, 2); assert.equal(r.truncated, true);
   assert.equal(r.reply, partial.content + "后半段仍未完成");
 });
-test("length, unclassified truncation and partial tool instructions are never automatically replayed", async () => {
-  for (const item of [{ ...partial, finishReason: "length" }, { ...partial, streamInterrupted: false }, { ...partial, content: '{"tool":"save_to_inbox","args":' }, { ...partial, toolCalls: [{ id: "a", type: "function", function: { name: "save_to_inbox", arguments: '{"title":' } }] }]) {
+test("纯文本截断给一次有界续跑，续跑不执行工具且第二轮截断不再循环", async () => {
+  for (const item of [{ ...partial, finishReason: "length", streamInterrupted: false }, { ...partial, streamInterrupted: false }]) {
+    const f = fixture([item]); const r = await runAgentLoop({ system: "s", user: "写正文", deps: f.deps });
+    assert.equal(f.requests.length, 2);
+    assert.ok(f.requests[1].messages.some((m) => typeof m.content === "string" && m.content.startsWith("【输出截断续跑】")));
+    assert.equal(f.writes, 0); assert.equal(r.truncated, true);
+  }
+});
+test("疑似工具指令的截断内容绝不自动重放", async () => {
+  for (const item of [{ ...partial, content: '{"tool":"save_to_inbox","args":' }, { ...partial, toolCalls: [{ id: "a", type: "function", function: { name: "save_to_inbox", arguments: '{"title":' } }] }]) {
     const f = fixture([item]); const r = await runAgentLoop({ system: "s", user: "写正文", deps: f.deps });
     assert.equal(f.requests.length, 1); assert.equal(f.writes, 0); assert.equal(r.truncated, true);
   }

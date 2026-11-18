@@ -73,6 +73,10 @@ export interface AgentLoopResult {
 
 const MAX_TOOL_ROUNDS = 20;
 const APPROVAL_PAUSE = "__approval_pending__";
+// 有界恢复标记：每条最多触发一次，避免空转；动态提示追加在上下文尾部，保持系统与工具前缀稳定。
+const TRUNCATION_REPAIR_MARKER = "【输出截断续跑】";
+const DELIVERY_REPAIR_MARKER = "【交付校验】";
+const TIMEOUT_RETRY_MARKER = "【请求超时续跑】";
 
 export function parseJsonTool(content: string, known: Set<string>): { name: string; args: Record<string, unknown> } | null {
   return parseTextToolCall(content, known);
@@ -94,6 +98,19 @@ function noteRepeat(repeat: Map<string, number>, name: string, args: Record<stri
   if (n === 3 || n === 5 || n === 8) {
     messages.push({ role: "user", content: `[系统提醒] 工具 ${name} 已用相同参数调用 ${n} 次。若结果未变请停止重复重试：改用不同参数/来源，或基于已有结果直接总结；查不到不等于不存在，如实说明。` });
   }
+}
+
+// 交付校验启发式：用户明确点名交付文件（扩展名 + 写/导出类动词），且没有声明“只预览/不要写入”时，
+// 若整轮没有任何文件写入或程序执行动作，允许一次有界提醒，避免把正文贴在聊天里当作已交付文件。
+// 只做行为提醒，不包含任何题目答案；纯读取/比较类请求不会命中。
+const DELIVERABLE_EXTENSIONS = /[\w./-]+\.(?:md|docx|pdf|xlsx|csv|txt|ics|pptx)\b/gi;
+const DELIVERABLE_VERB = /(?:create|write|generate|save|export|convert|put\b|place\b|store\b|deliver|produce|生成|保存|写入|导出|输出|制作|转成|转换成|放到|放进|交付)/i;
+const DELIVERABLE_NEGATION = /(?:不要|不必|无需|勿)(?:写入|保存|创建|导出|生成)|(?:do not|don't|dont)\s+(?:write|save|create|export|generate)/i;
+export function requestedDeliverable(instruction: string): string | null {
+  if (DELIVERABLE_NEGATION.test(instruction)) return null;
+  if (!DELIVERABLE_VERB.test(instruction)) return null;
+  const names = [...new Set((instruction.match(DELIVERABLE_EXTENSIONS) ?? []).map((item) => item.replace(/^[.。]+/, "")))];
+  return names.length ? names.join("、") : null;
 }
 
 export async function runAgentLoop(opts: Parameters<typeof runAgentLoopInternal>[0]): Promise<AgentLoopResult> {
@@ -289,12 +306,16 @@ async function runAgentLoopInternal(opts: {
       ...(stepResponseInstruction(opts.user) ? [{ role: "system" as const, content: stepResponseInstruction(opts.user)! }] : []),
       ...(deliveryPlan ? [{ role: "system" as const, content: deliveryPlan }] : []),
       ...(effectiveStage === "write" ? [{ role: "system" as const, content: "用户列出章节或小节标题时，原样保留用户指定的标题文字和顺序，使用清晰的 Markdown 标题层级。标题下可增加用户未指定的子节。" }] : []),
-      ...(workspaceProgram ? [{ role: "system" as const, content: "【编程验证】编写或运行程序时，先读取输入样例和格式契约，按结构字段解析。用能区分边界条件与相似文本的反例验证，先确认交付文件的完整相对路径及工作目录。文件转换只给出目标文件名时，默认把产物放在原文件所在目录。回读最终路径并核对内容后再报告交付。" }] : []),
+      ...(workspaceProgram ? [{ role: "system" as const, content: "【编程验证】编写或运行程序时，先读取输入样例和格式契约，按结构字段解析。用能区分边界条件与相似文本的反例验证，先确认交付文件的完整相对路径及工作目录。文件转换只给出目标文件名时，默认把产物放在原文件所在目录。表格或文档的结构调整（交换、重排、转置行或列）把整行或整列连同表头/标签作为单位处理，写回后回读核对结构与值。回读最终路径并核对内容后再报告交付。" }] : []),
       ...(groundedTarget ? [{ role: "system" as const, content: "本轮是收集真实赛事资料并评估适合度。用户输入中priorUserStatements为本会话历史直接陈述，按时间顺序且最新纠正优先；currentRequest为当前要求。保留用户明确约束，但若用户未要求全部免费或当前可报名，不得自行把它们升级为资料收集的硬条件；可以依据原文明确说明某赛事不适合预算。只从本轮真实读取正文形成赛事事实，旧助手结论和搜索标题不是事实。优先检索明确赛名及其规则/高校通知，不以编程语言或年份代替赛事名。" }] : opts.history ?? []),
       { role: "user", content: userContent }];
   const recoveryIndex = messages.findLastIndex(m => m.role === "system" && String(m.content).startsWith(OUTPUT_RECOVERY_MARKER));
   let pendingReply = recoveryIndex > 0 && messages[recoveryIndex - 1].role === "assistant" ? String(messages[recoveryIndex - 1].content) : "";
   let outputRecoveryUsed = recoveryIndex >= 0 || transcript.some(m => m.role === "system" && String(m.content).startsWith(OUTPUT_RECOVERY_MARKER));
+  let truncationRepairs = 0;
+  let deliveryRepairs = 0;
+  let timeoutRepairs = 0;
+  const deliverableNames = requestedDeliverable(opts.user);
   let telemetry: import("./types.ts").LlmTelemetry | undefined;
 
   const emit = async (type: EventType, payload: Record<string, unknown>) => { await hooks.onEvent?.(type, payload); };
@@ -356,7 +377,7 @@ async function runAgentLoopInternal(opts: {
       const outputLimit = Math.min(1536, deps.budget.tokens - usage.tokens - (estimatedInput ?? 0));
       await emit("llm.request", { stage: "extract" });
       await hooks.onPromptUsage?.({ inputTokens: estimatedInput ?? messagesTokens(extractionMessages), contextLimit: deps.contextLimit ?? null, outputReserve: outputLimit, source: "estimated" });
-      const extracted = await deps.transport.chat({ messages: extractionMessages, tools: [], signal: deps.signal, reasoning: deps.reasoning, stage: "extract", maxOutputTokens: outputLimit, deadlineAt: Math.min(start + deps.budget.wallMs - priorWallMs, now() + 60000), temperature: 0 });
+      const extracted = await deps.transport.chat({ messages: extractionMessages, tools: [], signal: deps.signal, reasoning: deps.reasoning, stage: "extract", round: 0, maxOutputTokens: outputLimit, deadlineAt: Math.min(start + deps.budget.wallMs - priorWallMs, now() + 60000), temperature: 0 });
       addUsage(extracted.usage); telemetry = extracted.telemetry; model = extracted.model;
       await hooks.beforeRequest?.();
       await emit("llm.response", { stage: "extract", model: extracted.model, toolCalls: extracted.toolCalls.length, telemetry });
@@ -509,18 +530,34 @@ async function runAgentLoopInternal(opts: {
       }
       if (!synthesizing) messages = requestMessages;
       if (hasEstimate && estimatedInput >= deps.budget.tokens - usage.tokens) return inputBudgetStop(estimatedInput, i);
-      const outputLimit = Math.min(reserve, deps.budget.tokens - usage.tokens - (hasEstimate ? estimatedInput : 0), synthesizing ? groundedMode ? 2048 : offlineVision ? 512 : 1024 : automaticShort ? 2048 : Infinity);
+      const outputLimit = Math.min(reserve, deps.budget.tokens - usage.tokens - (hasEstimate ? estimatedInput : 0), synthesizing ? groundedMode ? 2048 : offlineVision ? 512 : 1024 : automaticShort ? (truncationRepairs > 0 ? 8192 : 2048) : Infinity);
       await emit("llm.request", { round: i, stage: synthesizing ? "summary" : effectiveStage, summaryRepair: summaryRepairs > 0 });
       await hooks.onPromptUsage?.({ inputTokens: messagesTokens(requestMessages) + (synthesizing ? 0 : tTools), contextLimit: deps.contextLimit ?? null, outputReserve: outputLimit, source: "estimated" });
       let heldDelta = "", plainDelta = false;
-      let res = await deps.transport.chat({ messages: requestMessages, tools: requestTools, signal: deps.signal, reasoning: deps.reasoning, stage: synthesizing ? "summary" : effectiveStage, temperature: synthesizing ? 0 : undefined, deadlineAt: start + deps.budget.wallMs - priorWallMs, maxOutputTokens: outputLimit, onDelta: (text) => {
-        if (pendingReply) { heldDelta += text; return; }
-        if (briefInformation || briefVision || strictWebEvidence) { heldDelta += text; return; }
-        if (plainDelta) { void emit("llm.delta", { text, round: i }).catch(() => {}); return; }
-        heldDelta += text;
-        const first = heldDelta.trimStart()[0];
-        if (first && !["{", "<", "`"].includes(first)) { plainDelta = true; void emit("llm.delta", { text: heldDelta, round: i }).catch(() => {}); heldDelta = ""; }
-      } });
+      const remainingWallMs = start + deps.budget.wallMs - priorWallMs - now();
+      let res: Awaited<ReturnType<typeof deps.transport.chat>>;
+      try {
+        res = await deps.transport.chat({ messages: requestMessages, tools: requestTools, signal: deps.signal, reasoning: deps.reasoning, stage: synthesizing ? "summary" : effectiveStage, round: i, temperature: synthesizing ? 0 : undefined, deadlineAt: start + deps.budget.wallMs - priorWallMs, maxOutputTokens: outputLimit, onDelta: (text) => {
+          if (pendingReply) { heldDelta += text; return; }
+          if (briefInformation || briefVision || strictWebEvidence) { heldDelta += text; return; }
+          if (plainDelta) { void emit("llm.delta", { text, round: i }).catch(() => {}); return; }
+          heldDelta += text;
+          const first = heldDelta.trimStart()[0];
+          if (first && !["{", "<", "`"].includes(first)) { plainDelta = true; void emit("llm.delta", { text: heldDelta, round: i }).catch(() => {}); heldDelta = ""; }
+        } });
+      } catch (error) {
+        // 端点长尾延迟可让单次请求在期限前超时（实测 P95≈97s，3/103 触达 180s 上限）。
+        // 只有任务阶段未变、模型请求本身没有副作用、且剩余有效期足够时才做一次有界重发。
+        const timedOut = isTransportError(error) && (error as import("./errors.ts").LlmTransportError).reason === "timeout";
+        if (timedOut && !synthesizing && timeoutRepairs < 1 && i + 2 < maxRounds && !overBudget() && remainingWallMs > 60_000) {
+          timeoutRepairs++;
+          telemetry = (error as import("./errors.ts").LlmTransportError).telemetry ?? telemetry;
+          await emit("llm.response", { round: i, error: errorMessage(error), errorCategory: "timeout", telemetry, requestTimeoutRepair: true });
+          const notice: ChatMessage = { role: "system", content: TIMEOUT_RETRY_MARKER + " 上一次模型请求在返回前超时，没有产生任何工具执行结果。请继续完成当前任务：优先做最必要的下一步工具调用，回复保持简短，不要重复已发送的大段材料。" };
+          messages.push(notice); transcript.push(structuredClone(notice)); await checkpoint(); continue;
+        }
+        throw error;
+      }
       telemetry = res.telemetry;
       if (!res.telemetry || res.telemetry.usage.inputTotal !== null) await hooks.onPromptUsage?.({ inputTokens: res.telemetry?.usage.inputTotal ?? res.usage.input, contextLimit: deps.contextLimit ?? null, outputReserve: reserve, source: "reported" });
       addUsage(res.usage);
@@ -536,6 +573,15 @@ async function runAgentLoopInternal(opts: {
         return { reply: TOOL_PROTOCOL_ERROR, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: 'invalid_output', error: 'tool_protocol_error' };
       }
       await emit("llm.response", { round: i, model: res.model, toolCalls: res.toolCalls.length, telemetry, truncated: res.truncated, streamInterrupted: res.streamInterrupted });
+      // 输出被上限截断且没有工具调用：半截文本不能作为最终交付。给一次有界续跑，提示追加在尾部。
+      // 只处理“自然语言正文被截断”的情况；疑似工具指令、结构化 JSON 载荷或工具标记的截断内容沿用原有
+      // 保守路径（检查点暂停/续写），绝不自动重放。
+      const proseTruncation = !/^[\s`\[{]/.test(res.content);
+      if (!synthesizing && res.truncated && !res.toolCalls.length && !res.streamInterrupted && proseTruncation && !looksLikeToolCall(res.content) && !hasRawToolMarkup(res.content) && truncationRepairs < 1 && i + 2 < maxRounds && !overBudget()) {
+        truncationRepairs++;
+        const notice: ChatMessage = { role: "system", content: TRUNCATION_REPAIR_MARKER + " 上一条回复因输出上限被截断，不能作为最终交付。若任务还有未完成的文件、命令或查询动作，先用工具完成并用真实结果核验；否则用更短篇幅直接写完结论，不要重复已经写出的开头。" };
+        messages.push(notice); transcript.push(structuredClone(notice)); await checkpoint(); continue;
+      }
       let recoveredPrefix = "";
       if (pendingReply) {
         recoveredPrefix = pendingReply;
@@ -652,6 +698,14 @@ async function runAgentLoopInternal(opts: {
         const reply = "本轮未取得与原问题相关的可读资料正文，尚不能完成可靠摘要。请稍后重试或提供官方链接。";
         transcript.push({ role: "assistant", content: reply });
         return { reply, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: "error", error: "source_unavailable" };
+      }
+      // 交付校验：点名了交付文件却整轮没有任何写文件/执行程序/文档导出动作时，给一次有界提醒，
+      // 避免把正文贴进聊天就结束（实测 OfficeBench 2-21/0 因此未产出 docx）。提醒不含题目答案。
+      if (deliverableNames && !synthesizing && deliveryRepairs < 1 && i + 2 < maxRounds && !overBudget()
+          && !actions.some(name => /^workspace_(write|run)$/.test(name) || /^document_(create|export)$/.test(name))) {
+        deliveryRepairs++;
+        const notice: ChatMessage = { role: "system", content: DELIVERY_REPAIR_MARKER + ` 用户的交付要求点名了文件（${deliverableNames}），但本轮没有任何文件写入、程序执行或文档导出动作，任务尚未交付。请实际创建所要求的文件并回读核对，不要把正文直接当作交付；若确认用户只要聊天答复，说明原因后结束。` };
+        messages.push(notice); transcript.push(structuredClone(notice)); await checkpoint(); continue;
       }
       const warning = uncertainEffects ? "存在操作结果未确认，请核对后用新消息继续。\n\n" : "";
       let finalReply = warning + (res.content.trim() ? res.content : (actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}。` : "（模型未返回内容，请重试或换一种问法）"));
