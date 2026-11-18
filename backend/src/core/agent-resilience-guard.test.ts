@@ -49,6 +49,18 @@ test("已有文件写入动作时交付校验不触发", async () => {
   assert.match(r.reply, /report\.md/);
 });
 
+test("只跑过只读脚本也算未交付，交付校验要求先核验文件存在", async () => {
+  const f = fixture([
+    { content: "", toolCalls: [{ id: "a", type: "function", function: { name: "workspace_run", arguments: '{"program":"python3","argv":["-c","print(1)"]}' } }] },
+    { content: "数据已经读取完毕。" },
+    { content: "已确认并创建 report.docx。" },
+  ]);
+  const r = await runAgentLoop({ system: "s", user: "生成 report.docx 报告", deps: f.deps });
+  assert.equal(f.requests.length, 3);
+  assert.ok(f.requests[2].messages.some((m) => typeof m.content === "string" && m.content.startsWith("【交付校验】")));
+  assert.match(r.reply, /report\.docx/);
+});
+
 test("单次模型请求超时且剩余期限充足时做一次有界重发", async () => {
   const timeout = new LlmTransportError("模型响应超时（本次请求限时180秒）", { reason: "timeout" });
   const f = fixture([timeout, { content: "继续完成后的最终答复" }]);

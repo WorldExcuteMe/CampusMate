@@ -699,12 +699,12 @@ async function runAgentLoopInternal(opts: {
         transcript.push({ role: "assistant", content: reply });
         return { reply, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: "error", error: "source_unavailable" };
       }
-      // 交付校验：点名了交付文件却整轮没有任何写文件/执行程序/文档导出动作时，给一次有界提醒，
-      // 避免把正文贴进聊天就结束（实测 OfficeBench 2-21/0 因此未产出 docx）。提醒不含题目答案。
+      // 交付校验：点名了交付文件、但整轮没有任何显式写文件/文档导出动作时，给一次有界核验提醒。
+      // 仅执行过只读脚本也算“未交付”，因此提醒措辞是先核验文件是否存在，不存在再创建——不假设题目答案。
       if (deliverableNames && !synthesizing && deliveryRepairs < 1 && i + 2 < maxRounds && !overBudget()
-          && !actions.some(name => /^workspace_(write|run)$/.test(name) || /^document_(create|export)$/.test(name))) {
+          && !actions.some(name => /^workspace_write$/.test(name) || /^document_(create|export)$/.test(name))) {
         deliveryRepairs++;
-        const notice: ChatMessage = { role: "system", content: DELIVERY_REPAIR_MARKER + ` 用户的交付要求点名了文件（${deliverableNames}），但本轮没有任何文件写入、程序执行或文档导出动作，任务尚未交付。请实际创建所要求的文件并回读核对，不要把正文直接当作交付；若确认用户只要聊天答复，说明原因后结束。` };
+        const notice: ChatMessage = { role: "system", content: DELIVERY_REPAIR_MARKER + ` 用户的交付要求点名了文件（${deliverableNames}），但本轮没有显式的文件写入或文档导出动作。请先用只读工具确认这些文件确实已生成且内容符合要求；若不存在，请实际创建并回读核对，不要把正文直接当作交付。若确认用户只要聊天答复，说明原因后结束。` };
         messages.push(notice); transcript.push(structuredClone(notice)); await checkpoint(); continue;
       }
       const warning = uncertainEffects ? "存在操作结果未确认，请核对后用新消息继续。\n\n" : "";

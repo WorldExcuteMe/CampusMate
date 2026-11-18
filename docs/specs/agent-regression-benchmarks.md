@@ -196,3 +196,48 @@ SQLite 数据恢复试验的 Harbor 验证器超时。正则试验返回 reward 
 离线依赖试验保留题面、官方任务镜像和原始测试文件。验证器使用本机配齐的 Python 3.13 与规定的 pytest 依赖，Ubuntu 镜像另外加载已验证的 Python 运行时。验证器必须实际生成 CTRF 测试报告才可计入成绩。该模式在报告中独立分列。
 
 首个离线依赖真实试验为 Circuit。验证器实际运行官方测试，2/3 项通过，核心正确性失败，reward 为 0。五次模型请求中有一次超时 180.1 秒。OfficeBench 新增首题 1-10/0 的官方评分为通过，4 次工具调用，耗时 96.7 秒。Terminal-Bench 全量横向评分仍待足量同口径结果。
+
+### 2026-11-18 21:30 接续批次
+
+接手核对：分支 `feature/agent-local-workspaces`，基线 `c506d0f`，`origin/develop` 无新提交；上轮未提交改动按 `.github/CONTRIBUTING.md` 约定以 `b509c10` 记录为已验证检查点（当时证据：后端 627 项、626 通过、0 失败、1 跳过，类型检查通过）。会话中断后按“已有评分结果自动跳过”的串行队列续跑，未重复已完成的模型运行。
+
+**可比性控制。** 运行源码冻结为 `C:/Users/Asus/CodeBuddy/campusmate-builds/eval-freeze-20261118T2130`（244 文件，`source_sha256=47a6e191…`），调优改动期间评测结果不受工作树变化影响。该批次所有运行使用 `DeepSeek-V4-Flash`、非思考模式（`reasoning="none"`）、上下文上限 262144、单请求 180 秒、重试 1、题面与评分器原件。
+
+**OfficeBench（作者修订 `b978b808…`，官方 `evaluation.evaluate_output`）。** 本会话实际评分 9 题，通过 6 题。
+
+| 题 | 判定 | 工具 | 输入/输出 tokens | 耗时 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| 1-10/0 | 通过 | 4 | 9,535 / 557 | 96.7s | 上一会话完成 |
+| 1-11/0 | 通过 | 18 / 10 | — | — | 原运行产物落点修正后仅重跑官方评分器（Gemma 与 DeepSeek 各一次） |
+| 1-11/1 | 通过 | 7 | 17,441 / 1,133 | 123.1s | 真实 xlsx 产物 8 个 |
+| 1-12/0 | 通过 | 5 | 11,713 / 691 | 133.8s | answer.txt + roster xlsx |
+| 1-14/0 | 通过 | 9 | 26,246 / 1,574 | 230.7s | 与参考文件逐单元格一致 |
+| 1-14/1 | 未通过 | 7 | 18,197 / 1,006 | 132.9s | 只交换列值未交换表头，精确匹配失败（属语义与自检缺陷） |
+| 2-21/0 | 未通过 | 3 | 7,030 / 537 | 82.8s | 读完 xlsx 后在聊天里作答，未创建 docx；已加交付校验恢复 |
+| 2-33/0 | 通过 | 7 | 19,112 / 1,892 | 228.1s | top3.txt 内容正确 |
+| 3-5/0 | 未通过 | 27 | 56,754 / 2,505 | 457.5s | 24 次脚本调用未产出 xlsx/docx，末次请求 92s 超时 |
+
+证据：`acceptance-20261118/external-benchmarks/BATCH-20261118T2130/`（README、results.jsonl、officebench.md）与 `officebench/runs/*`。样本单列，不是作者排行榜成绩。
+
+**AppWorld（官方状态评分，test_normal 前三同题）。** 补充公开参数类型/默认值/约束的候选桥复测 0/3。三题分别在 412/417/318 秒终止；32 个请求中 3 个超时（9.4%），P50 17.6s、P95 151.6s，加权 KV 命中 67.9%。同一时段端点明显慢于 19 点批次（P50 6.2s、2.9% 超时、86.1% 命中），因此本批复测不能单独归因于桥变更；325d6ec_1 出现 10 次公开文档读取、0 次 API 调用的空转。根因分析见 `appworld/forensics/appworld-failure-analysis.md`：answer_contract 3 例、pagination 2 例、超时终止 3 例、输出截断 1 例、工具角色混淆 1 例；公开 API 参数描述（如 `complete_task.answer` 的“仅在问答题填写、否则用默认 None”）、分页默认值与 `page_index` 语义此前未暴露给模型。已准备完整契约候选桥（参数 description、response_schemas、分页元数据、401/422 提示）并开始单变量复测。
+
+**AMD 端点契约实测。** `GET {base}/usage?include_recent=true` 可用（`{base}=…/radeon/api/v1`；按字面再加 `/v1/usage` 得 404）；`reasoning_effort` 支持 `none/minimal/low/medium/high/xhigh/max`，`thinking` 参数被 400 拒绝，`chat_template_kwargs` 被静默忽略。客户端 103 条请求与供应商 200 行 usage 明细按“三元组相等 + 发出时延 +4.31s”全部对齐（100 高置信 + 3 条 canceled 中置信），缓存读取与输出 token 双侧一致；客户端未保存供应商响应 ID，已改为写入 telemetry。合成 1226 token 前缀缓存实测：冷 33.2s / 热 1.1s，缓存按 1024 token 块命中，中段改字节整段失效，尾部追加不失效，切换 `reasoning_effort` high/max 会因端点前置注入思考提示而整段失效。三次长等待（135/167/180 秒）经逐请求复原为服务端长尾 + 客户端期限触发，而非工具错误；两条前序请求在 96.9–97.8% 缓存命中的情况下仍耗时 107–168 秒。证据：`external-benchmarks/amd/`。
+
+**产品验收（确定性，无实时模型）。** 8 组门禁 69/69 项通过：全新生产安装启动（PGlite 运行时依赖、12 迁移/38 表、重启保留 owner 与会话）、登录与账号隔离、工作区/文件隔离与路径穿越拒绝、审批（拒绝阻断副作用、重启不复问）、断网/重启恢复（副作用恰好一次）、编程与 Markdown/DOCX/PDF 真实导出并复读、Inbox/课表 CSV-ICS 迁移与回读、合成分页源 480 条/10 页与未授权源拒绝。已记录 4 项缺陷：本机身份仅在 HTML 注入永不过期的 owner JWT（无 Cookie/登出/双账号，D1 高）、`localhost`/`[::1]` 被 Host 守卫 403（D2）、纯重复课表重导确认 422（D3）、模型端点中断时任务记为 failed 而非 paused（D4，但 `/resume` 可恢复）。证据：`acceptance-20261118/product-acceptance/`。
+
+**通用能力覆盖准备。** HORIZON 断点恢复取得可执行入口：`eval.ts` 增加 `--store pglite --store-dir` 与 `--resume-session last`，用现有 Worker/检查点让“阶段 A 暂停退出、阶段 B 同库续跑”可评测；3 项确定性测试通过（跨进程恢复副作用恰好一次、两会话不重复、非法参数拒绝）。GDPval 固定 `openai/gdpval` 修订 `11e7900…` 与 3 个样本及官方 rubric 哈希，自评与官方评分口径分离；GAIA 数据集为 gated（未授权 401），保留 manifest 与评分器并记录阻塞；tau2-bench 固定 v2.0.0，airline/0 在官方 Orchestrator + EnvironmentEvaluator 下以脚本化用户回合确定性跑通（reward 1.0、DB 校验通过、0 次 LLM 调用），实时 5 题 × 3 次 pass^k 待用户模拟器模型配置。证据：`external-benchmarks/general-coverage/` 与 `docs/specs/general-capability-coverage.md`。
+
+**架构改动（已提交）。** `002fccf`：请求分段前缀指纹（系统/工具/历史/压缩摘要/动态尾部）与 1024 块可缓存估算进入 `llm.response` telemetry；候选 `CM_PREFIX_POLICY=1`（默认关闭）在任务阶段前缀不变时锁定思考档位、把运行期系统观测留在尾部；供应商响应 ID 与 USD 金额写入 telemetry；新增三类有界恢复（纯文本截断续跑、点名交付文件但无写动作提醒、单次请求超时重发），文档阶段 JSON 载荷仍走原有检查点暂停路径。`07cb709`：评测入口的持久存储与两阶段续跑。验证：后端 648 项、647 通过、0 失败、1 跳过（隔离 PostgreSQL 缺 `TEST_DATABASE_URL`），类型检查通过；前缀指纹 13 项、恢复守卫 5 项、持久存储 3 项定向测试通过。
+
+**本轮实验与突破（AppWorld）。** 用相邻时段单变量实验定位限制因素：R0 补充参数类型/默认值/约束（schema-v1 桥）0/3；
+R1 暴露完整公开 API 契约（参数 description、response_schemas、分页元数据与提示、401/422 提示）0/3 但真实 API 调用与分页行为明显改善；
+R2 同契约 + 墙钟 780s/单请求 240s 后 0 超时，终止原因变为 token 预算（2 题）与 20 轮上限（1 题）；
+**R3 仅把预算调为 600k token / 80 次工具 / 40 轮（快照与桥同 R2）：2/3 通过**——`3d9a636_1` 官方 5/5（461s、33 次工具、209,964 输入 token）、
+`fd1f8fa_1` 官方 5/5（706s、33 次工具、379,946 输入 token），`325d6ec_1` 因最终请求 `fetch failed`（网络错误，attempts=2）未完成。
+结论：在补齐公开 API 契约后，**预算而非模型能力是 AppWorld 同题的主要限制**；官方参考解需要 35–60 次 API 调用。
+未参与调优的新场景泛化在暂停前完成一题：`2d9f728_1`（venmo 分摊付款）通过，`0d01c76_1` 未通过，`042a9fc_1` 因关机暂停未运行。
+证据：`external-benchmarks/experiments/README.md`、`BATCH-20261118T2130/appworld.md`、`appworld/headless-runs/20261118-230804_*`、`20261118-234331_*`。
+
+**本批暂停与续跑。** 用户关机前已停止全部模型负载并清除 Terminal 自动启动标记；冻结快照、运行产物与续跑命令见
+`acceptance-20261118/PAUSE-HANDOFF.md`。续跑顺序：R4 剩余两题 → GDPval → HORIZON → Terminal-Bench 逐题队列（52/73 镜像就绪，逐题可续跑）。
+交付校验已强化为“只跑过只读脚本也算未交付、先核验文件存在再创建”，定向测试 12/12 与类型检查通过，全量后端测试与 OfficeBench 2-21/0 复测留待续跑。
