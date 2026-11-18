@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "id": "headless-private-sources",
+  "name": "真实账户端到端验收",
+  "description": "真实隐私来源门槛。禁止桌面操作、工具回放或预填用户结果。",
+  "cases": [
+    {
+      "id": "PRIVATE-QQ-001",
+      "category": "private_group",
+      "difficulty": "hard",
+      "source": "fixed",
+      "tiers": [
+        "live"
+      ],
+      "prompt": "读取我已登录的 QQ 群 881289395 最近 30 天能访问到的全部消息。整理通知和截止事项，按消息级去重交付可核对的条目，注明实际时间范围和覆盖数量。只用程序化读取，不发消息。",
+      "checks": [
+        {
+          "kind": "status",
+          "in": [
+            "succeeded"
+          ]
+        },
+        {
+          "kind": "source_complete",
+          "dataset": "messages",
+          "minRecords": 100
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "campus_browser"
+        }
+      ]
+    },
+    {
+      "id": "PRIVATE-TERM-001",
+      "category": "private_timetable",
+      "difficulty": "hard",
+      "source": "fixed",
+      "tiers": [
+        "live"
+      ],
+      "prompt": "从我的已登录来源读取太原理工大学本学期的完整课表。我平时在太理助手Pro 的「我的课表」看。只用程序化读取，保留周次、单双周、实际时间、校区教室和临时调整，生成可核对的完整导入预览。如果没有本人的课表授权，请说明缺口。",
+      "checks": [
+        {
+          "kind": "status",
+          "in": [
+            "succeeded"
+          ]
+        },
+        {
+          "kind": "source_complete",
+          "dataset": "timetable"
+        },
+        {
+          "kind": "timetable_preview",
+          "minRows": 10
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "campus_browser"
+        }
+      ]
+    }
+  ]
+}

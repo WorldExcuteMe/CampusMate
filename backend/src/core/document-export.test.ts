@@ -68,3 +68,13 @@ test("PDF环境明确不可用时，模型自称完成也不能把导出失败�
   await new Worker({ store: ctx.store, artifactStore: ctx.artifactStore, transport, tools: CLOUD_TOOLS, buildSystem: () => "fixture", executeTool: async (_task, name, args) => executeCloudTool(name, args, { userId: OWNER, taskId: task.id, artifactStore: ctx.artifactStore, documents }), concurrency: 1 }).tick();
   const final = (await ctx.store.getTask(task.id))!; assert.equal(final.status, "failed"); assert.equal(final.result?.completion?.checks?.find((c) => c.id === "document_tools")?.passed, false);
 });
+
+test("document tool exposes the block discriminator and nested table row schema", () => {
+  const parameters = CLOUD_TOOLS.find(tool => tool.function.name === "document_create")?.function.parameters;
+  const blocks = parameters?.properties as { blocks?: { items?: Record<string, unknown> } } | undefined;
+  const item = blocks?.blocks?.items;
+  assert.deepEqual(item?.required, ["type"]);
+  const properties = item?.properties as Record<string, { enum?: string[]; items?: { items?: { type: string } } }>;
+  assert.ok(properties.type.enum?.includes("table"));
+  assert.equal(properties.rows.items?.items?.type, "string");
+});

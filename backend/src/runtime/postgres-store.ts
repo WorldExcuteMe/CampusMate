@@ -375,4 +375,12 @@ export class PostgresStore implements TaskStore {
     const r = await readQuery(this.pool, `select * from agent_tool_invocations where task_id=$1 and idempotency_key=$2`, [taskId, idempotencyKey]);
     return r.rows[0] ? rowToInvocation(r.rows[0]) : null;
   }
+
+  async finishInvocation(inv: ToolInvocation): Promise<void> {
+    const result = await this.pool.query(
+      "update agent_tool_invocations set status=$2, result=$3::jsonb, finished_at=$4::timestamptz where id=$1 and task_id=$5 and status='running'",
+      [inv.id, inv.status, j(inv.result ?? null), iso(inv.finishedAt!), inv.taskId],
+    );
+    if (result.rowCount !== 1) throw new Error("调用状态未确认");
+  }
 }

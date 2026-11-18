@@ -7,7 +7,7 @@ import { errorMessage, isTransportError, isStorageUnavailable } from "./errors.t
 import { trimToBudget, toolsTokens, resolveContextCap, messagesTokens, RESERVE_OUTPUT } from "./context.ts";
 import { checkBudget } from "./budget.ts";
 import { budgetStopSummary } from "./budget.ts";
-import { stepResponseInstruction, type GenerationStage } from "./generation-policy.ts";
+import { researchDeliveryInstruction, stepResponseInstruction, type GenerationStage } from "./generation-policy.ts";
 import { OUTPUT_RECOVERY_MARKER, joinInterruptedText, privateInstructionReply } from "./output-recovery.ts";
 import { draftReference, draftReferenceTools, resolveDraftArguments } from "./document-draft.ts";
 import { argumentError } from "./tool-arguments.ts";
@@ -136,6 +136,28 @@ function toolObservations(messages: ChatMessage[], known: Set<string>, toolName:
   return observations;
 }
 function fetchObservations(messages: ChatMessage[], known: Set<string>) { return toolObservations(messages, known, "web_fetch"); }
+
+function timetablePreviewReceipt(intent: string, transcript: ChatMessage[], known: Set<string>): string | undefined {
+  if (!known.has("source_timetable_preview") || !/课表|课务|课程安排/.test(intent) || !/预览/.test(intent)) return;
+  if (!/只[^，。]{0,8}预览|供[^，。]{0,8}确认|可以确认|不(?:要|用|需要)[^，。]{0,14}(?:保存|覆盖|写入|提交)/.test(intent)) return;
+  if (/统计|分析|比较|解释|总结|汇总|列出|导出|下载|另外|此外|同时|以及|还要|并且|一并|截图|发送/.test(intent)) return;
+  const observations = toolObservations(transcript, known, "source_timetable_preview");
+  const last = observations.at(-1);
+  if (!last || last.failed || last.index !== transcript.length - 1) return;
+  const { previewUrl, rows, errorCount, confirmed } = last.data;
+  if (typeof previewUrl !== "string" || !/^\/calendar\?import=[a-z0-9-]+$/i.test(previewUrl)
+    || typeof rows !== "number" || !Number.isSafeInteger(rows) || rows <= 0 || errorCount !== 0 || confirmed !== false) return;
+  return "已生成课表导入预览，共 " + rows + " 条课程记录。\n\n[打开课表预览](" + previewUrl + ")，核对后可确认导入。";
+}
+
+function previousUnavailableRead(transcript: ChatMessage[], known: Set<string>, url: unknown): string | undefined {
+  if (typeof url !== "string") return;
+  const previous = fetchObservations(transcript, known).findLast(o => o.call.args?.url === url);
+  if (!previous?.failed || previous.data.class !== "source_unavailable") return;
+  const status = Number(previous.data.status);
+  if (previous.data.readable !== false || !(status >= 200 && status < 300 || [401, 403, 404, 410].includes(status))) return;
+  return JSON.stringify({ ...previous.data, cached: true, advice: "该地址已尝试，请用索引返回的备用公开入口或换来源。" });
+}
 function relevantSources(messages: ChatMessage[], known: Set<string>, user: string) {
   return fetchObservations(messages, known).filter(o => !o.failed && Number(o.data.status) >= 200 && Number(o.data.status) < 300
     && typeof o.data.text === "string" && o.data.text.trim() && typeof o.data.url === "string" && matchesInformationRequest(user, o.data.text));
@@ -219,7 +241,8 @@ async function runAgentLoopInternal(opts: {
     const tool = deps.tools.find((t) => t.function.name === name);
     if (!tool) return JSON.stringify({ error: "工具未在本轮授权范围内" });
     const invalid = argumentError(tool.function.parameters, args);
-    const out = invalid ? JSON.stringify({ error: `工具参数无效：${invalid}`, class: 'tool_validation' }) : await deps.executeTool(name, args);
+    const priorRead = !invalid && deliveryPlan && name === "web_fetch" ? previousUnavailableRead(transcript, known, args.url) : undefined;
+    const out = invalid ? JSON.stringify({ error: `工具参数无效：${invalid}`, class: 'tool_validation' }) : priorRead ?? await deps.executeTool(name, args);
     if (out.includes('tool_result_uncertain')) uncertainEffects = true;
     return out;
   };
@@ -245,8 +268,14 @@ async function runAgentLoopInternal(opts: {
   const summaryRepairMarker = "[摘要格式纠正]";
   let summaryRepairs = transcript.filter(m => m.role === "system" && String(m.content).startsWith(summaryRepairMarker)).length;
   let summaryMessages: ChatMessage[] = [];
+  const deliveryPlan = ["web_search", "web_fetch", "document_create", "document_export"].every(name => known.has(name))
+    ? researchDeliveryInstruction(opts.user) : undefined;
+  const effectiveStage = deliveryPlan && (!deps.stage || deps.stage === "simple") ? "write" : deps.stage;
+  const deliveryProgressMarker = "【研究交付进度】";
+  let deliveryReminderSent = transcript.some(m => m.role === "system" && String(m.content).startsWith(deliveryProgressMarker));
+  const workspaceProgram = known.has("workspace_run") && known.has("workspace_write");
   const informationRequest = normalizeInformationRequest(opts.user);
-  const briefInformation = (!deps.stage || deps.stage === "simple") && /^\s*(?:(?:请|帮我|麻烦)\s*)*(收集|搜集|查询|查找|搜索|了解|介绍)/.test(informationRequest) && !/详细|全面|长文|报告|对比|分别|保存|写入|导出|生成|制作|计划|方案|推导|验证|核验/.test(informationRequest);
+  const briefInformation = (!effectiveStage || effectiveStage === "simple") && /^\s*(?:(?:请|帮我|麻烦)\s*)*(收集|搜集|查询|查找|搜索|了解|介绍)/.test(informationRequest) && !/详细|全面|长文|报告|对比|分别|保存|写入|导出|生成|制作|计划|方案|推导|验证|核验/.test(informationRequest);
   const cap = deps.contextLimit ?? resolveContextCap(opts.model);
   const reserve = Math.min(RESERVE_OUTPUT, Math.floor(cap * 0.25));
   const tTools = toolsTokens(deps.tools);
@@ -258,6 +287,9 @@ async function runAgentLoopInternal(opts: {
     ? structuredClone(opts.resumeMessages)
     : [...(opts.systemMessages ?? [{ role: "system" as const, content: opts.system }]),
       ...(stepResponseInstruction(opts.user) ? [{ role: "system" as const, content: stepResponseInstruction(opts.user)! }] : []),
+      ...(deliveryPlan ? [{ role: "system" as const, content: deliveryPlan }] : []),
+      ...(effectiveStage === "write" ? [{ role: "system" as const, content: "用户列出章节或小节标题时，原样保留用户指定的标题文字和顺序，使用清晰的 Markdown 标题层级。标题下可增加用户未指定的子节。" }] : []),
+      ...(workspaceProgram ? [{ role: "system" as const, content: "【编程验证】编写或运行程序时，先读取输入样例和格式契约，按结构字段解析。用能区分边界条件与相似文本的反例验证，先确认交付文件的完整相对路径及工作目录。文件转换只给出目标文件名时，默认把产物放在原文件所在目录。回读最终路径并核对内容后再报告交付。" }] : []),
       ...(groundedTarget ? [{ role: "system" as const, content: "本轮是收集真实赛事资料并评估适合度。用户输入中priorUserStatements为本会话历史直接陈述，按时间顺序且最新纠正优先；currentRequest为当前要求。保留用户明确约束，但若用户未要求全部免费或当前可报名，不得自行把它们升级为资料收集的硬条件；可以依据原文明确说明某赛事不适合预算。只从本轮真实读取正文形成赛事事实，旧助手结论和搜索标题不是事实。优先检索明确赛名及其规则/高校通知，不以编程语言或年份代替赛事名。" }] : opts.history ?? []),
       { role: "user", content: userContent }];
   const recoveryIndex = messages.findLastIndex(m => m.role === "system" && String(m.content).startsWith(OUTPUT_RECOVERY_MARKER));
@@ -327,7 +359,7 @@ async function runAgentLoopInternal(opts: {
       const extracted = await deps.transport.chat({ messages: extractionMessages, tools: [], signal: deps.signal, reasoning: deps.reasoning, stage: "extract", maxOutputTokens: outputLimit, deadlineAt: Math.min(start + deps.budget.wallMs - priorWallMs, now() + 60000), temperature: 0 });
       addUsage(extracted.usage); telemetry = extracted.telemetry; model = extracted.model;
       await hooks.beforeRequest?.();
-      await emit("llm.response", { stage: "extract", toolCalls: extracted.toolCalls.length, telemetry });
+      await emit("llm.response", { stage: "extract", model: extracted.model, toolCalls: extracted.toolCalls.length, telemetry });
       visionClaims = !extracted.truncated && !extracted.toolCalls.length ? parseVisionClaims(extracted.content) : undefined;
       await emit("step.finished", { stepId: "vision-extract", passed: Boolean(visionClaims) });
       if (!visionClaims) return { reply: "尚未可靠提取图片声明，暂不能核验真实性；原图仍保留，请提供更清晰的材料或用新消息继续。", actions, usage, model, mock: false, rounds: 1, budgetExceeded: overBudget(), paused: false, messages, transcript, telemetry, stopReason: "invalid_output", error: "vision_extraction_incomplete" };
@@ -376,6 +408,33 @@ async function runAgentLoopInternal(opts: {
     }
     for (let i = 0; i < maxRounds; i++) {
       if (overBudget()) { await emit("budget.exceeded", { usage }); break; }
+      const receipt = !pendingReply && !synthesizing && !deps.signal?.aborted
+        ? timetablePreviewReceipt(opts.user, transcript, known) : undefined;
+      if (receipt) {
+        await hooks.beforeRequest?.();
+        usage.wallMs = priorWallMs + now() - start;
+        const response: ChatMessage = { role: "assistant", content: receipt };
+        messages.push(response); transcript.push(response);
+        await emit("llm.delta", { text: receipt, round: i });
+        await checkpoint();
+        return { reply: receipt, actions, usage, model, mock: false, rounds: i, budgetExceeded: false, paused: false, messages, transcript, telemetry };
+      }
+      if (deliveryPlan && !deliveryReminderSent && !pendingReply && !synthesizing) {
+        const reads = fetchObservations(transcript, known);
+        const hasBody = reads.some(o => !o.failed && Number(o.data.status) >= 200 && Number(o.data.status) < 300
+          && o.data.readable !== false && typeof o.data.text === "string" && o.data.text.trim());
+        const searches = reads.length ? [] : toolObservations(transcript, known, "web_search");
+        const foundCandidates = searches.some(o => !o.failed && Array.isArray(o.data.results)
+          && o.data.results.some((hit: unknown) => hit && typeof hit === "object" && "url" in hit && typeof hit.url === "string" && /^https?:\/\//i.test(hit.url)));
+        const discoveryOnly = searches.length >= (foundCandidates ? 2 : 4);
+        if (!hasBody && (discoveryOnly || reads.length >= 3)) {
+          deliveryReminderSent = true;
+          const nextStep = discoveryOnly ? "优先从已有候选中打开可用来源。" : "尝试不同出版方或机构的来源入口，跳过已失败的地址。";
+          const instruction: ChatMessage = { role: "system", content: deliveryProgressMarker + " 尚未取得可读正文。" + nextStep + " 若候选仍为空，换索引或主题词。给实际撰写和导出留出时间，并明确未能核实的要求。" };
+          messages.push(instruction); transcript.push(instruction);
+          await checkpoint();
+        }
+      }
       // A brief collection has a bounded search -> read -> summary path. These
       // are real traced tool invocations, never fabricated model observations.
       if ((briefInformation || groundedTarget > 0 || briefVision && !offlineVision) && known.has("web_fetch")
@@ -434,7 +493,10 @@ async function runAgentLoopInternal(opts: {
       }
       const requestTools = synthesizing || pendingReply ? [] : availableTools;
       let requestMessages = synthesizing ? trimToBudget([...summaryMessages, ...(summaryRepairs ? [{ role: "system" as const, content: groundedMode ? "请修正为严格items JSON，quote必须逐字来自对应赛事正文；没有的字段省略，不输出工具指令或额外结论。" : "上次返回了工具指令，未执行。请直接根据已有正文写摘要，不要请求或模仿任何工具。" }] : [])], cap, 0, reserve).messages : messages;
-      const automaticShort = (!deps.stage || deps.stage === "simple") && (!deps.reasoning || deps.reasoning === "auto" || deps.reasoning === "low");
+      const workspaceExecution = workspaceProgram && requestTools.length > 0
+        && actions.some(name => name === "workspace_run" || name === "workspace_write");
+      const automaticShort = !workspaceExecution && (!effectiveStage || effectiveStage === "simple")
+        && (!deps.reasoning || deps.reasoning === "auto" || deps.reasoning === "low");
       const requestToolTokens = toolsTokens(requestTools);
       const hasEstimate = typeof deps.transport.estimateInputTokens === "function";
       let estimatedInput = deps.transport.estimateInputTokens?.({ messages: requestMessages, tools: requestTools }) ?? messagesTokens(requestMessages) + requestToolTokens;
@@ -448,10 +510,10 @@ async function runAgentLoopInternal(opts: {
       if (!synthesizing) messages = requestMessages;
       if (hasEstimate && estimatedInput >= deps.budget.tokens - usage.tokens) return inputBudgetStop(estimatedInput, i);
       const outputLimit = Math.min(reserve, deps.budget.tokens - usage.tokens - (hasEstimate ? estimatedInput : 0), synthesizing ? groundedMode ? 2048 : offlineVision ? 512 : 1024 : automaticShort ? 2048 : Infinity);
-      await emit("llm.request", { round: i, stage: synthesizing ? "summary" : deps.stage, summaryRepair: summaryRepairs > 0 });
+      await emit("llm.request", { round: i, stage: synthesizing ? "summary" : effectiveStage, summaryRepair: summaryRepairs > 0 });
       await hooks.onPromptUsage?.({ inputTokens: messagesTokens(requestMessages) + (synthesizing ? 0 : tTools), contextLimit: deps.contextLimit ?? null, outputReserve: outputLimit, source: "estimated" });
       let heldDelta = "", plainDelta = false;
-      let res = await deps.transport.chat({ messages: requestMessages, tools: requestTools, signal: deps.signal, reasoning: deps.reasoning, stage: synthesizing ? "summary" : deps.stage, temperature: synthesizing ? 0 : undefined, deadlineAt: start + deps.budget.wallMs - priorWallMs, maxOutputTokens: outputLimit, onDelta: (text) => {
+      let res = await deps.transport.chat({ messages: requestMessages, tools: requestTools, signal: deps.signal, reasoning: deps.reasoning, stage: synthesizing ? "summary" : effectiveStage, temperature: synthesizing ? 0 : undefined, deadlineAt: start + deps.budget.wallMs - priorWallMs, maxOutputTokens: outputLimit, onDelta: (text) => {
         if (pendingReply) { heldDelta += text; return; }
         if (briefInformation || briefVision || strictWebEvidence) { heldDelta += text; return; }
         if (plainDelta) { void emit("llm.delta", { text, round: i }).catch(() => {}); return; }
@@ -473,7 +535,7 @@ async function runAgentLoopInternal(opts: {
         await checkpoint();
         return { reply: TOOL_PROTOCOL_ERROR, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: 'invalid_output', error: 'tool_protocol_error' };
       }
-      await emit("llm.response", { round: i, toolCalls: res.toolCalls.length, telemetry, truncated: res.truncated, streamInterrupted: res.streamInterrupted });
+      await emit("llm.response", { round: i, model: res.model, toolCalls: res.toolCalls.length, telemetry, truncated: res.truncated, streamInterrupted: res.streamInterrupted });
       let recoveredPrefix = "";
       if (pendingReply) {
         recoveredPrefix = pendingReply;
@@ -635,9 +697,13 @@ async function runAgentLoopInternal(opts: {
     const reason = errorMessage(err);
     const done = actions.length ? `本轮已完成 ${actions.length} 步操作：${actions.join("；")}。` : "";
     if (isTransportError(err)) {
-      telemetry = (err as import("./errors.ts").LlmTransportError).telemetry;
-      await emit("llm.response", { error: reason, telemetry });
-      const category = (err as import("./errors.ts").LlmTransportError).reason ?? "network";
+      const transportError = err as import("./errors.ts").LlmTransportError;
+      telemetry = transportError.telemetry;
+      const category = transportError.reason ?? "network";
+      await emit("llm.response", {
+        error: reason, errorCategory: category, telemetry,
+        ...(transportError.status !== undefined ? { httpStatus: transportError.status } : {}),
+      });
       if (category === "network") return { reply: `${done}模型连接失败（${reason}）。`, actions, usage, model: "unreachable", mock: true, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, telemetry };
       return { reply: `${done}${reason}。`, actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, telemetry, error: `llm_${category}`, stopReason: category === "cancelled" ? "cancelled" : "error" };
     }

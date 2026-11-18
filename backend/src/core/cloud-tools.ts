@@ -9,17 +9,38 @@ import { sanitizeProposedStatus, type VerificationStatus } from "./verification.
 import type { ArtifactStore } from "./storage-contracts.ts";
 import { DocumentService, saveFetchedSource } from "./document-service.ts";
 import type { DocumentBlock } from "../../../shared/document.ts";
-import { searchWeb } from "./web-search.ts";
+import { searchOpenScholarlyWeb, searchScholarlyWeb, searchWeb } from "./web-search.ts";
 import type { CampusRecords, InboxInput } from "./campus-records.ts";
 import { BUSINESS_TOOLS, BUSINESS_TOOL_NAMES, type BusinessStore, type BusinessToolName } from './business-tools.ts';
 import { TOOL_SPECS } from "./tool-registry.ts";
+
+const blockText = { type: "string" };
+const blockStrings = { type: "array", items: blockText };
+const blockCitations = { sourceIds: blockStrings, claimType: { type: "string", enum: ["proposal", "fact", "estimate", "unverified"] } };
+const blockFields = {
+  heading: { level: { type: "integer", enum: [1, 2, 3] }, text: blockText },
+  paragraph: { text: blockText, ...blockCitations },
+  list: { items: blockStrings, ordered: { type: "boolean" }, ...blockCitations },
+  table: { headers: blockStrings, rows: { type: "array", items: blockStrings }, ...blockCitations },
+  image: { src: blockText, alt: blockText, caption: blockText },
+  chart: { title: blockText, labels: blockStrings, values: { type: "array", items: { type: "number" } } },
+  reference: { sourceId: blockText },
+};
+const blockSchema = {
+  type: "object",
+  required: ["type"],
+  properties: {
+    ...Object.assign({}, ...Object.values(blockFields)),
+    type: { type: "string", enum: Object.keys(blockFields), description: "Identifies the structure of this block." },
+  },
+};
 
 export const CLOUD_TOOLS: ToolDef[] = [
   ...BUSINESS_TOOLS.filter(tool => tool.function.name !== "save_to_inbox"),
   { type: "function", function: { name: "list_inbox", description: "只读列出本人信息中心的已有通知（含itemId和截止）。用户要改刚才/已有通知时先从历史实际结果或本工具取得itemId；不得猜ID或用新建代替更新。", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "update_inbox", description: "按已有itemId更新本人待确认通知的截止日期/时间；保留原id、原文、标题，不会新建。用于更正刚才那条的截止，日期变动也必须更新而不是save_to_inbox。itemId须来自真实保存/列表结果；已确认记录由用户人工修改。", parameters: { type: "object", properties: { itemId: { type: "string" }, deadline: { type: "string", description: "最新截止YYYY-MM-DD或ISO时间" }, deadlineTime: { type: "string", description: "北京时间HH:mm；未知不填" } }, required: ["itemId", "deadline"] } } },
   { type: "function", function: { name: "save_to_inbox", description: "把用户明确要求保存的通知写入信息中心Inbox（与机会雷达不同）。先预览，用户明确要求保存后再调用。保留通知原文/更正依据、最新截止、地点和材料；未知链接/主办方不可补造。重复相同标题+截止+地点仅保留一条，待用户确认。", parameters: { type: "object", properties: { title: { type: "string" }, rawText: { type: "string" }, summary: { type: "string" }, category: { type: "string" }, deadline: { type: ["string", "null"], description: "截止日期YYYY-MM-DD；有时分优先用deadlineTime，未知不填" }, deadlineTime: { type: "string", description: "北京时间HH:mm，例如18:00；勿将本地18点误写为18:00Z；未知不填" }, location: { type: "string" }, sourceUrl: { type: "string" }, materials: { type: "array", items: { type: "string" } } }, required: ["title"] } } },
-  { type: "function", function: { name: "document_create", description: "创建通用文档并保存真实产物。blocks只接受heading(level,text)、paragraph(text,claimType,sourceIds)、list(items)、table(headers,rows)、image(data PNG/JPEG,alt)、chart(title,labels,values)、reference(sourceId)。外部事实须用web_fetch返回的sourceId，不可自填已核实来源。长文先分章节准备再创建；可用previousArtifactId追加同任务的新版本。", parameters: { type: "object", properties: { title: { type: "string" }, blocks: { type: "array", items: { type: "object" } }, sourceIds: { type: "array", items: { type: "string" } }, previousArtifactId: { type: "string" } }, required: ["title", "blocks"] } } },
+  { type: "function", function: { name: "document_create", description: "创建通用文档并保存真实产物。每块必须有顶层 type。示例 {\"type\":\"heading\",\"level\":2,\"text\":\"标题\"}，{\"type\":\"table\",\"headers\":[\"列名\"],\"rows\":[[\"内容\"]]}。paragraph 传 text，list 传 items，image 传 src（PNG/JPEG data URL）与 alt，chart 传 title、labels、values，reference 传 sourceId。外部事实须用web_fetch返回的sourceId，不可自填已核实来源。长文先分章节准备再创建；可用previousArtifactId追加同任务的新版本。", parameters: { type: "object", properties: { title: { type: "string" }, blocks: { type: "array", items: blockSchema }, sourceIds: { type: "array", items: { type: "string" } }, previousArtifactId: { type: "string" } }, required: ["title", "blocks"] } } },
   { type: "function", function: { name: "document_inspect", description: "读取本人文档的结构、版本、来源及可用导出格式。结构检查不代表内容事实/视觉均已验收。", parameters: { type: "object", properties: { artifactId: { type: "string" } }, required: ["artifactId"] } } },
   { type: "function", function: { name: "document_export", description: "把已保存文档真实导出为MD/DOCX/PDF，重开核对并缓存文件，返回字节哈希和授权下载路径。缺环境会明确报错；只有成功后才能声称可下载。", parameters: { type: "object", properties: { artifactId: { type: "string" }, format: { type: "string", enum: ["md", "docx", "pdf"] } }, required: ["artifactId", "format"] } } },
   { type: "function", function: { name: "read_artifact", description: "按artifactId分页读取本人任务生成的完整工具材料。offset从0开始，limit最多6000字符。", parameters: { type: "object", properties: { artifactId: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["artifactId"] } } },
@@ -27,8 +48,8 @@ export const CLOUD_TOOLS: ToolDef[] = [
     type: "function",
     function: {
       name: "web_search",
-      description: "网页搜索（Bing），返回标题+链接+摘要。query 用具体名称/实体（如\"蓝桥杯 2026 报名\"\"中国大学生计算机设计大赛\"）而非泛词，具体赛名/机构名命中率更高；泛词（如单独年份）易跑偏。拿到候选后用 web_fetch 打开官网确认链接与赛程，不直接采信搜索摘要。",
-      parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } }, required: ["query"] },
+      description: "返回可核对来源的检索线索。网页默认用 Bing，query 保留具体实体和主题词；查学术论文用 scholarly。需要公开正文入口时设置 openAccessOnly（OpenAlex），普通学术索引为 Crossref。学术索引是元数据线索，须用 web_fetch 读到正文后才引用。",
+      parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" }, scope: { type: "string", enum: ["web", "scholarly"] }, fromYear: { type: "integer", description: "scholarly 检索的最早出版年份" }, openAccessOnly: { type: "boolean", description: "scholarly 仅查开放获取来源入口" } }, required: ["query"] },
     },
   },
   {
@@ -139,11 +160,18 @@ export async function executeCloudTool(name: string, args: Record<string, unknow
     if (!artifact) return JSON.stringify({ error: "产物不存在或无权读取" });
     const inline = artifact.inline as { text?: string };
     const text = typeof inline?.text === "string" ? inline.text : JSON.stringify(artifact.inline);
-    const offset = Math.max(0, Math.floor(Number(args.offset) || 0)), limit = Math.min(6000, Math.max(1, Math.floor(Number(args.limit) || 4000)));
+    const sourceArchive = artifact.kind === "linked-source";
+    const offset = Math.max(0, Math.floor(Number(args.offset) || 0));
+    const limit = Math.min(sourceArchive ? 3500 : 6000, Math.max(1, Math.floor(Number(args.limit) || (sourceArchive ? 1500 : 4000))));
     return JSON.stringify({ artifactId: artifact.id, sha256: artifact.sha256, offset, text: text.slice(offset, offset + limit), nextOffset: offset + limit < text.length ? offset + limit : null, totalChars: text.length });
   }
   if (name === "web_search") {
-    return JSON.stringify(await searchWeb(String(args.query ?? ""), Math.min(Math.max(Number(args.limit ?? 6) || 6, 1), 10)));
+    const query = String(args.query ?? "");
+    const limit = Math.min(Math.max(Number(args.limit ?? 6) || 6, 1), 10);
+    if (args.scope !== "scholarly") return JSON.stringify(await searchWeb(query, limit));
+    const fromYear = typeof args.fromYear === "number" ? args.fromYear : undefined;
+    const search = args.openAccessOnly === true ? searchOpenScholarlyWeb : searchScholarlyWeb;
+    return JSON.stringify(await search(query, limit, fromYear));
   }
   if (name === "web_fetch") {
     try {

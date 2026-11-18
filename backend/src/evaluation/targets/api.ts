@@ -18,13 +18,18 @@ import { errorMessage, LlmTransportError } from "../../core/errors.ts";
 import type { LlmTransport } from "../../core/llm.ts";
 import type { Task, TaskStatus } from "../../core/types.ts";
 import { businessSnapshot, caseSystemPrompt, seedCaseContext, safeCaseId, userIdForCase } from "./shared.ts";
-import { createTraceCollector, isToolResultOk, previewToolResult } from "../trace.ts";
+import { createTraceCollector, isToolResultOk, observedTokenTotal, previewToolResult } from "../trace.ts";
 import { mergeTurnObservations } from "./turns.ts";
 import type {
   EvalCase, EvalObservation, EvalRunCaseOptions, EvalTarget, EvalTurnObservation, ScriptStep,
   TargetDescription, TargetOptions, TraceToolCall,
 } from "../types.ts";
 import { ScriptedTransport } from "./scripted.ts";
+import { linkedSourceTools, type StoredSourceArtifact } from "../../runtime/linked-sources.ts";
+import { executeWorkspaceTool, registerWorkspaceTools } from "../../runtime/workspace-tools.ts";
+import { createSourceFixture } from "./source-fixture.ts";
+import type { SourceReference } from "./source-binding.ts";
+import { scheduleKey } from "../../../../shared/calendar.ts";
 
 type ApiMode = "script" | "live";
 
@@ -64,16 +69,27 @@ export class ApiTarget implements EvalTarget {
   private readonly scripts = new Map<string, ScriptStep[]>();
   private readonly toolRecords = new Map<string, TraceToolCall[]>();
   private readonly workerErrors: string[] = [];
+  private readonly sourceFixtures = new Map<string, Awaited<ReturnType<typeof createSourceFixture>>>();
+  private sourceTools: ReturnType<typeof linkedSourceTools> = [];
+  private readonly includeLinkedSources: boolean;
+  private readonly sourceBindings: ReadonlyMap<string, SourceReference>;
+  private readonly activeSourceReferences = new Map<string, SourceReference>();
 
-  constructor(mode: ApiMode) {
+  constructor(mode: ApiMode, includeLinkedSources = false, sourceBindings: ReadonlyMap<string, SourceReference> = new Map()) {
     this.mode = mode;
     this.kind = mode === "live" ? "live" : "api-memory";
+    this.includeLinkedSources = includeLinkedSources;
+    this.sourceBindings = sourceBindings;
   }
 
   async setup(options: TargetOptions): Promise<void> {
     this.options = options;
     this.envSnapshot = options.env ?? (this.mode === "live" ? liveEnv() : { NODE_ENV: "test" });
     this.ctx = buildContext(this.envSnapshot);
+    if (this.includeLinkedSources) {
+      this.sourceTools = linkedSourceTools(this.ctx, owner => this.activeSourceReferences.get(owner)?.grants ?? []);
+      registerWorkspaceTools(this.ctx.capabilityRegistry, this.sourceTools);
+    }
     this.abort = new AbortController();
     this.server = createApiServer({
       store: this.ctx.store, jwtSecret: JWT_SECRET, storeKind: "memory",
@@ -90,7 +106,7 @@ export class ApiTarget implements EvalTarget {
     for (let i = 0; i < workerCount; i++) {
       const worker = new Worker({
         store: this.ctx.store,
-        tools: CLOUD_TOOLS,
+        tools: [...CLOUD_TOOLS, ...this.sourceTools.map(item => item.definition)],
         resolveTransport: (task) => this.transportFor(task),
         buildSystem: (task) => { const c = this.resolveCase(task); return c ? caseSystemPrompt(c) : CAMPUS_SYSTEM; },
         executeTool: (task, name, args) => this.executeTool(task, name, args),
@@ -132,8 +148,11 @@ export class ApiTarget implements EvalTarget {
     const startedAt = Date.now();
     let out: string;
     try {
+      const sourceTool = this.sourceTools.find(item => item.definition.function.name === name);
       const stub = c?.toolStubs?.[name];
-      if (stub) {
+      if (sourceTool) {
+        out = await executeWorkspaceTool(sourceTool, args, task);
+      } else if (stub) {
         if (stub.delayMs) await sleep(stub.delayMs);
         out = stub.error ? JSON.stringify({ error: stub.error }) : JSON.stringify(stub.ok ?? {});
       } else if (this.options?.offlineTools && EXTERNAL_TOOLS.has(name)) {
@@ -160,8 +179,22 @@ export class ApiTarget implements EvalTarget {
 
   async run(c: EvalCase, runOptions: EvalRunCaseOptions): Promise<EvalObservation> {
     if (!this.ctx) throw new Error("ApiTarget 未 setup");
-    if (c.turns?.length) return this.runMultiTurn(c, runOptions);
-    return this.runSingle(c, runOptions);
+    const owner = userIdForCase(c.id);
+    const fixture = c.context?.sourceFixture && this.includeLinkedSources ? await createSourceFixture(c.context.sourceFixture, c.id) : undefined;
+    if (fixture) this.sourceFixtures.set(owner, fixture);
+    const binding = this.sourceBindings.get(c.id);
+    const sourceReference = fixture ?? binding;
+    if (sourceReference) this.activeSourceReferences.set(owner, sourceReference);
+    try {
+      const selected = binding?.term ? { ...c, context: { ...c.context, term: binding.term } } : c;
+      return await (selected.turns?.length ? this.runMultiTurn(selected, runOptions) : this.runSingle(selected, runOptions));
+    } finally {
+      this.activeSourceReferences.delete(owner);
+      if (fixture) {
+        this.sourceFixtures.delete(owner);
+        await fixture.close();
+      }
+    }
   }
 
   private async runSingle(c: EvalCase, runOptions: EvalRunCaseOptions): Promise<EvalObservation> {
@@ -233,7 +266,7 @@ export class ApiTarget implements EvalTarget {
         break;
       }
       if (["paused", "needs_input"].includes(turns.at(-1)?.status ?? "") && (c.turns![i + 1]?.sessionKey ?? "default") === sessionKey) break;
-      if (runOptions.signal?.aborted) break;
+      if (runOptions.signal?.aborted || Date.now() >= deadline) break;
     }
     const finishedAt = now ? now() : Date.now();
     const messageCount = await this.sessionMessageCount(sessionId, token);
@@ -289,6 +322,35 @@ export class ApiTarget implements EvalTarget {
     const eventsResponse = await this.http("GET", `/v1/tasks/${taskId}/events`, input.token);
     const events = Array.isArray(eventsResponse.body.events) ? eventsResponse.body.events as Array<{ seq: number; type: string; payload: Record<string, unknown>; createdAt: number }> : [];
     const business = await businessSnapshot(ctx, input.userId, taskId);
+    const reference = this.activeSourceReferences.get(input.userId);
+    if (reference) {
+      const artifacts = await ctx.artifactStore.listByTask(input.userId, taskId);
+      business.linkedSources = [];
+      for (const item of artifacts.filter(item => item.kind === "linked-source")) {
+        const source = item.inline as StoredSourceArtifact;
+        const actual = createHash("sha256").update(source.text).digest("hex");
+        let downloaded = false;
+        try {
+          const response = await fetch(`${this.baseUrl}/v1/artifacts/${item.id}/download`, { headers: { Authorization: `Bearer ${input.token}` }, signal: AbortSignal.timeout(5000) });
+          const bytes = Buffer.from(await response.arrayBuffer());
+          downloaded = response.ok && createHash("sha256").update(bytes).digest("hex") === actual;
+        } catch { /* download remains unverified */ }
+        business.linkedSources.push({ dataset: source.dataset, records: source.records, pages: source.pages,
+          verified: source.complete && reference.hash === actual && source.contentSha256 === actual && source.sourceId === reference.sourceId &&
+            downloaded && source.pages >= reference.minPages && (reference.served === undefined || reference.served() >= reference.minPages) &&
+            (source.verifiedTotal === null || source.records === source.verifiedTotal) });
+      }
+      business.timetablePreviews = [];
+      for (const item of artifacts.filter(item => item.kind === "linked-timetable-preview")) {
+        const metadata = item.inline as { jobId: string; sourceArtifactId: string };
+        const source = await ctx.artifactStore.get(input.userId, metadata.sourceArtifactId);
+        const job = await ctx.personalContext.getImportJob(input.userId, metadata.jobId);
+        const keys = job?.preview?.schedules.map(scheduleKey).sort() ?? [];
+        business.timetablePreviews.push({ rows: keys.length, errorCount: job?.errorCount ?? 1,
+          verified: Boolean(job?.status === "previewed" && (source?.inline as StoredSourceArtifact | undefined)?.contentSha256 === reference.hash &&
+            createHash("sha256").update(JSON.stringify(keys)).digest("hex") === reference.scheduleDigest) });
+      }
+    }
     // Verify the actual authenticated download route; persist the received
     // bytes so live deliverables remain inspectable after the memory DB ends.
     for (const artifact of business.artifacts.filter(item => item.kind === "document-export" && item.sourceArtifactId && item.format)) {
@@ -310,6 +372,7 @@ export class ApiTarget implements EvalTarget {
     for (const event of events) collector.addEvent(event.type, event.payload ?? {}, event.createdAt);
     const requests = events.filter((e) => e.type === "llm.request");
     const responses = events.filter((e) => e.type === "llm.response");
+    for (const response of responses) if (typeof response.payload.model === "string") collector.addModel(response.payload.model);
     for (let i = 0; i < requests.length; i++) {
       const response = responses[i];
       collector.addLlmRound({
@@ -335,10 +398,12 @@ export class ApiTarget implements EvalTarget {
       ...(traceError ? { error: traceError } : {}),
     });
     if (input.sessionId) trace.session = { id: input.sessionId };
+    const usage = { ...task.usage, tokens: Math.max(task.usage.tokens, observedTokenTotal(responses.map(response => response.payload.telemetry))),
+      toolCalls: Math.max(task.usage.toolCalls, trace.tools.length) };
     const observation: EvalTurnObservation = {
       turn: input.turn, prompt: input.prompt, taskId, status, reply: reply || "",
       toolCalls: trace.tools, trace, business,
-      usage: task.usage, durationMs: finishedAt - startedAt, mock: false,
+      usage, durationMs: finishedAt - startedAt, mock: false,
       ...(traceError ? { error: traceError } : {}),
     };
     if (this.options?.artifactsDir) {
@@ -391,6 +456,9 @@ export class ApiTarget implements EvalTarget {
     this.cases.clear();
     this.scripts.clear();
     this.toolRecords.clear();
+    await Promise.all([...this.sourceFixtures.values()].map(fixture => fixture.close()));
+    this.sourceFixtures.clear();
+    this.activeSourceReferences.clear();
   }
 
   describe(): TargetDescription {
@@ -416,6 +484,7 @@ export class ApiTarget implements EvalTarget {
         ...(entry.length ? [`入口对齐：${entry.join("，")}`] : []),
         "每用例独立 owner id，数据互不污染；同一进程内串行/并发由多个 Worker 提供",
         "不覆盖浏览器 UI 交互；UI/视觉验收仍属独立 E2E 范围",
+        ...(this.includeLinkedSources ? ["授权源用例通过真实 HTTP 读取隔离的测试服务。私有平台用例需要单独核验账户连接与覆盖。"] : []),
         ...(this.workerErrors.length ? [`Worker 运行期错误：${this.workerErrors.slice(0, 2).join("；")}`] : []),
       ],
     };

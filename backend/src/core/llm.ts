@@ -87,8 +87,9 @@ export class DeepSeekTransport implements LlmTransport {
       return thinking && message.role === 'assistant' ? { ...plain, reasoning_content: reasoning_source === reasoningSource && typeof reasoning_content === 'string' ? reasoning_content : '' } : plain;
     });
     const protocol = '工具协议：需要工具时仅输出一个严格JSON {"tool":"名称","args":{...}}，等待真实观测再继续；不要额外闭括号或裸控制标记。仅可使用以下工具及参数；普通文本不是工具结果：\n' + JSON.stringify(tools);
+    const [stableSystem, ...dynamicSystem] = wireHistory.filter(m => m.role === "system").map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content));
     const messages = jsonTools || caps.singleSystem === true ? [
-      { role: "system" as const, content: wireHistory.filter(m => m.role === "system").map(m => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).concat(jsonTools ? [protocol] : []).join("\n\n") },
+      { role: "system" as const, content: [stableSystem, ...(jsonTools ? [protocol] : []), ...dynamicSystem].filter((part) => part !== undefined).join("\n\n") },
       ...wireHistory.filter(m => m.role !== "system"),
     ] : wireHistory;
     const body = {

@@ -156,6 +156,8 @@ export function checkLabel(check: EvalCheck): string {
     case "max_duration_ms": return `耗时 ≤${check.n}ms`;
     case "web_source_cited": return `引用网页来源 ≥${check.min ?? 1} 个`;
     case "artifact_export": return `实际下载与复读 ${check.format} 文档`;
+    case "source_complete": return "读取可独立核对的授权来源";
+    case "timetable_preview": return "生成完整课表预览";
     default: {
       const unknown = check as { kind?: string };
       return `未知检查 ${String(unknown.kind)}`;
@@ -386,6 +388,18 @@ function evaluateCheck(check: EvalCheck, obs: EvalObservation): CheckOutcome {
       const candidates = obs.business.artifacts.filter(item => item.kind === "document-export" && item.format === check.format);
       const valid = candidates.find(item => item.inspectionPassed === true && item.downloadVerified === true && (item.bytes ?? 0) >= (check.minBytes ?? 1) && (item.headings ?? 0) >= (check.minHeadings ?? 0) && (item.bodyChars ?? 0) >= (check.minBodyChars ?? 0) && (check.contains ?? []).every(text => (item.text ?? "").includes(text)));
       return { passed: Boolean(valid), detail: valid ? `实际下载${valid.bytes}字节，哈希及复读匹配，${valid.headings}个标题；${valid.evidencePath ?? valid.id}` : `未取得满足条件的${check.format}文件：候选${candidates.length}个；要求真实下载、复读匹配、≥${check.minBytes ?? 1}字节、≥${check.minHeadings ?? 0}标题，内容${JSON.stringify(check.contains ?? [])}` };
+    }
+    case "source_complete": {
+      const candidates = (obs.business.linkedSources ?? []).filter(item => item.dataset === check.dataset);
+      const found = candidates.find(item => item.verified && item.records >= (check.minRecords ?? 0));
+      return { passed: Boolean(found), detail: found ? `源内容一致，覆盖 ${found.pages} 页、${found.records} 条` :
+        `未检到达到阈值且通过独立校验的来源。已保存 ${candidates.length} 个来源产物` };
+    }
+    case "timetable_preview": {
+      const rows = obs.business.timetablePreviews ?? [];
+      const found = rows.find(item => item.verified && item.errorCount === 0 && item.rows >= check.minRows);
+      return { passed: Boolean(found), detail: found ? `实际回读课表预览 ${found.rows} 条，与参照逐条匹配` :
+        `未取得满足完整性、字段和周次要求的预览。已保存 ${rows.length} 个预览` };
     }
     case "web_source_cited": {
       const replyUrls = uniqueUrls([obs.reply ?? ""]);

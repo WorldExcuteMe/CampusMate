@@ -26,6 +26,7 @@ export interface EvalUserContext {
   schedules?: Array<Omit<CourseSchedule, "id" | "userId" | "termId">>;
   // 固定时钟（ISO）。缺省用真实当前时间。用于时间敏感场景的确定性复核。
   now?: string;
+  sourceFixture?: "group-cursor" | "semester-csv" | "semester-ics";
 }
 
 // 脚本化模型单步：content 与 toolCalls 至少一个。toolCalls 为声明式简写，由 target 转成原生 ToolCall。
@@ -150,6 +151,8 @@ export type EvalCheck =
   | (CheckBase & { kind: "max_tokens"; n: number })
   | (CheckBase & { kind: "max_duration_ms"; n: number })
   | (CheckBase & { kind: "web_source_cited"; min?: number })
+  | (CheckBase & { kind: "source_complete"; dataset: "messages" | "timetable"; minRecords?: number })
+  | (CheckBase & { kind: "timetable_preview"; minRows: number })
   | (CheckBase & { kind: "artifact_export"; format: "md" | "docx" | "pdf"; minBytes?: number; contains?: string[]; minHeadings?: number; minBodyChars?: number });
 
 export type EvalCheckKind = EvalCheck["kind"];
@@ -207,6 +210,8 @@ export interface BusinessSnapshot {
   pendingApprovals: number;
   artifacts: Array<{ id: string; kind: string; title?: string; format?: string; bytes?: number; inspectionPassed?: boolean; downloadVerified?: boolean; sourceArtifactId?: string; text?: string; headings?: number; bodyChars?: number; evidencePath?: string }>;
   evidenceVerified: number;
+  linkedSources?: { dataset: "messages" | "timetable" | "reference"; records: number; pages: number; verified: boolean }[];
+  timetablePreviews?: { rows: number; errorCount: number; verified: boolean }[];
 }
 
 // 单轮的可观测结果（多轮聚合时保留）。

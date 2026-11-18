@@ -1,7 +1,7 @@
 // 课表导入：ICS/CSV/XLSX 解析 → 标准化 CourseSchedule → 校验（时间/周次/单双周/重复）→ 预览 → 确认 → 保存。
 // 调课/补课/停课/教室变更独立 ScheduleException，不覆盖正常规则。错误提示 + 部分恢复。
 import * as XLSX from "xlsx";
-import type { CourseSchedule, WeekPattern, ScheduleException } from "./personal-context.ts";
+import type { AcademicTerm, CourseSchedule, WeekPattern, ScheduleException, PersonalContextStore } from "./personal-context.ts";
 import { addDays, localInstant, localParts, monday, occursInWeek, scheduleKey, teachingWeek, validDate, validTime, weekday as dayNumber } from "../../../shared/calendar.ts";
 
 export type RawSchedule = Omit<CourseSchedule, "id" | "userId" | "termId" | "courseId">;
@@ -146,6 +146,25 @@ export function detectConflicts(schedules: RawSchedule[]): { a: RawSchedule; b: 
 }
 
 export interface ImportPreview { schedules: RawSchedule[]; errors: string[]; duplicates: number; conflicts: { a: RawSchedule; b: RawSchedule }[]; }
+
+export async function createSchedulePreview(
+  store: PersonalContextStore, owner: string, term: AcademicTerm,
+  input: { format: "csv" | "ics" | "xlsx"; data: string | Buffer; sourceName: string },
+) {
+  const preview = previewImport(input.format, input.data, term.startDate, term.totalWeeks, term.timezone);
+  const existing = await store.listSchedules(owner, term.id);
+  const existingKeys = new Set(existing.map(scheduleKey));
+  const fresh = preview.schedules.filter((row) => !existingKeys.has(scheduleKey(row)));
+  preview.duplicates += preview.schedules.length - fresh.length;
+  preview.schedules = fresh;
+  const freshRows = new Set(fresh);
+  preview.conflicts = detectConflicts([...fresh, ...existing]).filter(({ a, b }) => freshRows.has(a) || freshRows.has(b));
+  const job = await store.createImportJob({
+    userId: owner, termId: term.id, format: input.format, status: "previewed", sourceName: input.sourceName.slice(0, 200),
+    previewCount: fresh.length, errorCount: preview.errors.length, version: 1, createdAt: Date.now(), preview,
+  });
+  return { confirmed: false, preview, jobId: job.id };
+}
 
 // 导入预览（解析 + 去重 + 冲突 + 错误，不保存）。
 export function previewImport(format: "ics" | "csv" | "xlsx", data: string | ArrayBuffer | Uint8Array, termStart: string, totalWeeks: number, timezone = "Asia/Shanghai"): ImportPreview {

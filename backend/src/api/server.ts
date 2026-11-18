@@ -11,8 +11,8 @@ import type { CapabilityRegistry } from "../core/capability.ts";
 import type { CompanionRegistry } from "../core/companion.ts";
 import type { PersonalContextStore } from "../core/personal-context.ts";
 import type { OpportunityStore } from "../core/opportunity-store.ts";
-import { previewImport, detectConflicts } from "../core/schedule-import.ts";
-import { validDate, validTime, validateTerm, validateScheme, scheduleKey, weekday, teachingWeek, occursInWeek } from "../../../shared/calendar.ts";
+import { createSchedulePreview } from "../core/schedule-import.ts";
+import { validDate, validTime, validateTerm, validateScheme, weekday, teachingWeek, occursInWeek } from "../../../shared/calendar.ts";
 import { onboarding, intelligentInbox, opportunityDiscovery, weeklyPlanning } from "../core/workflows.ts";
 import { buildManifest } from "../core/manifest.ts";
 import { DEFAULT_BUDGET } from "../core/types.ts";
@@ -28,6 +28,13 @@ import { ProviderService, ProviderError } from "../core/providers.ts";
 import { parseBudget } from "../core/budget.ts";
 import { DocumentService } from "../core/document-service.ts";
 import { DocumentRenderUnavailable, type DocumentFormat } from "../core/document-renderer.ts";
+import { sha256 } from "../runtime/idempotency.ts";
+
+export type WorkspacePermission = "ask" | "full";
+export interface LocalWorkspaceApi {
+  info(): { owner: string; name: string; permission: WorkspacePermission };
+  setPermission(permission: WorkspacePermission): Promise<void>;
+}
 
 export interface ApiDeps {
   store: TaskStore;
@@ -45,6 +52,7 @@ export interface ApiDeps {
   providers?: ProviderService;
   artifactStore?: ArtifactStore;
   documents?: DocumentService;
+  localWorkspace?: LocalWorkspaceApi;
 }
 
 
@@ -99,9 +107,19 @@ export function createApiServer(deps: ApiDeps): http.Server {
 
       // 以下端点需 JWT（SSE EventSource 无法设 header，支持 ?token= query）。
       const token = bearerToken(req.headers.authorization) ?? (req.method === "GET" && /^\/v1\/tasks\/[^/]+\/stream$/.test(path) ? url.searchParams.get("token") ?? "" : "");
-      const claims = verifySupabaseJwt(token, jwtSecret);
+      const claims = verifySupabaseJwt(token, jwtSecret, undefined, deps.localWorkspace ? [] : undefined);
       if (!claims) return json(res, 401, { error: "unauthorized" });
       const uid = claims.sub;
+      if (deps.localWorkspace) {
+        if (uid !== deps.localWorkspace.info().owner) return json(res, 403, { error: "工作区不属于当前用户" });
+        if (path === "/v1/local-workspace" && req.method === "GET") return json(res, 200, { workspace: deps.localWorkspace.info() });
+        if (path === "/v1/local-workspace" && req.method === "POST") {
+          const body = await readObject(req, 2048);
+          if (body.permission !== "ask" && body.permission !== "full") return json(res, 400, { error: "工作区权限无效" });
+          await deps.localWorkspace.setPermission(body.permission);
+          return json(res, 200, { workspace: deps.localWorkspace.info() });
+        }
+      }
       if (path.startsWith('/v1/sessions') && req.headers['x-session-owner'] && req.headers['x-session-owner'] !== uid) return json(res, 403, { error: '会话身份已切换，请重新操作' });
 
       if (deps.providers) {
@@ -197,6 +215,18 @@ export function createApiServer(deps: ApiDeps): http.Server {
         const artifact = await deps.artifactStore.get(uid, artifactMatch[1]);
         if (!artifact) return json(res, 404, { error: "产物不存在" });
         if (!artifactMatch[2]) return json(res, 200, { artifact, availableFormats: artifact.kind === "document" ? documents!.formats(artifact.inline as DocumentAst) : [] });
+        if (artifact.kind === "linked-source") {
+          const source = artifact.inline as { text?: unknown; format?: unknown; contentSha256?: unknown } | undefined;
+          const format = source?.format === "json-cursor" ? "jsonl" : source?.format;
+          if (typeof source?.text !== "string" || (format !== "jsonl" && format !== "csv" && format !== "ics" && format !== "html")) {
+            return json(res, 422, { error: "源产物格式无效" });
+          }
+          const bytes = Buffer.from(source.text, "utf8");
+          if (sha256(source.text) !== source.contentSha256) return json(res, 422, { error: "源产物校验不一致" });
+          res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename="campusmate-source.${format}"`,
+            "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store", "X-File-Sha256": source.contentSha256 });
+          res.end(bytes); return;
+        }
         if (artifact.kind !== "document" || documentErrors(artifact.inline).length) return json(res, 422, { error: "文档格式无效，无法导出" });
         const format = (url.searchParams.get("format") ?? "md") as DocumentFormat;
         if (!["md", "docx", "pdf"].includes(format)) return json(res, 400, { error: "支持MD、DOCX或PDF" });
@@ -298,6 +328,13 @@ export function createApiServer(deps: ApiDeps): http.Server {
           try { validateScheme(input); } catch (e) { return json(res, 400, { error: errorMessage(e) }); }
           return json(res, 201, { scheme: await pc.saveTimeScheme(input) });
         }
+        const importPreview = path.match(/^\/v1\/schedules\/import\/([^/]+)$/);
+        if (deps.localWorkspace && req.method === "GET" && importPreview) {
+          requireUuid(importPreview[1]);
+          const job = await pc.getImportJob(uid, importPreview[1]);
+          if (!job?.preview) return json(res, 404, { error: "导入预览不存在" });
+          return json(res, 200, { confirmed: job.status === "confirmed", jobId: job.id, termId: job.termId, preview: job.preview, saved: job.savedScheduleIds?.length });
+        }
         if (req.method === "POST" && path === "/v1/schedules/import") {
           const b: any = await readObject(req, deps.maxBodyBytes ?? 8 * 1024 * 1024);
           if (b.confirm === true) {
@@ -313,14 +350,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
           if (!["csv", "ics", "xlsx"].includes(b.format) || typeof b.data !== "string" || b.data.length > 3000000) return json(res, 400, { error: "支持不超过2MB的CSV/ICS/XLSX文件" });
           if (b.format === "xlsx" && (b.encoding !== "base64" || !/^[A-Za-z0-9+/]*={0,2}$/.test(b.data))) return json(res, 400, { error: "XLSX须使用base64编码" });
           const data = b.format === "xlsx" ? Buffer.from(b.data, "base64") : b.data;
-          const preview = previewImport(b.format, data, term.startDate, term.totalWeeks, term.timezone);
-          const existing = await pc.listSchedules(uid, term.id);
-          const existingKeys = new Set(existing.map(scheduleKey));
-          const fresh = preview.schedules.filter((s) => !existingKeys.has(scheduleKey(s)));
-          preview.duplicates += preview.schedules.length - fresh.length; preview.schedules = fresh;
-          preview.conflicts = detectConflicts([...preview.schedules, ...existing]).filter((c) => preview.schedules.includes(c.a) || preview.schedules.includes(c.b));
-          const job = await pc.createImportJob({ userId: uid, termId: term.id, format: b.format, status: "previewed", sourceName: String(b.sourceName ?? "课表").slice(0, 200), previewCount: preview.schedules.length, errorCount: preview.errors.length, version: 1, createdAt: Date.now(), preview });
-          return json(res, 200, { confirmed: false, preview, jobId: job.id });
+          return json(res, 200, await createSchedulePreview(pc, uid, term, { format: b.format, data, sourceName: String(b.sourceName ?? "课表") }));
         }
       }
 

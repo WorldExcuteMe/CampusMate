@@ -54,7 +54,7 @@ export function buildManifest(opts: BuildManifestOpts): EnvironmentManifest {
     locale: opts.locale ?? "zh-CN",
     timezone: opts.timezone ?? "Asia/Shanghai",
     institution: opts.institution,
-    runtime: reg ? "local-companion" : "cloud",
+    runtime: caps.some((c) => c.available && c.runtime === "dev") ? "dev" : reg ? "local-companion" : "cloud",
     capabilities: caps,
     permissions: { approvalRequired, grantedScopes: reg ? Object.keys(reg.grantedScopes) : [] },
     quotas: opts.budget,

@@ -51,3 +51,74 @@ test("short contest name is retained when the first search drifts to enrollment 
   const result = JSON.parse(await executeCloudTool("web_search", { query: "2026 蓝桥杯 报名时间 官网" }));
   assert.deepEqual(queries, ["2026 蓝桥杯 报名时间 官网", '"蓝桥杯"']); assert.equal(result.results[0].title, "蓝桥杯官网");
 });
+
+test("compound English queries retain subject terms in the fallback and reject single-qualifier drift", async t => {
+  const queries: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+    queries.push(new URL(String(input)).searchParams.get("q")!);
+    const unrelated = '<h2><a href="https://example.org/access">Open access license guide</a></h2>';
+    const relevant = '<h2><a href="https://example.edu/transit">Transit deserts and bicycle infrastructure</a></h2>';
+    return new Response(queries.length === 1 ? unrelated : unrelated + relevant);
+  });
+  const result = JSON.parse(await executeCloudTool("web_search", { query: 'urban transit bicycle infrastructure "open access" filetype:pdf' }));
+  assert.equal(queries.length, 2);
+  assert.match(queries[1], /transit.*bicycle.*infrastructure/);
+  assert.deepEqual(result.results.map((hit: { url: string }) => hit.url), ["https://example.edu/transit"]);
+});
+
+test("scholarly search returns DOI metadata leads through the same authorized search tool", async t => {
+  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+    const url = new URL(String(input));
+    assert.equal(url.origin, "https://api.crossref.org");
+    assert.equal(url.searchParams.get("query.bibliographic"), "transit deserts");
+    assert.equal(url.searchParams.get("filter"), "from-pub-date:2021-01-01");
+    return Response.json({ message: { items: [
+      { DOI: "10.1234/a/b", title: ["Transit deserts"], published: { "date-parts": [[2024]] } },
+      { DOI: "", title: ["Record without an identifier"] },
+    ] } });
+  });
+  const result = JSON.parse(await executeCloudTool("web_search", { query: "transit deserts", scope: "scholarly", fromYear: 2021 }));
+  assert.equal(result.engine, "crossref");
+  assert.equal(result.results.length, 1);
+  assert.deepEqual(result.results[0], { title: "Transit deserts", url: "https://doi.org/10.1234/a/b", doi: "10.1234/a/b", year: 2024, snippet: "" });
+  assert.equal(result.evidence, "metadata");
+});
+
+test("open scholarly search returns readable-source candidates without promoting metadata to evidence", async t => {
+  let endpoint = "";
+  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+    const url = new URL(String(input));
+    endpoint = url.origin;
+    assert.equal(url.searchParams.get("search"), "urban transport");
+    assert.equal(url.searchParams.get("filter"), "is_oa:true,from_publication_date:2021-01-01");
+    return Response.json({ results: [
+      { display_name: "Urban transport", doi: "https://doi.org/10.1234/a", publication_year: 2024, best_oa_location: { landing_page_url: "https://journal.example/transport", is_oa: true } },
+      { display_name: "Duplicate copy", best_oa_location: { landing_page_url: "https://journal.example/transport", is_oa: true } },
+      { display_name: "Index entry only", best_oa_location: { landing_page_url: "https://doi.org/10.1234/b", is_oa: true } },
+      { display_name: "Credentialed link", best_oa_location: { landing_page_url: "https://user:pass@journal.example/missing", is_oa: true } },
+    ] });
+  });
+  const result = JSON.parse(await executeCloudTool("web_search", { query: "urban transport", scope: "scholarly", fromYear: 2021, openAccessOnly: true }));
+  assert.equal(endpoint, "https://api.openalex.org");
+  assert.equal(result.evidence, "metadata");
+  assert.deepEqual(result.results.map((hit: { url: string }) => hit.url), ["https://journal.example/transport"]);
+  assert.equal(result.results[0].sourceId, undefined);
+});
+
+test("open scholarly search exposes a distinct public repository entry for the same work", async t => {
+  t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+    assert.match(new URL(String(input)).searchParams.get("select") ?? "", /locations/);
+    return Response.json({ results: [{
+      display_name: "Public procurement",
+      best_oa_location: { landing_page_url: "https://publisher.example/article", is_oa: true },
+      locations: [
+        { landing_page_url: "https://publisher.example/article", is_oa: true },
+        { landing_page_url: "https://repo.example/manuscript", is_oa: true },
+        { landing_page_url: "https://repo.example/restricted", is_oa: false },
+      ],
+    }] });
+  });
+  const result = JSON.parse(await executeCloudTool("web_search", { query: "Public procurement", scope: "scholarly", openAccessOnly: true }));
+  assert.equal(result.results[0]?.alternativeUrl, "https://repo.example/manuscript");
+  assert.equal(result.results[0]?.sourceId, undefined);
+});

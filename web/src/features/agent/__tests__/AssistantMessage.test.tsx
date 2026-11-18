@@ -1,6 +1,9 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { AssistantMessage } from "../AssistantMessage";
+import { localWorkspaceIdentity } from "@/lib/agent/local-workspace";
+
+vi.mock("@/lib/agent/local-workspace", () => ({ localWorkspaceIdentity: vi.fn(() => null) }));
 
 afterEach(cleanup);
 
@@ -53,4 +56,19 @@ it("Chinese annotations after an automatic URL stay outside the actual destinati
   expect(container.querySelector("p")?.textContent).toBe("网址：www.caai-contest.cn（图片声称）。");
   expect(decodeURI(screen.getByRole("link", { name: "中文路径" }).getAttribute("href")!)).toBe("https://example.org/活动（报名）");
   expect(container.querySelector("code")).toHaveTextContent("www.code.example（保留代码）");
+});
+
+it("opens actual timetable receipts on the local calendar route and rejects other internal paths", () => {
+  const identity = vi.mocked(localWorkspaceIdentity);
+  identity.mockReturnValueOnce({ owner: "local", token: "fixture-token" });
+  const content = "[旧预览](/calendar?import=job-42) [预览](/app/calendar?import=job-42) [转发](/app/calendar?import=job-42&next=//other.test) [写入](/v1/schedules/import)";
+  const view = render(<AssistantMessage content={content} />);
+  expect(screen.getAllByRole("link")).toHaveLength(2);
+  for (const label of ["旧预览", "预览"]) {
+    expect(screen.getByRole("link", { name: label })).toHaveAttribute("href", "/app/calendar?import=job-42");
+    expect(screen.getByRole("link", { name: label })).not.toHaveAttribute("target");
+  }
+  view.unmount();
+  render(<AssistantMessage content={content} />);
+  expect(screen.queryByRole("link")).toBeNull();
 });

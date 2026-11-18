@@ -88,6 +88,14 @@ export function traceToolSequence(trace: Pick<EvalTrace, "tools">): string[] {
   return trace.tools.map((tool) => tool.approvalPending ? `${tool.name}(approval)` : tool.ok ? tool.name : `${tool.name}(error)`);
 }
 
+export function observedTokenTotal(telemetry: unknown[]): number {
+  return telemetry.reduce<number>((sum, item) => {
+    const usage = (item as { usage?: { inputTotal?: unknown; output?: unknown } } | undefined)?.usage;
+    const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+    return sum + count(usage?.inputTotal) + count(usage?.output);
+  }, 0);
+}
+
 export function previewToolResult(raw: string, max = 4000): string {
   const text = typeof raw === "string" ? raw : String(raw ?? "");
   return text.length > max ? text.slice(0, max) + `…(+${text.length - max} chars)` : text;

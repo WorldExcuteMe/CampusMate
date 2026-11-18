@@ -52,6 +52,7 @@ export interface TaskStore {
   getCheckpoint(id: string): Promise<Checkpoint | null>;
   latestCheckpoint(taskId: string): Promise<Checkpoint | null>;
   recordInvocation(inv: ToolInvocation): Promise<{ deduped: boolean; invocation: ToolInvocation }>;
+  finishInvocation?(inv: ToolInvocation): Promise<void>;
   getInvocation(taskId: string, idempotencyKey: string): Promise<ToolInvocation | null>;
 }
 
@@ -301,5 +302,12 @@ export class InMemoryStore implements TaskStore {
 
   async getInvocation(taskId: string, idempotencyKey: string): Promise<ToolInvocation | null> {
     return this.invocations.get(`${taskId}|${idempotencyKey}`) ?? null;
+  }
+
+  async finishInvocation(inv: ToolInvocation): Promise<void> {
+    const key = `${inv.taskId}|${inv.idempotencyKey}`;
+    const running = this.invocations.get(key);
+    if (running?.id !== inv.id || running.status !== "running") throw new Error("调用状态未确认");
+    this.invocations.set(key, inv);
   }
 }

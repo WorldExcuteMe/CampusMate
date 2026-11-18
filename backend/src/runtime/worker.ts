@@ -59,6 +59,7 @@ export interface WorkerDeps {
   tools: ToolDef[];
   buildSystem: (task: Task) => string;
   executeTool: (task: Task, name: string, args: Record<string, unknown>) => Promise<string>;
+  toolApproval?: (task: Task, name: string, args: Record<string, unknown>) => ReturnType<typeof requiresApproval> | undefined;
   evaluator?: (task: Task, result: AgentLoopResult) => Promise<CompletionCertificate>;
   approvals?: ApprovalStore;
   companion?: CompanionRegistry;
@@ -101,6 +102,7 @@ export class Worker {
   private personalContext?: PersonalContextStore;
   private artifacts?: ArtifactStore;
   private companionServer?: CompanionServer;
+  private toolApproval?: WorkerDeps["toolApproval"];
   private workerId: string;
   private concurrency: number;
   private leaseTtlMs: number;
@@ -125,6 +127,7 @@ export class Worker {
     this.personalContext = deps.personalContext;
     this.artifacts = deps.artifactStore;
     this.companionServer = deps.companionServer;
+    this.toolApproval = deps.toolApproval;
     this.evaluator = deps.evaluator ?? this.defaultEvaluate.bind(this);
     this.workerId = deps.workerId ?? `worker-${randomUUID().slice(0, 8)}`;
     this.concurrency = deps.concurrency ?? 2;
@@ -279,14 +282,29 @@ export class Worker {
         if (!hostCheck.ok) return JSON.stringify({ error: hostCheck.reason });
 
         // 高危工具审批门控（服务端强制，非仅 Prompt）。
-        const ap = requiresApproval(name, args);
-        if (ap.required && this.approvals) {
+        const ap = this.toolApproval?.(task, name, args) ?? requiresApproval(name, args);
+        if (ap.required) {
+          if (!this.approvals) return JSON.stringify({ error: "没有可用的审批服务", class: "permission" });
           const approval = await this.approvals.create({ taskId: task.id, userId: task.userId, toolName: name, args, idempotencyKey: key, risk: ap.risk });
           if (approval.status === "rejected") return JSON.stringify({ error: `审批被拒绝：${ap.risk}` });
           if (approval.status !== "approved") {
             await store.appendEvent({ taskId: task.id, userId: task.userId, type: "tool.approval_requested", payload: { approvalId: approval.id, tool: name, risk: ap.risk } });
             return JSON.stringify({ error: "等待人工审批", approvalId: approval.id, __approval_pending__: true });
           }
+        }
+
+        const spec = TOOL_SPECS[name];
+        const localTool = Boolean(this.toolApproval && spec?.runtime.length === 1 && spec.runtime[0] === "dev");
+        const invocation: ToolInvocation = {
+          id: invocationId(task.id, key), taskId: task.id, userId: task.userId, toolName: name,
+          idempotencyKey: key, argsHash: sha256(canonicalArgs(args)), runtime: localTool ? "dev" : this.companion?.resolve(task.userId) ? "local-companion" : "cloud",
+          status: "running", attempt: 1, startedAt: this.now(),
+        };
+        const journal = localTool && spec?.idempotent === false;
+        if (journal) {
+          if (!store.finishInvocation) return JSON.stringify({ error: "持久化调用日志不可用" });
+          const claim = await store.recordInvocation(invocation);
+          if (claim.deduped) return JSON.stringify({ error: "此本机操作已尝试，请核对结果后再提交", class: "tool_result_uncertain" });
         }
 
         // 本机工具经 CompanionServer RPC 分派（授权+审批通过后）；云工具走 executeTool。
@@ -308,12 +326,9 @@ export class Worker {
         }
         let parsed: unknown = out; const ok = !toolResultFailed(out);
         try { parsed = JSON.parse(out); } catch { /* non-json */ }
-        const inv: ToolInvocation = {
-          id: invocationId(task.id, key), taskId: task.id, userId: task.userId, toolName: name,
-          idempotencyKey: key, argsHash: sha256(canonicalArgs(args)), runtime: this.companion?.resolve(task.userId) ? "local-companion" : "cloud",
-          status: ok ? "succeeded" : "failed", result: parsed, attempt: 1, startedAt: this.now(), finishedAt: this.now(),
-        };
-        await store.recordInvocation(inv);
+        const inv: ToolInvocation = { ...invocation, status: ok ? "succeeded" : "failed", result: parsed, finishedAt: this.now() };
+        if (journal) await store.finishInvocation!(inv);
+        else await store.recordInvocation(inv);
         return out;
       };
 

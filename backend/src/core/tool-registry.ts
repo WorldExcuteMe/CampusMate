@@ -41,6 +41,12 @@ export const TOOL_SPECS: Record<string, ToolSpec> = {
   write_file: { name: "write_file", capability: "host.fs.write", runtime: ["local-companion", "dev"], permission: "host_fs", requiresApproval: true, idempotent: false, timeoutMs: 10000, sideEffects: "host" },
   sync_group_notices: { name: "sync_group_notices", capability: "ingest.qq", runtime: ["local-companion", "dev"], permission: "host_fs", requiresApproval: true, idempotent: true, timeoutMs: 180000, sideEffects: "host" },
   list_groups: { name: "list_groups", capability: "ingest.qq", runtime: ["local-companion", "dev"], permission: "host_fs", requiresApproval: true, idempotent: true, timeoutMs: 180000, sideEffects: "host" },
+  workspace_write: { name: "workspace_write", capability: "host.fs.write", runtime: ["dev"], permission: "host_fs", requiresApproval: true, idempotent: false, timeoutMs: 10000, sideEffects: "host" },
+  workspace_run: { name: "workspace_run", capability: "host.terminal", runtime: ["dev"], permission: "host_exec", requiresApproval: true, idempotent: false, timeoutMs: 50000, sideEffects: "host" },
+  workspace_schedule_preview: { name: "workspace_schedule_preview", capability: "host.schedule", runtime: ["dev"], permission: "write_user", requiresApproval: true, idempotent: false, timeoutMs: 10000, sideEffects: "db" },
+  workspace_timetable_export: { name: "workspace_timetable_export", capability: "host.schedule", runtime: ["dev"], permission: "host_fs", requiresApproval: true, idempotent: false, timeoutMs: 10000, sideEffects: "host" },
+  source_collect: { name: "source_collect", capability: "data.source", runtime: ["dev"], permission: "host_fs", requiresApproval: true, idempotent: false, timeoutMs: 30000, sideEffects: "network" },
+  source_timetable_preview: { name: "source_timetable_preview", capability: "data.source", runtime: ["dev"], permission: "write_user", requiresApproval: true, idempotent: false, timeoutMs: 10000, sideEffects: "db" },
 };
 
 // Manifest 门控：只保留 Manifest 可用能力支撑的工具。云端默认无本机工具。

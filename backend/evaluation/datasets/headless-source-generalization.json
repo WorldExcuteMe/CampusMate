@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "id": "headless-source-generalization",
+  "name": "程序化来源跨环境行为验收",
+  "description": "真实模型在隔离 HTTP 源上运行，实际读取有权限的分页消息和不同格式的课表。输入为合成原始数据，检查器独立读取存储。",
+  "cases": [
+    {
+      "id": "SOURCE-MSG-001",
+      "category": "source_pagination",
+      "difficulty": "hard",
+      "source": "fixed",
+      "tiers": [
+        "live"
+      ],
+      "prompt": "请把实验室协调群 2026 年 11 月 1 日到 17 日的记录完整归档。我需要可复查的原始消息和这批数据的覆盖说明，含重复不要多算。不用点客户端，也别发消息。",
+      "context": {
+        "sourceFixture": "group-cursor"
+      },
+      "checks": [
+        {
+          "kind": "status",
+          "in": [
+            "succeeded"
+          ]
+        },
+        {
+          "kind": "source_complete",
+          "dataset": "messages",
+          "minRecords": 480
+        },
+        {
+          "kind": "tool_not_called",
+          "name": "campus_browser"
+        }
+      ]
+    },
+    {
+      "id": "SOURCE-CSV-001",
+      "category": "source_calendar",
+      "difficulty": "hard",
+      "source": "fixed",
+      "tiers": [
+        "live"
+      ],
+      "prompt": "从我校教务系统的已授权资料把秋季课表完整导入到日历预览里。要覆盖整学期，时间地点和每条记录的周次都得保留，不需要现在正式保存。",
+      "context": {
+        "sourceFixture": "semester-csv",
+        "term": {
+          "name": "秋季学期",
+          "startDate": "2026-09-07",
+          "endDate": "2027-02-21",
+          "totalWeeks": 24
+        }
+      },
+      "checks": [
+        {
+          "kind": "status",
+          "in": [
+            "succeeded"
+          ]
+        },
+        {
+          "kind": "source_complete",
+          "dataset": "timetable"
+        },
+        {
+          "kind": "timetable_preview",
+          "minRows": 24
+        }
+      ]
+    },
+    {
+      "id": "SOURCE-ICS-001",
+      "category": "source_calendar",
+      "difficulty": "hard",
+      "source": "fixed",
+      "tiers": [
+        "live"
+      ],
+      "prompt": "我的课在学院课务门户。把这一学期的所有安排从已连接的门户取下来，做成 CampusMate 可以确认的课表预览。别漏掉后几周的专门实验，也不要直接覆盖日历。",
+      "context": {
+        "sourceFixture": "semester-ics",
+        "term": {
+          "name": "2026/27 秋",
+          "startDate": "2026-09-07",
+          "endDate": "2027-02-21",
+          "totalWeeks": 24
+        }
+      },
+      "checks": [
+        {
+          "kind": "status",
+          "in": [
+            "succeeded"
+          ]
+        },
+        {
+          "kind": "source_complete",
+          "dataset": "timetable"
+        },
+        {
+          "kind": "timetable_preview",
+          "minRows": 24
+        }
+      ]
+    }
+  ]
+}

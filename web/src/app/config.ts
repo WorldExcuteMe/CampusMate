@@ -2,6 +2,7 @@ import type { LlmProvider } from "@/lib/llm/types";
 import { configureAiAuth } from "@/lib/llm/transport";
 import { createSupabaseClient } from "@/lib/data/supabase";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { localWorkspaceIdentity } from "@/lib/agent/local-workspace";
 
 const env = import.meta.env as Record<string, string | undefined>;
 
@@ -12,7 +13,7 @@ export const appConfig = {
 
 export const isDemo = !appConfig.supabaseUrl || !appConfig.supabaseAnonKey;
 
-export const supabaseClient: SupabaseClient | null = isDemo
+export const supabaseClient: SupabaseClient | null = isDemo || localWorkspaceIdentity()
   ? null
   : createSupabaseClient(appConfig.supabaseUrl!, appConfig.supabaseAnonKey!);
 

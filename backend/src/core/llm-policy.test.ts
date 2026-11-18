@@ -3,6 +3,22 @@ import assert from "node:assert/strict";
 import { DeepSeekTransport } from "./llm.ts";
 
 const reply = (usage?: unknown, finish = "stop") => new Response(JSON.stringify({ model: "actual", choices: [{ message: { content: "完成" }, finish_reason: finish }], ...(usage ? { usage } : {}) }));
+test("JSON 工具协议和排序保持固定前缀，动态任务上下文位于其后", async () => {
+  const bodies: { messages: { content: string }[] }[] = [];
+  const transport = new DeepSeekTransport({
+    apiKey: "fixture", capabilities: { tools: "json" }, fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return reply();
+    },
+  });
+  const tools = ["tool_b", "tool_a"].map(name => ({ type: "function" as const, function: { name, description: name, parameters: {} } }));
+  for (const [dynamic, ordered] of [["任务状态甲", tools], ["任务状态乙", [...tools].reverse()]] as const) {
+    await transport.chat({ messages: [{ role: "system", content: "固定规则" }, { role: "system", content: dynamic }, { role: "user", content: "测试" }], tools: ordered });
+  }
+  const [first, second] = bodies.map(b => b.messages[0].content);
+  assert.equal(first.split("任务状态")[0], second.split("任务状态")[0]);
+  assert.match(first, /固定规则[\s\S]*tool_a[\s\S]*tool_b[\s\S]*任务状态甲/);
+});
 test("端点能力而非模型正则决定参数，high生效，缺失usage保留null", async () => {
   const bodies: Record<string, unknown>[] = [];
   const fetchImpl: typeof fetch = async (_url, init) => { bodies.push(JSON.parse(init!.body as string)); return reply(); };

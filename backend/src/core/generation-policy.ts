@@ -30,3 +30,11 @@ export function generationPolicy(caps: Record<string, unknown>, preference: stri
   const reason = effective === null ? "端点未确认可调参数，未发送思考控制" : family === "deepseek_thinking" ? "DeepSeek低/中/高对应low/high/max，阶段与输出预算约束保持" : stage === "extract" ? "图片声明提取采用轻量输出，后续核验保留用户思考偏好" : stage === "summary" ? "材料摘要阶段使用轻量输出；研究、规划和复杂写作保留用户思考偏好" : constrained ? "输出预算不足，限制思考档位" : toggle ? "接口仅支持思考开关" : requested === "auto" ? `按${stage}阶段选择` : "采用用户偏好";
   return { requested, effective, family, stage, reason, params };
 }
+
+export function researchDeliveryInstruction(intent: string): string | undefined {
+  const research = /检索|文献|研究|查找.{0,12}(?:来源|资料)|\b(?:research|literature|academic articles|scholarly)\b/i.test(intent);
+  const file = /\.(?:docx|pdf|md)\b|\b(?:word document|pdf file|markdown file)\b|(?:生成|导出|交付|保存).{0,12}(?:文档|报告|Word|PDF)/i.test(intent);
+  const readOnly = /(?:不要|不必|无需|勿)(?:联网|搜索|写入|保存|导出)|仅.{0,5}(?:预览|提纲|大纲)|\b(?:do not|don't) (?:browse|search|write|save|export)\b/i.test(intent);
+  if (!research || !file || readOnly) return;
+  return "【研究文档交付】按用户的证据和格式要求做小规模检索。查学术正文入口时可用 web_search 的 scholarly 范围和 openAccessOnly。每批检索有合适候选时，下一步查阅来源，避免在未读候选堆积时继续搜索。独立来源可同轮发起多个读取。落地页不可读时可尝试同一作品的 alternativeUrl，每个失败地址用一次。随后按证据缺项补查，为编写、核对和导出预留时间。只引用真实读到的证据，注明证据缺口。文档通过可用文档工具保存并导出。";
+}

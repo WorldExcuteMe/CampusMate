@@ -5,7 +5,8 @@ import type { Runtime } from "./types.ts";
 export type CapabilityId =
   | "llm.chat" | "web.fetch" | "web.search" | "rag.search"
   | "db.read" | "db.write_user" | "db.write_global"
-  | "ingest.qq" | "ingest.wechat" | "host.terminal" | "host.fs.read" | "host.fs.write";
+  | "ingest.qq" | "ingest.wechat" | "host.terminal" | "host.fs.read" | "host.fs.write"
+  | "host.browser" | "host.schedule" | "skills.builtin" | "data.source";
 
 export interface HealthStatus { available: boolean; latencyMs?: number; reason?: string; checkedAt: number; }
 

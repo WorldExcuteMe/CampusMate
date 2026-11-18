@@ -11,6 +11,7 @@ import { analyzeRun, renderAnalysis } from "../src/evaluation/analysis.ts";
 import { compareRuns, evaluateGate } from "../src/evaluation/experiment.ts";
 import { ScriptedTarget } from "../src/evaluation/targets/scripted.ts";
 import { ApiTarget } from "../src/evaluation/targets/api.ts";
+import { parseSourceBindings } from "../src/evaluation/targets/source-binding.ts";
 import { runLegacyBenchmark } from "../src/evaluation/legacy.ts";
 import { validateBlueprint, writeGeneratedSuite, type Blueprint } from "../src/evaluation/generator.ts";
 import { LlmJudge } from "../src/evaluation/judge.ts";
@@ -23,6 +24,7 @@ const USAGE = `CampusMate Headless Evaluation CLI
   node scripts/eval.ts run       [--suite <id|path>]... [--case <caseId>]... [--target scripted|api-memory|live|legacy]
                                  [--concurrency N] [--timeout-ms N] [--label text] [--seed N]
                                  [--reasoning auto|low|medium|high] [--provider <id>] [--session]
+                                 [--source-eval-config <file> --allow-private-model-data]
                                  [--holdout] [--offline] [--judge] [--runs dir] [--json] [--quiet] [--allow-failures]
   node scripts/eval.ts validate  [--suite <id|path>]...
   node scripts/eval.ts list      [--runs dir] [--json]
@@ -128,7 +130,21 @@ async function cmdRun(values: Record<string, unknown>): Promise<void> {
       timeoutMs: 90_000,
     }));
   }
-  const target: EvalTarget = targetName === "scripted" ? new ScriptedTarget() : new ApiTarget(targetName === "live" ? "live" : "script");
+  const linkedSourceChecks = suites.some(suite => suite.cases.some(c => c.context?.sourceFixture ||
+    c.checks.some(check => check.kind === "source_complete" || check.kind === "timetable_preview")));
+  let sourceBindings;
+  if (typeof values["source-eval-config"] === "string") {
+    if (targetName !== "live" || values.offline === true || values["allow-private-model-data"] !== true || !runsRoot(values))
+      return fail("真实私有来源需要 live 通道、显式 --allow-private-model-data 与指定的本地 --runs 证据目录");
+    try {
+      sourceBindings = parseSourceBindings(JSON.parse(fs.readFileSync(values["source-eval-config"], "utf8").replace(/^\uFEFF/, "")),
+        new Set(suites.flatMap(suite => suite.cases.filter(c => !c.context?.sourceFixture).map(c => c.id))));
+    } catch (error) {
+      return fail(error instanceof SyntaxError ? "无法解析真实来源配置" : error instanceof Error && "code" in error ? "无法读取真实来源配置" : String(error instanceof Error ? error.message : "真实来源配置无效"));
+    }
+  }
+  const target: EvalTarget = targetName === "scripted" ? new ScriptedTarget() :
+    new ApiTarget(targetName === "live" ? "live" : "script", linkedSourceChecks || Boolean(sourceBindings?.size), sourceBindings);
   const output = await runEvaluation({
     suites, target, concurrency, timeoutMs, offlineTools,
     ...(label ? { label } : {}),
@@ -318,6 +334,7 @@ async function main(): Promise<void> {
       "timeout-ms": { type: "string" }, label: { type: "string" }, seed: { type: "string" }, holdout: { type: "boolean" },
       reasoning: { type: "string" }, provider: { type: "string" }, session: { type: "boolean" },
       offline: { type: "boolean" }, judge: { type: "boolean" }, json: { type: "boolean" }, quiet: { type: "boolean" }, "allow-failures": { type: "boolean" },
+      "source-eval-config": { type: "string" }, "allow-private-model-data": { type: "boolean" },
       runs: { type: "string" }, run: { type: "string" }, baseline: { type: "string" }, candidate: { type: "string" },
       "holdout-run": { type: "string" }, threshold: { type: "string" }, sample: { type: "string" }, markdown: { type: "boolean" },
       blueprint: { type: "string" }, out: { type: "string" },

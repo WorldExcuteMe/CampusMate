@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Worker } from "./worker.ts";
+import { InMemoryApprovalStore } from "./approval.ts";
 import { InMemoryStore } from "./store.ts";
 import { InMemoryEvidenceStore } from "../core/evidence.ts";
 import { Evaluator } from "../core/evaluator.ts";
@@ -23,15 +24,25 @@ class VerifyTransport implements LlmTransport {
   }
 }
 
-function makeWorker(store: InMemoryStore, evidenceStore: InMemoryEvidenceStore, transport: LlmTransport, fetchBody: string) {
+async function runApprovedVerification(store: InMemoryStore, evidenceStore: InMemoryEvidenceStore, transport: LlmTransport, fetchBody: string, taskId: string) {
   const ev = new Evaluator({ evidenceStore, fetchImpl: async () => ({ status: 200, text: fetchBody }) });
-  return new Worker({
-    store, transport, tools, evidenceStore, acceptance: () => acceptance,
+  const approvals = new InMemoryApprovalStore();
+  const worker = new Worker({
+    store, transport, tools, approvals, evidenceStore, acceptance: () => acceptance,
     evaluator: async (task, result) => ev.evaluate(task.id, acceptance, { artifacts: [], evidence: await evidenceStore.listByTask(task.id), fields: {}, counts: {}, expiredCount: 0, citedSources: [], reply: result.reply }),
     buildSystem: () => "s",
     executeTool: async (task, name, args) => executeCloudTool(name, args, { taskId: task.id, userId: task.userId, evidenceStore }),
     workerId: "w1", heartbeatMs: 1e9,
   });
+  await worker.tick();
+  assert.equal((await store.getTask(taskId))?.status, "needs_input");
+  assert.equal((await evidenceStore.listByTask(taskId)).length, 0);
+  const pending = await approvals.listPendingByUser("u1");
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].taskId, taskId);
+  await approvals.decide(pending[0].id, "u1", "approved");
+  await store.updateTask(taskId, { status: "queued" });
+  await worker.tick();
 }
 
 test("声称 VERIFIED 但证据幻觉（重抓不符）→ Evaluator 拒绝 → failed", async () => {
@@ -39,12 +50,13 @@ test("声称 VERIFIED 但证据幻觉（重抓不符）→ Evaluator 拒绝 → 
   const evidenceStore = new InMemoryEvidenceStore();
   const t = await store.createTask({ userId: "u1", title: "核验机会" });
   const transport = new VerifyTransport([{ sourceUrl: "https://example.org/comp", excerpt: "报名截止2026年11月30日", supports: "deadline" }]);
-  const w = makeWorker(store, evidenceStore, transport, "完全无关的页面，没有截止日期");
-  await w.tick();
+  await runApprovedVerification(store, evidenceStore, transport, "完全无关的页面，没有截止日期", t.id);
   const done = await store.getTask(t.id);
   assert.equal(done?.status, "failed"); // 执行 Agent 声称成功，Evaluator 拒绝
   assert.equal(done?.result?.certificate?.passed, false);
-  assert.ok((await evidenceStore.listByTask(t.id)).every((e) => !e.verified));
+  const recorded = await evidenceStore.listByTask(t.id);
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].verified, false);
 });
 
 test("证据独立重抓一致 → Evaluator 通过 → succeeded", async () => {
@@ -52,8 +64,7 @@ test("证据独立重抓一致 → Evaluator 通过 → succeeded", async () => 
   const evidenceStore = new InMemoryEvidenceStore();
   const t = await store.createTask({ userId: "u1", title: "核验机会" });
   const transport = new VerifyTransport([{ sourceUrl: "https://example.org/comp", excerpt: "报名截止2026年11月30日", supports: "deadline" }]);
-  const w = makeWorker(store, evidenceStore, transport, "2026计算机竞赛：报名截止2026年11月30日。");
-  await w.tick();
+  await runApprovedVerification(store, evidenceStore, transport, "2026计算机竞赛：报名截止2026年11月30日。", t.id);
   const done = await store.getTask(t.id);
   assert.equal(done?.status, "succeeded");
   assert.equal(done?.result?.certificate?.passed, true);
@@ -65,8 +76,7 @@ test("无证据声称成功 → evidence_verified 拒绝 → failed", async () =
   const evidenceStore = new InMemoryEvidenceStore();
   const t = await store.createTask({ userId: "u1", title: "核验机会" });
   const transport = new VerifyTransport([]); // 无证据
-  const w = makeWorker(store, evidenceStore, transport, "任意正文");
-  await w.tick();
+  await runApprovedVerification(store, evidenceStore, transport, "任意正文", t.id);
   assert.equal((await store.getTask(t.id))?.status, "failed");
 });
 

@@ -2,6 +2,7 @@
 // JWT 取自 Supabase session；VITE_BACKEND_URL 配置后端地址。SSE 实时进度 + 轮询回退。
 import { supabaseClient } from "@/app/config";
 import type { Opportunity } from "@/lib/data/types";
+import { localWorkspaceIdentity } from "./local-workspace";
 
 export interface AgentTask {
   historyRevision?: string;
@@ -20,12 +21,15 @@ export interface AgentTask {
 export interface AgentEvent { id: number; taskId: string; seq: number; type: string; payload: Record<string, unknown>; createdAt: number; }
 
 export function backendUrl(): string | null {
+  if (localWorkspaceIdentity()) return location.origin;
   const env = import.meta.env as Record<string, string | undefined>;
   return env.VITE_BACKEND_URL ?? null;
 }
 export function backendEnabled(): boolean { return Boolean(backendUrl()); }
 
 async function authHeader(): Promise<Record<string, string>> {
+  const local = localWorkspaceIdentity();
+  if (local) return { Authorization: `Bearer ${local.token}` };
   if (!supabaseClient) return {};
   const { data } = await supabaseClient.auth.getSession();
   const token = data.session?.access_token;
@@ -49,6 +53,13 @@ export async function req<T>(path: string, init?: RequestInit): Promise<T> {
 export interface TaskInput { title: string; intent?: string; sessionId?: string; turnId?: string; images?: string[]; providerId?: string; reasoning?: "auto" | "low" | "medium" | "high"; }
 export async function createTask(input: TaskInput): Promise<{ taskId: string; status: string }> {
   return req("/v1/tasks", { method: "POST", body: JSON.stringify(input) });
+}
+export type LocalWorkspace = { owner: string; name: string; permission: "ask" | "full" };
+export async function getLocalWorkspace(): Promise<LocalWorkspace> {
+  return (await req<{ workspace: LocalWorkspace }>("/v1/local-workspace")).workspace;
+}
+export async function setLocalWorkspacePermission(permission: LocalWorkspace["permission"]): Promise<LocalWorkspace> {
+  return (await req<{ workspace: LocalWorkspace }>("/v1/local-workspace", { method: "POST", body: JSON.stringify({ permission }) })).workspace;
 }
 export async function ensureSession(input: { id: string; title: string; mode: "auto" | "daily" }, owner?: string): Promise<string> {
   return (await req<{ session: { id: string } }>("/v1/sessions", { method: "POST", body: JSON.stringify(input), ...(owner ? { headers: { 'X-Session-Owner': owner } } : {}) })).session.id;
@@ -98,6 +109,9 @@ export async function listSchedules(termId: string): Promise<{ schedules: Schedu
 }
 export async function importSchedule(input: { format?: string; data?: string; encoding?: "base64"; sourceName?: string; termId?: string; confirm?: boolean; jobId?: string; allowPartial?: boolean }): Promise<ScheduleImportResult> {
   return req("/v1/schedules/import", { method: "POST", body: JSON.stringify(input) });
+}
+export async function readSchedulePreview(jobId: string): Promise<ScheduleImportResult & { termId: string }> {
+  return req(`/v1/schedules/import/${encodeURIComponent(jobId)}`);
 }
 export async function createTerm(input: Omit<Term, "id">): Promise<Term> { return (await req<{ term: Term }>("/v1/terms", { method: "POST", body: JSON.stringify(input) })).term; }
 export async function saveTimeScheme(input: TimeScheme): Promise<TimeScheme> { return (await req<{ scheme: TimeScheme }>("/v1/timetable-schemes", { method: "POST", body: JSON.stringify(input) })).scheme; }

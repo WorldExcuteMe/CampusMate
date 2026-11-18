@@ -8,6 +8,7 @@ import {
 } from "./sessions";
 import { useAuth } from "@/app/auth";
 import { backendEnabled } from './api-client';
+import { localWorkspaceIdentity } from './local-workspace';
 import { useCloudSessions } from './use-cloud-sessions';
 import { ComposerDraftStore } from './composer-drafts';
 import { ComposerDraftsProvider } from './composer-drafts-context';
@@ -37,7 +38,7 @@ const Ctx = createContext<SessionsState | null>(null);
 
 export function SessionsProvider({ children }: { children: ReactNode }) {
   const { session } = useAuth();
-  const owner = session?.user.id ?? "demo";
+  const owner = localWorkspaceIdentity()?.owner ?? session?.user.id ?? "demo";
   return <OwnerSessionsProvider key={owner} owner={owner}>{children}</OwnerSessionsProvider>;
 }
 

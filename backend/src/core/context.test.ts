@@ -10,6 +10,33 @@ const tool = (id: string, content = "result"): ChatMessage => ({ role: "tool", c
 const sys = (c: string): ChatMessage => ({ role: "system", content: c });
 const usr = (c: string): ChatMessage => ({ role: "user", content: c });
 
+test("输入估算包含同轮每个工具调用的实际参数", () => {
+  const text = "宽".repeat(4000);
+  const small = asst("a").tool_calls![0];
+  const write = { ...small, function: { name: "workspace_write", arguments: JSON.stringify({ text }) } };
+  const single = messagesTokens([{ ...asst("a"), tool_calls: [write] }]);
+  assert.ok(single - messagesTokens([asst("a")]) >= estimateTokens(text));
+  const second = { ...write, id: "b" };
+  const batch = messagesTokens([{ ...asst("a"), tool_calls: [write, second] }]);
+  assert.ok(batch - single >= estimateTokens(text));
+});
+
+test("大型工具参数超窗时整组移除，保留近期调用和当前目标", () => {
+  const oldCall = asst("old");
+  oldCall.tool_calls![0].function.arguments = JSON.stringify({ text: "文".repeat(7000) });
+  const current = usr("处理最新输入");
+  const recent = asst("recent");
+  const messages = [sys("rules"), oldCall, tool("old"), current, recent, tool("recent")];
+  const result = trimToBudget(messages, 4000, 0, 1000, 3000, current);
+
+  assert.equal(result.compressed, true);
+  assert.equal(result.messages.some((message) => message.tool_calls?.some((call) => call.id === "old")), false);
+  assert.ok(result.messages.includes(current));
+  assert.ok(result.messages.includes(recent));
+  assert.equal(validatePairing(result.messages).ok, true);
+  assert.ok(messagesTokens(result.messages) <= 3000);
+});
+
 test("groupTurns 把 assistant(tool_calls)+tool 结果归为一组", () => {
   const msgs = [sys("s"), usr("u"), asst("a"), tool("a"), tool("a"), asst("b"), tool("b"), usr("next")];
   const groups = groupTurns(msgs);

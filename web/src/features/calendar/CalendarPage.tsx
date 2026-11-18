@@ -1,4 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { readSchedulePreview } from "@/lib/agent/api-client";
+import { localWorkspaceIdentity } from "@/lib/agent/local-workspace";
 import { CalendarDays, ChevronLeft, ChevronRight, Clock3, ArrowUpRight } from "lucide-react";
 import { addDays, dateEntries, localParts, monday, projectCourses, teachingWeek } from "../../../../shared/calendar";
 import { freeTime } from "@/lib/domain/calendar-grid";
@@ -12,6 +15,12 @@ export function CalendarPage() {
   const calendar = useCampusCalendar();
   const { term, timezone, today, knowledge, schedules, tasks, opps } = calendar;
   const [chosen, setChosen] = useState<string>(), [mode, setMode] = useState<"day" | "week">(() => window.innerWidth < 768 ? "day" : "week"), [campus, setCampus] = useState("");
+  const local = localWorkspaceIdentity();
+  const importId = local && new URLSearchParams(window.location.search).get("import");
+  const pending = useQuery({ queryKey: ["schedule-import", local?.owner, importId], enabled: Boolean(importId), queryFn: () => readSchedulePreview(importId || "") });
+  const importTerm = pending.data?.termId;
+  const selectTerm = calendar.setTermId;
+  useEffect(() => { if (importTerm) selectTerm(importTerm); }, [importTerm, selectTerm]);
   const date = chosen ?? today, from = monday(date), to = addDays(from, 6);
   const rules = schedules.data?.schedules ?? [];
   const projected = term && knowledge === "ready" ? projectCourses(term, rules, schedules.data?.exceptions ?? [], from, to) : { entries: [], warnings: [] };
@@ -41,6 +50,7 @@ export function CalendarPage() {
       <section className="rounded-2xl border bg-card p-4"><h2 className="flex items-center gap-2 text-sm font-semibold"><Clock3 className="size-4 text-teal-600" />课表外可安排时段</h2><p className="mt-1 text-xs text-muted-foreground">只扣除已记录的定时安排，未记录事项可能仍占用时间。</p><div className="mt-3 flex flex-wrap gap-2">{free.length ? free.slice(0, 12).map((s, i) => <span key={i} className="rounded-lg bg-teal-50 px-2.5 py-1.5 text-xs text-teal-800 dark:bg-teal-950 dark:text-teal-200">{DAYS[s.weekday - 1]} {s.startTime}–{s.endTime}</span>) : <p className="text-xs text-muted-foreground">{knowledge === "ready" ? "本范围没有不少于30分钟的已知空档" : "课表信息不足，暂不提供空闲建议"}</p>}</div></section>
       <section className="rounded-2xl border bg-card p-4"><h2 className="flex items-center gap-2 text-sm font-semibold"><ArrowUpRight className="size-4 text-rose-500" />逾期待处理 <span className="text-muted-foreground">{overdue.length}</span></h2>{overdue.length ? overdue.slice(0, 3).map((t) => <div key={t.id} className="mt-2 flex justify-between gap-3 text-xs"><span className="truncate">{t.title}</span><span className="shrink-0 text-muted-foreground">{t.dueAt?.slice(0, 10)}</span></div>) : <p className="mt-3 text-xs text-muted-foreground">没有已记录的逾期任务</p>}</section>
     </div>
-    <ScheduleImport key={term?.id ?? "no-term"} term={term} onTerm={calendar.setTermId} />
+    {pending.isError && <p role="alert" className="text-sm text-destructive">无法读取 Agent 生成的课表预览。</p>}
+    <ScheduleImport key={term?.id ?? "no-term"} term={term} onTerm={selectTerm} fromAgent={term && term.id === importTerm ? pending.data : undefined} />
   </div>;
 }

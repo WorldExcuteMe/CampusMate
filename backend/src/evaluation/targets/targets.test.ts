@@ -5,8 +5,27 @@ import assert from "node:assert/strict";
 import { ScriptedTarget } from "./scripted.ts";
 import { ApiTarget } from "./api.ts";
 import type { EvalCase, TargetOptions } from "../types.ts";
+import { observedTokenTotal } from "../trace.ts";
+import { parseSourceBindings } from "./source-binding.ts";
 
 const options: TargetOptions = { concurrency: 2, defaultTimeoutMs: 30_000, offlineTools: true, now: Date.now };
+
+test("取消前已完成的模型轮次仍计入使用量", () => {
+  assert.equal(observedTokenTotal([
+    { usage: { inputTotal: 3680, output: 28 } }, { usage: { inputTotal: 3871, output: 51 } },
+    { usage: { inputTotal: 4075, output: 161 } }, { usage: { inputTotal: null, output: null } },
+  ]), 11866);
+});
+
+test("真实课表授权只绑定所选用例，要求独立摘要和合法学期", () => {
+  const digest = "a".repeat(64);
+  const source = { grants: [{ id: "course", label: "个人课表", dataset: "timetable", url: "https://example.test/export", format: "ics" }],
+    sourceId: "course", sha256: digest, scheduleDigest: digest };
+  assert.throws(() => parseSourceBindings({ "CASE-1": source }, new Set(["CASE-2"])), /未选定/);
+  assert.throws(() => parseSourceBindings({ "CASE-1": source }, new Set(["CASE-1"])), /学期元数据/);
+  const term = { name: "春季学期", startDate: "2027-03-01", endDate: "2027-07-04", totalWeeks: 18, timezone: "Asia/Shanghai" };
+  assert.deepEqual(parseSourceBindings({ "CASE-1": { ...source, term } }, new Set(["CASE-1"])).get("CASE-1")?.term, term);
+});
 
 function baseCase(overrides: Partial<EvalCase> & Pick<EvalCase, "id">): EvalCase {
   return {

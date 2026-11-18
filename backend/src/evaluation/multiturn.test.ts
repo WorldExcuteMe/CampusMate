@@ -14,8 +14,26 @@ test("api-memory stops a conversation at an unexpected pause instead of queuing 
     {prompt:"继续第二步",script:[{content:"不能跳过前轮暂停"}],checks:[{kind:"no_write"}]},
   ]});
   const target = new ApiTarget("script"); await target.setup(options);
-  try {const obs=await target.run(c,{timeoutMs:300});assert.equal(obs.turns?.length,1);assert.equal(obs.status,"paused");}
+  try {
+    const obs = await target.run(c, { timeoutMs: options.defaultTimeoutMs });
+    assert.equal(obs.turns?.length, 1);
+    assert.equal(obs.status, "paused");
+  }
   finally {await target.dispose();}
+});
+test("api-memory doesn't submit another turn after the case deadline", async () => {
+  const c = multiTurnCase({ id: "MT-shared-deadline", turns: [
+    { prompt: "第一轮模拟回复", script: [{ content: "第一轮" }], checks: [{ kind: "no_write" }] },
+    { sessionKey: "new-session", prompt: "第二轮模拟回复", script: [{ content: "第二轮" }], checks: [{ kind: "no_write" }] },
+  ] });
+  const target = new ApiTarget("script");
+  await target.setup(options);
+  try {
+    const observation = await target.run(c, { timeoutMs: 0 });
+    assert.equal(observation.turns?.length, 1);
+  } finally {
+    await target.dispose();
+  }
 });
 test("api-memory switches independent sessions under the same owner and returns to the first session", async () => {
   const c = multiTurnCase({ id: "MT-session-isolation", turns: [

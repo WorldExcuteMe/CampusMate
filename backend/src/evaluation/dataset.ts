@@ -200,6 +200,7 @@ function normalizeCase(raw: unknown, index: number, prefix: string, suiteHoldout
   const hasTurnChecks = turns.some((turn) => (turn.checks?.length ?? 0) > 0 || turn.expectedStatus !== undefined);
   if (!checks.length && !hasTurnChecks && !exploratory) errors.push(`${prefix} 至少需要一条 checks 或 turns[].checks（或显式 exploratory:true）`);
   const budget = c.budget && typeof c.budget === "object" && !Array.isArray(c.budget) ? c.budget : undefined;
+  if (c.context?.sourceFixture && !["group-cursor", "semester-csv", "semester-ics"].includes(c.context.sourceFixture)) errors.push(`${prefix}.context.sourceFixture 未知`);
   return {
     id, category, difficulty, source,
     ...(c.holdout === true || suiteHoldout ? { holdout: true } : {}),
@@ -304,6 +305,15 @@ function normalizeCheck(raw: unknown, prefix: string, errors: string[]): EvalChe
   const base = { ...(typeof c.id === "string" ? { id: c.id } : {}), ...(required !== undefined ? { required } : {}), ...(typeof c.label === "string" ? { label: c.label } : {}) };
   const strArr = (v: unknown): string[] | null => Array.isArray(v) && v.every((x) => typeof x === "string") ? v as string[] : null;
   switch (kind) {
+    case "source_complete": {
+      if (c.dataset !== "messages" && c.dataset !== "timetable") { errors.push(`${prefix}.dataset 无效`); return null; }
+      if (c.minRecords !== undefined && (typeof c.minRecords !== "number" || !Number.isSafeInteger(c.minRecords) || c.minRecords < 0)) { errors.push(`${prefix}.minRecords 须为非负整数`); return null; }
+      return { ...base, kind, dataset: c.dataset, ...numOpt(c, "minRecords") };
+    }
+    case "timetable_preview": {
+      if (typeof c.minRows !== "number" || !Number.isSafeInteger(c.minRows) || c.minRows < 1) { errors.push(`${prefix}.minRows 须为正整数`); return null; }
+      return { ...base, kind, minRows: c.minRows };
+    }
     case "artifact_export": {
       if (!["md", "docx", "pdf"].includes(String(c.format))) { errors.push(`${prefix}.format 必须为md/docx/pdf`); return null; }
       const contains = c.contains === undefined ? undefined : strArr(c.contains);

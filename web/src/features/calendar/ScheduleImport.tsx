@@ -4,11 +4,16 @@ import { Upload, Plus, Clock3 } from "lucide-react";
 import { backendEnabled, createTerm, importSchedule, saveTimeScheme, type ScheduleImportResult, type Term } from "@/lib/agent/api-client";
 import { monday } from "../../../../shared/calendar";
 
-export function ScheduleImport({ term, onTerm }: { term?: Term; onTerm: (id: string) => void }) {
+export function ScheduleImport({ term, onTerm, fromAgent }: { term?: Term; onTerm: (id: string) => void; fromAgent?: ScheduleImportResult }) {
   const qc = useQueryClient();
   const [file, setFile] = useState<File>(), [preview, setPreview] = useState<ScheduleImportResult>(), [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState(""), [partial, setPartial] = useState(false);
   const [periods, setPeriods] = useState("1,08:00,08:50\n2,09:00,09:50\n3,10:10,11:00\n4,11:10,12:00\n5,14:00,14:50\n6,15:00,15:50\n7,16:10,17:00\n8,17:10,18:00\n9,19:00,19:50\n10,20:00,20:50");
   useEffect(() => { setPreview(undefined); setError(""); setNotice(""); setPartial(false); }, [term?.id]);
+  useEffect(() => {
+    if (!fromAgent) return;
+    if (fromAgent.confirmed) setNotice(`已确认导入 ${fromAgent.saved ?? 0} 条课程`);
+    else setPreview(fromAgent);
+  }, [fromAgent]);
   const act = async (work: () => Promise<void>) => { setBusy(true); setError(""); setNotice(""); try { await work(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } };
   async function upload() {
     if (!file || !term) return;
@@ -21,7 +26,7 @@ export function ScheduleImport({ term, onTerm }: { term?: Term; onTerm: (id: str
       setPreview(await importSchedule({ format, data, termId: term.id, sourceName: file.name, ...(format === "xlsx" ? { encoding: "base64" } : {}) })); setPartial(false);
     });
   }
-  return <details className="rounded-2xl border bg-card p-4"><summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold"><Upload className="size-4 text-primary" />导入课表与设置作息<span className="ml-auto text-xs font-normal text-muted-foreground">先预览，再确认</span></summary><div className="mt-4 space-y-4">
+  return <details open={fromAgent ? true : undefined} className="rounded-2xl border bg-card p-4"><summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold"><Upload className="size-4 text-primary" />导入课表与设置作息<span className="ml-auto text-xs font-normal text-muted-foreground">先预览，再确认</span></summary><div className="mt-4 space-y-4">
     {!backendEnabled() ? <p className="text-sm text-muted-foreground">连接已登录的后端后即可保存个人课表。</p> : <>
     <details open={!term}><summary className="cursor-pointer text-sm"><Plus className="mr-1 inline size-4" />创建学期</summary><form className="mt-3 grid gap-3 sm:grid-cols-2" onSubmit={(event) => { event.preventDefault(); const form = new FormData(event.currentTarget); void act(async () => { const startDate = String(form.get("startDate")); const t = await createTerm({ name: String(form.get("name")), institutionId: String(form.get("institution")), startDate, endDate: String(form.get("endDate")), totalWeeks: Number(form.get("weeks")), timezone: String(form.get("timezone")), weekAnchor: String(form.get("anchor")) || monday(startDate) }); onTerm(t.id); await qc.invalidateQueries({ queryKey: ["terms"] }); }); }}>
       <label className="text-xs">学期名称<input name="name" required placeholder="2026 秋季学期" className="mt-1 w-full rounded-lg border bg-background p-2 text-sm" /></label><label className="text-xs">学校<input name="institution" required placeholder="学校名称或代码" className="mt-1 w-full rounded-lg border bg-background p-2 text-sm" /></label>

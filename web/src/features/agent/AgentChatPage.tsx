@@ -16,7 +16,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useRepository } from "@/app/auth";
 import { runChat } from "@/lib/agent/chat";
-import { backendEnabled, runTaskViaBackend, ensureSession } from "@/lib/agent/api-client";
+import { backendEnabled, runTaskViaBackend, ensureSession, getLocalWorkspace, setLocalWorkspacePermission } from "@/lib/agent/api-client";
+import { localWorkspaceIdentity } from "@/lib/agent/local-workspace";
 import { errorMessage } from "@/lib/llm/errors";
 import { listProviders, type ProviderPublic, type ChatMessage } from "@/lib/llm/proxy";
 import { useSessions } from "@/lib/agent/sessions-context";
@@ -44,7 +45,8 @@ export function AgentChatPage() {
   const refreshedTasks = useRef(new Set<string>());
   const repository = useRepository();
   const { session } = useAuth();
-  const owner = session?.user.id ?? "demo";
+  const local = localWorkspaceIdentity();
+  const owner = local?.owner ?? session?.user.id ?? "demo";
   const alive = useRef(true);
   const requestController = useRef<AbortController | null>(null);
   useEffect(() => { alive.current = true; return () => { alive.current = false; requestController.current?.abort(); }; }, []);
@@ -75,6 +77,16 @@ export function AgentChatPage() {
   const [picking, setPicking] = useState(false);
   const [showOnboard, setShowOnboard] = useState(() => !localStorage.getItem("campusmate.onboarded"));
   const [wsPath, setWsPath] = useState(() => localStorage.getItem(`campusmate.workspace:${owner}`) || "");
+  const workspaceKey = ["local-workspace", owner];
+  const workspace = useQuery({ queryKey: workspaceKey, queryFn: () => getLocalWorkspace(), enabled: Boolean(local) });
+  const [savingPermission, setSavingPermission] = useState(false);
+  async function changePermission(permission: "ask" | "full") {
+    if (savingPermission || (permission === "full" && !window.confirm("完全访问允许 Agent 以当前系统账户运行命令，后续新任务无需逐次审批。启用完全访问？"))) return;
+    setSavingPermission(true);
+    try { queryClient.setQueryData(workspaceKey, await setLocalWorkspacePermission(permission)); }
+    catch (error) { toast.error(errorMessage(error)); }
+    finally { setSavingPermission(false); }
+  }
   const fileRef = useRef<HTMLInputElement>(null);
   const [providerId, setProviderId] = useState(
     () => localStorage.getItem(`campusmate.providerId:${owner}`) || "",
@@ -374,7 +386,17 @@ export function AgentChatPage() {
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }}
           />
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            {active?.mode === "auto" && (
+            {local && (
+              <div className="flex items-center gap-2 rounded-md bg-muted px-2 py-1 text-xs">
+                <FolderOpen className="size-3.5 shrink-0 text-primary" />
+                <span>{workspace.data ? `本地工作区 · ${workspace.data.name}` : workspace.isError ? "本地工作区连接失败" : "正在读取本地工作区"}</span>
+                {workspace.data && <select aria-label="工作区权限" className="rounded bg-background px-1 py-0.5" disabled={savingPermission} value={workspace.data.permission} onChange={(e) => void changePermission(e.target.value as "ask" | "full")}>
+                  <option value="ask">请求批准</option>
+                  <option value="full">完全访问</option>
+                </select>}
+              </div>
+            )}
+            {!local && active?.mode === "auto" && (
               <button
                 className={cn(CONTROL_FEEDBACK, "flex max-w-56 items-center gap-1 px-2 py-1 text-xs")}
                 title="点击选择工作区文件夹"
