@@ -2,6 +2,7 @@
 // 用法见 docs/EVALUATION_SYSTEM.md；所有子命令输出紧凑文本，--json 输出机器可读结构。
 import "../src/load-env.ts";
 import fs from "node:fs";
+import path from "node:path";
 import { parseArgs } from "node:util";
 import { loadSuites, listSuites, suiteStats } from "../src/evaluation/dataset.ts";
 import { runEvaluation } from "../src/evaluation/runner.ts";
@@ -24,6 +25,7 @@ const USAGE = `CampusMate Headless Evaluation CLI
   node scripts/eval.ts run       [--suite <id|path>]... [--case <caseId>]... [--target scripted|api-memory|live|legacy]
                                  [--concurrency N] [--timeout-ms N] [--label text] [--seed N]
                                  [--reasoning auto|low|medium|high] [--provider <id>] [--session]
+                                 [--store memory|pglite --store-dir <dir>] [--resume-session <id|last> [--resume-user <uid>]]
                                  [--source-eval-config <file> --allow-private-model-data]
                                  [--holdout] [--offline] [--judge] [--runs dir] [--json] [--quiet] [--allow-failures]
   node scripts/eval.ts validate  [--suite <id|path>]...
@@ -84,9 +86,58 @@ function runsRoot(values: Record<string, unknown>): string | undefined {
   return typeof values.runs === "string" ? values.runs : undefined;
 }
 
+// 持久化评测库（--store pglite）与两阶段会话恢复（--resume-session [last]）解析。
+// 只影响显式传参的运行；默认仍为内存库，行为不变。
+interface DurableCliOptions {
+  durableStore?: { kind: "pglite"; dataDir: string };
+  resumeSessionId?: string;
+  resumeUserId?: string;
+}
+
+function resolveDurableOptions(values: Record<string, unknown>, targetName: string): DurableCliOptions | { error: string } {
+  const store = typeof values.store === "string" ? values.store : "memory";
+  if (!["memory", "pglite"].includes(store)) return { error: `--store 必须为 memory|pglite（收到 ${store}）` };
+  const resume = values["resume-session"];
+  const explicitUser = typeof values["resume-user"] === "string" ? values["resume-user"] : undefined;
+  if (store === "memory") {
+    if (resume !== undefined || explicitUser !== undefined) return { error: "--resume-session/--resume-user 需要 --store pglite" };
+    return {};
+  }
+  if (!["api-memory", "live"].includes(targetName)) return { error: "--store pglite 仅支持 api-memory/live 通道" };
+  const rawDir = typeof values["store-dir"] === "string" ? values["store-dir"].trim() : "";
+  if (!rawDir) return { error: "--store pglite 需要 --store-dir <dir>" };
+  const dataDir = path.resolve(rawDir);
+  let handoff: { sessionId?: string; userId?: string } | undefined;
+  try { handoff = JSON.parse(fs.readFileSync(path.join(dataDir, "durable-session.json"), "utf8")) as { sessionId?: string; userId?: string }; } catch { handoff = undefined; }
+  let resumeSessionId: string | undefined;
+  let resumeUserId: string | undefined;
+  if (resume !== undefined) {
+    const requested = String(resume).trim();
+    if (requested === "last" || requested === "auto") {
+      if (!handoff?.sessionId) return { error: "--resume-session last：durable store 尚无 durable-session.json（先跑阶段A）" };
+      resumeSessionId = handoff.sessionId;
+    } else if (requested) {
+      resumeSessionId = requested;
+    } else {
+      return { error: "--resume-session 需要会话 id 或 last" };
+    }
+    resumeUserId = explicitUser ?? (handoff?.sessionId === resumeSessionId ? handoff.userId : undefined);
+    if (!resumeUserId) return { error: "--resume-session 需要 --resume-user <uuid>（durable store 中没有匹配的交接信息）" };
+  } else if (explicitUser !== undefined) {
+    return { error: "--resume-user 需要同时提供 --resume-session" };
+  }
+  return {
+    durableStore: { kind: "pglite", dataDir },
+    ...(resumeSessionId ? { resumeSessionId } : {}),
+    ...(resumeUserId ? { resumeUserId } : {}),
+  };
+}
+
 async function cmdRun(values: Record<string, unknown>): Promise<void> {
   const targetName = typeof values.target === "string" ? values.target : "scripted";
   if (!["scripted", "api-memory", "live", "legacy"].includes(targetName)) return fail(`未知通道：${targetName}`);
+  const durable = resolveDurableOptions(values, targetName);
+  if ("error" in durable) return fail(durable.error);
   const includeHoldout = values.holdout === true;
   const refs = suiteRefs(values);
   if (includeHoldout) refs.push("all-holdout");
@@ -154,11 +205,24 @@ async function cmdRun(values: Record<string, unknown>): Promise<void> {
     ...(useSession ? { useSession: true } : {}),
     ...(values.seed !== undefined ? { seed: num(values.seed as string, 1) } : {}),
     ...(runsRoot(values) ? { runsRoot: runsRoot(values) } : {}),
+    ...durable,
     holdoutRun: includeHoldout,
   });
   if (values.json === true) console.log(JSON.stringify(output.summary, null, 2));
   else if (values.quiet === true) console.log(`[eval] ${output.run.runId} passRate=${(output.run.metrics.passRate * 100).toFixed(1)}% (${output.run.metrics.passed}/${output.run.metrics.passed + output.run.metrics.failed}) 报告=${output.paths.report}`);
-  else console.log(renderConsoleSummary(output.summary));
+  else {
+    console.log(renderConsoleSummary(output.summary));
+    if (durable.durableStore) {
+      try {
+        const handoff = JSON.parse(fs.readFileSync(path.join(output.dir, "durable-session.json"), "utf8")) as { sessionId?: string; userId?: string; caseId?: string };
+        console.log(`[eval] durable store=${durable.durableStore.dataDir}`);
+        console.log(`[eval] durable session=${handoff.sessionId} owner=${handoff.userId} case=${handoff.caseId}`);
+        console.log(`[eval] durable handoff=${path.join(output.dir, "durable-session.json")}`);
+      } catch {
+        console.log(`[eval] durable store=${durable.durableStore.dataDir}（本次运行未产生会话交接文件；单轮且未启用 --session 时正常）`);
+      }
+    }
+  }
   if (values.json !== true && output.run.metrics.passed + output.run.metrics.failed === 0) {
     const exploratory = output.run.results.filter(result => result.exploratory && result.status !== "skipped");
     console.log(`[eval] 无固定计分用例：探索性已执行${exploratory.length}条，其中通过${exploratory.filter(result => result.passed).length}、失败${exploratory.filter(result => !result.passed).length}；其余可能被通道过滤。探索结果不作为固定集通过率，耗时/用量请查逐例记录。`);
@@ -333,6 +397,7 @@ async function main(): Promise<void> {
       suite: { type: "string", multiple: true }, case: { type: "string", multiple: true }, target: { type: "string" }, concurrency: { type: "string" },
       "timeout-ms": { type: "string" }, label: { type: "string" }, seed: { type: "string" }, holdout: { type: "boolean" },
       reasoning: { type: "string" }, provider: { type: "string" }, session: { type: "boolean" },
+      store: { type: "string" }, "store-dir": { type: "string" }, "resume-session": { type: "string" }, "resume-user": { type: "string" },
       offline: { type: "boolean" }, judge: { type: "boolean" }, json: { type: "boolean" }, quiet: { type: "boolean" }, "allow-failures": { type: "boolean" },
       "source-eval-config": { type: "string" }, "allow-private-model-data": { type: "boolean" },
       runs: { type: "string" }, run: { type: "string" }, baseline: { type: "string" }, candidate: { type: "string" },

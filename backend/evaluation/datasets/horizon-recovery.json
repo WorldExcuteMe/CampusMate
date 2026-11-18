@@ -649,7 +649,7 @@
       "acceptanceNotes": [
         "两阶段恢复的阶段B：在进程2中重新打开同一 durable store，用 --resume-session last 续用阶段A会话，执行第7–11轮（恢复轮、原第8–10步、只读复核）。",
         "检查与 HORIZON-003 原第7–11轮一致：未删减原交付检查；用例级检查为原 document 交付与 max_tool_calls。",
-        "阶段B单独计分（38 项检查）；最终恢复结论 = 阶段A通过 + 阶段B通过 + score-resume.mjs 去重通过。",
+        "阶段B单独计分（37 项检查）；最终恢复结论 = 阶段A通过 + 阶段B通过 + score-resume.mjs 去重通过。",
         "只有真正跨进程重开 durable store 才证明进程重启恢复；单进程连跑不能替代。"
       ]
     }

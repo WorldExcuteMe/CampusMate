@@ -30,6 +30,8 @@ import { executeWorkspaceTool, registerWorkspaceTools } from "../../runtime/work
 import { createSourceFixture } from "./source-fixture.ts";
 import type { SourceReference } from "./source-binding.ts";
 import { scheduleKey } from "../../../../shared/calendar.ts";
+import { openDurableAppContext, durableHandoffPath, ensureDurableUser, type DurableHandoff } from "./durable-store.ts";
+import type { PGlitePool } from "../../runtime/pglite-pool.ts";
 
 type ApiMode = "script" | "live";
 
@@ -74,6 +76,10 @@ export class ApiTarget implements EvalTarget {
   private readonly includeLinkedSources: boolean;
   private readonly sourceBindings: ReadonlyMap<string, SourceReference>;
   private readonly activeSourceReferences = new Map<string, SourceReference>();
+  private durablePool?: PGlitePool;
+  private lastSessionId?: string;
+  private lastUserId?: string;
+  private lastCaseId?: string;
 
   constructor(mode: ApiMode, includeLinkedSources = false, sourceBindings: ReadonlyMap<string, SourceReference> = new Map()) {
     this.mode = mode;
@@ -85,7 +91,14 @@ export class ApiTarget implements EvalTarget {
   async setup(options: TargetOptions): Promise<void> {
     this.options = options;
     this.envSnapshot = options.env ?? (this.mode === "live" ? liveEnv() : { NODE_ENV: "test" });
-    this.ctx = buildContext(this.envSnapshot);
+    if (options.durableStore) {
+      // 持久化库：同目录可被另一个进程重新打开，保留 session/task/checkpoint。
+      const durable = await openDurableAppContext(this.envSnapshot, options.durableStore.dataDir);
+      this.ctx = durable.ctx;
+      this.durablePool = durable.pool;
+    } else {
+      this.ctx = buildContext(this.envSnapshot);
+    }
     if (this.includeLinkedSources) {
       this.sourceTools = linkedSourceTools(this.ctx, owner => this.activeSourceReferences.get(owner)?.grants ?? []);
       registerWorkspaceTools(this.ctx.capabilityRegistry, this.sourceTools);
@@ -127,6 +140,11 @@ export class ApiTarget implements EvalTarget {
 
   private key(sessionId: string | undefined, intent: string): string {
     return `${sessionId ?? ""}\n${intent}`;
+  }
+
+  // durable 两阶段恢复：phase B 用同一个 uid 访问 phase A 创建的会话。
+  private ownerFor(c: EvalCase): string {
+    return this.options?.resumeUserId ?? userIdForCase(c.id);
   }
 
   private resolveCase(task: Pick<Task, "sessionId" | "intent">): EvalCase | undefined {
@@ -179,7 +197,7 @@ export class ApiTarget implements EvalTarget {
 
   async run(c: EvalCase, runOptions: EvalRunCaseOptions): Promise<EvalObservation> {
     if (!this.ctx) throw new Error("ApiTarget 未 setup");
-    const owner = userIdForCase(c.id);
+    const owner = this.ownerFor(c);
     const fixture = c.context?.sourceFixture && this.includeLinkedSources ? await createSourceFixture(c.context.sourceFixture, c.id) : undefined;
     if (fixture) this.sourceFixtures.set(owner, fixture);
     const binding = this.sourceBindings.get(c.id);
@@ -187,7 +205,13 @@ export class ApiTarget implements EvalTarget {
     if (sourceReference) this.activeSourceReferences.set(owner, sourceReference);
     try {
       const selected = binding?.term ? { ...c, context: { ...c.context, term: binding.term } } : c;
-      return await (selected.turns?.length ? this.runMultiTurn(selected, runOptions) : this.runSingle(selected, runOptions));
+      this.lastCaseId = c.id;
+      this.lastUserId = owner;
+      // durable store 的 session/task 外键指向 auth.users；评测 owner 首次使用时补建。
+      if (this.durablePool) await ensureDurableUser(this.durablePool, owner);
+      const observation = await (selected.turns?.length ? this.runMultiTurn(selected, runOptions) : this.runSingle(selected, runOptions));
+      await this.persistDurableHandoff(c.id, owner);
+      return observation;
     } finally {
       this.activeSourceReferences.delete(owner);
       if (fixture) {
@@ -197,11 +221,26 @@ export class ApiTarget implements EvalTarget {
     }
   }
 
+  // 把 durable 会话交接信息写到 store 根目录（供 --resume-session last）与本次 run 目录（证据）。
+  private async persistDurableHandoff(caseId: string, userId: string): Promise<void> {
+    const storeDir = this.options?.durableStore?.dataDir;
+    const sessionId = this.lastSessionId;
+    if (!storeDir || !sessionId) return;
+    const handoff: DurableHandoff = {
+      schemaVersion: 1, storeDir, caseId, sessionId, userId, updatedAt: new Date().toISOString(),
+    };
+    const targets = new Set<string>([durableHandoffPath(storeDir)]);
+    if (this.options?.artifactsDir) targets.add(durableHandoffPath(path.dirname(this.options.artifactsDir)));
+    for (const file of targets) {
+      try { await fs.writeFile(file, JSON.stringify(handoff, null, 2) + "\n"); } catch { /* 交接文件失败不改变运行结论 */ }
+    }
+  }
+
   private async runSingle(c: EvalCase, runOptions: EvalRunCaseOptions): Promise<EvalObservation> {
     const ctx = this.ctx!;
     const now = this.options?.now;
     const startedAt = now ? now() : Date.now();
-    const userId = userIdForCase(c.id);
+    const userId = this.ownerFor(c);
     const existing = this.cases.get(this.key(undefined, c.prompt));
     if (existing && existing.id !== c.id) throw new Error(`跨套件 prompt 重复：${existing.id} / ${c.id}（脚本化模型按 prompt 路由，必须唯一）`);
     await seedCaseContext(ctx, c, userId);
@@ -209,6 +248,7 @@ export class ApiTarget implements EvalTarget {
     const deadline = Date.now() + runOptions.timeoutMs;
     // 单轮也可显式启用真实 session（更接近人类聊天入口）。
     const sessionId = this.options?.useSession ? await this.createSession(c, token) : undefined;
+    if (sessionId) this.lastSessionId = sessionId;
     const turn = await this.runTurn(c, {
       userId, token, deadline, signal: runOptions.signal, turn: 1,
       prompt: c.prompt, ...(c.images ? { images: c.images } : {}), ...(c.script ? { script: c.script } : {}),
@@ -231,11 +271,20 @@ export class ApiTarget implements EvalTarget {
     const ctx = this.ctx!;
     const now = this.options?.now;
     const startedAt = now ? now() : Date.now();
-    const userId = userIdForCase(c.id);
-    await seedCaseContext(ctx, c, userId);
+    const userId = this.ownerFor(c);
+    const resumeSessionId = this.options?.resumeSessionId;
+    if (resumeSessionId) {
+      const keys = new Set((c.turns ?? []).map((turn) => turn.sessionKey ?? "default"));
+      if (keys.size > 1) throw new Error(`durable 续会有多个 sessionKey（${[...keys].join(",")}），不支持 --resume-session`);
+      // 恢复阶段不重复播种用户上下文（同一 owner 的画像/课表已存在）。
+    } else {
+      await seedCaseContext(ctx, c, userId);
+    }
     const token = signJwt({ sub: userId, role: "authenticated", exp: Math.floor(Date.now() / 1000) + 3600 }, JWT_SECRET);
     const deadline = Date.now() + runOptions.timeoutMs;
-    const sessionId = await this.createSession(c, token);
+    // 默认每用例新建会话；durable 两阶段恢复时复用 phase A 的会话（store 中已持久化）。
+    const sessionId = resumeSessionId ?? await this.createSession(c, token);
+    this.lastSessionId = sessionId;
     const sessions = new Map<string, string>([[c.turns![0].sessionKey ?? "default", sessionId]]);
     const turns: EvalTurnObservation[] = [];
     for (let i = 0; i < c.turns!.length; i++) {
@@ -453,6 +502,10 @@ export class ApiTarget implements EvalTarget {
     this.server = undefined;
     await this.ctx?.dispose();
     this.ctx = undefined;
+    if (this.durablePool) {
+      // buildContext 只关闭自建 PgPool；注入的 PGlite pool 由 target 关闭，确保另一个进程能重开目录。
+      try { await this.durablePool.end(); } finally { this.durablePool = undefined; }
+    }
     this.cases.clear();
     this.scripts.clear();
     this.toolRecords.clear();
@@ -464,6 +517,7 @@ export class ApiTarget implements EvalTarget {
   describe(): TargetDescription {
     const model = this.modelInfo();
     const live = this.mode === "live";
+    const durable = Boolean(this.options?.durableStore);
     const entry: string[] = [];
     if (this.options?.reasoning) entry.push(`reasoning=${this.options.reasoning}`);
     if (this.options?.providerId) entry.push(`provider=${this.options.providerId}`);
@@ -472,7 +526,7 @@ export class ApiTarget implements EvalTarget {
       kind: this.kind,
       label: live ? "Live runtime（真实模型 + 真实工具 + 内存库）" : "API runtime（HTTP+Worker+内存库+脚本模型）",
       realModel: live,
-      durableStore: false,
+      durableStore: durable,
       networkTools: live && !this.options?.offlineTools,
       supportsBusinessFacts: true,
       model,
@@ -480,6 +534,8 @@ export class ApiTarget implements EvalTarget {
         live
           ? "真实 Provider/真实网络工具；业务数据写内存库，不写云端数据库"
           : "完整 HTTP/JWT/Worker/状态机/事件/幂等/审批/执行期 Evaluator 契约；模型输出脚本回放，零真实网络",
+        ...(durable ? [`持久化评测库（PGlite）：${this.options?.durableStore?.dataDir}；session/task/checkpoint 可被另一个进程重新打开`] : []),
+        ...(this.options?.resumeSessionId ? [`续用 durable 会话：${this.options.resumeSessionId}`] : []),
         "多轮用例与人类聊天一致：创建真实 session、逐轮提交 task(sessionId,turnId)，Worker 注入历史/身份",
         ...(entry.length ? [`入口对齐：${entry.join("，")}`] : []),
         "每用例独立 owner id，数据互不污染；同一进程内串行/并发由多个 Worker 提供",

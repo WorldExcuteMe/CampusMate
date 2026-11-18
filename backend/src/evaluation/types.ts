@@ -407,6 +407,11 @@ export interface TargetOptions {
   reasoning?: "auto" | "low" | "medium" | "high";
   providerId?: string;
   useSession?: boolean;
+  // 持久化评测库（PGlite 目录）：跨进程保留 session/checkpoint；仅 api-memory/live 通道。
+  durableStore?: { kind: "pglite"; dataDir: string };
+  // 两阶段恢复：在 durable store 中续用已有会话（userId 必须是该会话 owner）。
+  resumeSessionId?: string;
+  resumeUserId?: string;
 }
 
 export interface TargetDescription {
@@ -450,6 +455,10 @@ export interface RunOptions {
   // 留出集用例标记（用于 manifest/报告；Gate 要求单独运行）
   holdoutRun?: boolean;
   now?: () => number;
+  // 持久化评测库与两阶段恢复（透传给 Target.setup）。
+  durableStore?: { kind: "pglite"; dataDir: string };
+  resumeSessionId?: string;
+  resumeUserId?: string;
 }
 
 // ── 回归 Gate / 版本对比 ────────────────────────────────────────────────────

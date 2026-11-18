@@ -80,6 +80,9 @@ export async function runEvaluation(options: RunOptions): Promise<RunEvaluationO
     ...(options.reasoning ? { reasoning: options.reasoning } : {}),
     ...(options.providerId ? { providerId: options.providerId } : {}),
     ...(options.useSession ? { useSession: true } : {}),
+    ...(options.durableStore ? { durableStore: options.durableStore } : {}),
+    ...(options.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
+    ...(options.resumeUserId ? { resumeUserId: options.resumeUserId } : {}),
     now,
   });
   const description = target.describe();
