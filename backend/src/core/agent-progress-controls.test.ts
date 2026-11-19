@@ -138,3 +138,26 @@ test("parallelReads 关闭时保持串行", async () => {
   await runAgentLoop({ system: "s", user: "读取这三个文件", deps });
   assert.equal(maxActive, 1);
 });
+test("会话事件日志双写：turn/user/assistant/tool/turn-end 可重放", async () => {
+  const { InMemorySessionLog, replay } = await import("./event-log.ts");
+  const log = new InMemorySessionLog();
+  const f = fixture([
+    { content: "", toolCalls: [{ id: "r1", type: "function", function: { name: "workspace_read", arguments: JSON.stringify({ path: "a.txt" }) } }] },
+    { content: "文件内容已读取。" },
+  ]);
+  const deps = { ...f.deps, sessionLog: log };
+  const r = await runAgentLoop({ system: "s", user: "读取 a.txt 并总结", deps });
+  const types = log.events().map((event) => event.type);
+  assert.equal(types[0], "turn/start");
+  assert.equal(types[1], "user/message");
+  assert.ok(types.includes("assistant/message"));
+  assert.ok(types.includes("tool/call"));
+  assert.ok(types.includes("tool/result"));
+  assert.ok(types.includes("checkpoint"));
+  assert.equal(types.at(-1), "turn/end");
+  const state = replay(log.events());
+  assert.equal(state.openTurn, false);
+  assert.equal(state.messages.length, 4);
+  assert.equal(state.messages[2].tool_call_id, "r1");
+  assert.match(r.reply, /文件内容已读取/);
+});

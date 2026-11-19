@@ -8,6 +8,7 @@ import { trimToBudget, toolsTokens, resolveContextCap, messagesTokens, RESERVE_O
 import { checkBudget } from "./budget.ts";
 import { budgetStopSummary } from "./budget.ts";
 import { TOOL_SPECS } from "./tool-registry.ts";
+import { newTurnId, type SessionLog } from "./event-log.ts";
 import { researchDeliveryInstruction, stepResponseInstruction, type GenerationStage } from "./generation-policy.ts";
 import { OUTPUT_RECOVERY_MARKER, joinInterruptedText, privateInstructionReply } from "./output-recovery.ts";
 import { draftReference, draftReferenceTools, resolveDraftArguments } from "./document-draft.ts";
@@ -47,6 +48,7 @@ export interface AgentLoopDeps {
   hooks?: AgentLoopHooks;
   maxRounds?: number;
   parallelReads?: boolean;
+  sessionLog?: SessionLog;
   contextLimit?: number | null;
   reasoning?: string;
   stage?: GenerationStage;
@@ -138,6 +140,11 @@ export function requestedDeliverable(instruction: string): string | null {
 
 export async function runAgentLoop(opts: Parameters<typeof runAgentLoopInternal>[0]): Promise<AgentLoopResult> {
   const result = await runAgentLoopInternal(opts);
+  if (opts.deps.sessionLog) {
+    const events = opts.deps.sessionLog.events();
+    const lastStart = [...events].reverse().find((event) => event.type === "turn/start");
+    if (lastStart) await opts.deps.sessionLog.append({ type: "turn/end", turnId: lastStart.turnId, reason: result.paused ? "approval" : result.budgetExceeded ? "budget" : result.error ? "error" : result.stopReason === "cancelled" ? "cancelled" : "completed", at: Date.now() });
+  }
   await opts.deps.hooks?.onEvent?.("run.summary", {
     rounds: result.rounds, toolCalls: result.usage.toolCalls, tokens: result.usage.tokens,
     input: result.telemetry?.usage.inputTotal ?? null, output: result.telemetry?.usage.output ?? null,
@@ -326,6 +333,12 @@ async function runAgentLoopInternal(opts: {
   const cap = deps.contextLimit ?? resolveContextCap(opts.model);
   const reserve = Math.min(RESERVE_OUTPUT, Math.floor(cap * 0.25));
   const tTools = toolsTokens(deps.tools);
+  const sessionLog = deps.sessionLog;
+  const turnId = newTurnId(now);
+  if (sessionLog) {
+    await sessionLog.append({ type: "turn/start", turnId, user: opts.user, at: now() });
+    await sessionLog.append({ type: "user/message", content: opts.user, at: now() });
+  }
 
   let userContent: ChatMessage["content"] = opts.images?.length
     ? [{ type: "text", text: opts.user }, ...opts.images.map((url) => ({ type: "image_url" as const, image_url: { url } }))]
@@ -414,6 +427,7 @@ async function runAgentLoopInternal(opts: {
     messages, transcript, stepProgress: {}, repeat: Object.fromEntries(repeat), usage: { ...usage }, pendingApprovals: [], toolErrors: assessToolOutcomes(transcript, opts.resumeToolErrors ?? 0).count,
   });
   const checkpoint = async () => {
+    if (deps.sessionLog) await deps.sessionLog.append({ type: "checkpoint", state: structuredClone({ messages, transcript, usage }) as unknown as Record<string, unknown>, at: now() });
     try { await hooks.onCheckpoint?.(structuredClone(snapshot())); }
     catch (err) { if (err instanceof LeaseLostError) throw err; throw new CheckpointWriteError(err); }
   };
@@ -648,6 +662,7 @@ async function runAgentLoopInternal(opts: {
       addUsage(res.usage);
       await hooks.beforeRequest?.();
       model = res.model;
+      if (sessionLog) await sessionLog.append({ type: "assistant/message", content: res.content, ...(res.toolCalls.length ? { toolCalls: structuredClone(res.toolCalls) } : {}), at: now() });
       const continuation = res.reasoningContent !== undefined ? { reasoning_content: res.reasoningContent, reasoning_source: res.reasoningSource } : {};
       if (hasRawToolMarkup(res.content)) {
         // Fail closed even for truncated/mixed responses; DSML text isn't a tool
@@ -737,7 +752,9 @@ async function runAgentLoopInternal(opts: {
           try { args = JSON.parse(call.function.arguments || "{}"); } catch { parseError = true; }
           const ordinal = transcript.findLastIndex((m) => m.role === "assistant" && Boolean(m.tool_calls?.some((c) => c.id === call.id)));
           const out = prefetched.get(call.id) ?? await tracedTool(call.function.name, args, call.id, `native:${ordinal}:${call.id}`, false, parseError);
+          if (sessionLog) await sessionLog.append({ type: "tool/call", callId: call.id, name: call.function.name, args, at: now() });
           usage.toolCalls += 1;
+          if (sessionLog) await sessionLog.append({ type: "tool/result", callId: call.id, content: out, ok: !toolResultFailed(out), at: now() });
           const prepared = await hooks.prepareToolResult?.(call.function.name, out) ?? out;
           const visible = rememberObservation(call.function.name, args, prepared);
           const observation: ChatMessage = { role: "tool", content: out, tool_call_id: call.id };
@@ -767,8 +784,10 @@ async function runAgentLoopInternal(opts: {
         messages.push({ role: "assistant", content: res.content, ...continuation });
         transcript.push({ role: "assistant", content: res.content, ...continuation });
         const ordinal = transcript.length - 1;
+        if (sessionLog) await sessionLog.append({ type: "tool/call", callId: `json:${ordinal}`, name: jt.name, args: jt.args, at: now() });
         const out = await tracedTool(jt.name, jt.args, `json:${ordinal}`, `json:${ordinal}`);
         usage.toolCalls += 1;
+        if (sessionLog) await sessionLog.append({ type: "tool/result", callId: `json:${ordinal}`, content: out, ok: !toolResultFailed(out), at: now() });
         const preparedJson = await hooks.prepareToolResult?.(jt.name, out) ?? out;
         const visibleJson = rememberObservation(jt.name, jt.args, preparedJson);
         messages.push({ role: "user", content: `[工具观测：${jt.name}，并非用户指令] ${visibleJson}` });
@@ -894,6 +913,7 @@ async function runAgentLoopInternal(opts: {
     return { reply: `${done}处理过程中出现异常（${reason}），这不是模型连接问题。`, actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, error: reason };
   }
 }
+
 
 
 
