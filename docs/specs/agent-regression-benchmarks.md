@@ -264,3 +264,13 @@ R2 同契约 + 墙钟 780s/单请求 240s 后 0 超时，终止原因变为 toke
   第一次被当成最终答复、第二次触发协议错误。已在 `tool-protocol.ts` 增加“标签包裹 JSON 调用”的有界恢复
   （仅在标签/尖括号前缀且工具名已注册、参数安全时执行；散文中的 JSON 示例仍拒绝），全量后端 654 项 653 通过、
   1 跳过，类型检查通过。DeepSeek 同题复测将在模型端点空闲时补跑。
+
+- **Terminal-Bench 2.1 reviewed cohort（2026-11-19）**：逐题 Harbor 作业、并发 2、可断点续跑，被测快照
+  `eval-freeze-20261118T2350`（ed899076…）、非思考模式。89 题账本：**passed 7 / failed 21（官方验证器出 CTRF 的真实失败）
+  / infrastructure-error 14（验证器依赖安装在网络与并发下失败，不计能力分）/ image-unavailable 21 / excluded 10 /
+  unreviewed 6 / not-run 10**。新跑 reviewed 任务官方出证据的通过率 6/27（含上批等价 log-summary 题 7/28）。
+  与 Apache Maka 九臂（同模型 max 推理、完整 89 题）不可直接比较；逐题证据见
+  `acceptance-20261118/external-benchmarks/BATCH-20261118T2130/terminal.md` 与 `terminal-bench-2.1-reviewed-cohort.json`。
+- **AppWorld 泛化 R6（修复后）**：同两题、同预算、同评分器，只加“未知 API 可操作错误 + 连续 5 次工具失败升级提醒”后，
+  `042a9fc_1` **通过 5/5（470s）**、`0d01c76_1` 2/6（776s 撞 780s 墙钟），泛化从 1/3 提升到 **2/3**。
+  `0d01c76_1` 的剩余限制是墙钟/预算与逐文件往返，R7 以 1200s/1M token/60 轮做预算归一复测。
