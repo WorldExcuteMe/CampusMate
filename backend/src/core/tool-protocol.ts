@@ -1,16 +1,68 @@
 export interface TextToolCall { name: string; args: Record<string, unknown>; }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
-// Only standalone envelopes are commands. Never evaluate code or extract an
-// executable call from prose, retrieved material, or several ambiguous calls.
+// 只在明确包络上判定为工具调用；不评估代码、不从散文/检索材料中抠取可执行调用。
+// 额外容忍模型把 JSON 包在标签里的两种已观测形式（如 `</think> <{...}>` 或 `<tool>{...}</tool>`），
+// 前提是工具名在已知集合内且参数安全，否则按“疑似工具调用”交给协议修复，而不是当最终答复。
+const MARKUP_WRAPPER = /<\/?think>|<\/?(?:tool|function|tool_calls?)[^>]*>|<{/i;
+
 export function looksLikeToolCall(text: string): boolean {
   const value = text.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/, "$1");
   if (/<\|tool_call>|<tool_call\|>|^call:\w+\s*\{/.test(value)) return true;
   try {
     const data = JSON.parse(value);
     return object(data) && (Object.hasOwn(data, "tool") || Object.hasOwn(data, "function") || (Object.hasOwn(data, "name") && ["args", "arguments", "parameters"].some(key => Object.hasOwn(data, key))));
-  } catch { return /^\{/.test(value) && /"(?:tool|function)"\s*:/.test(value); }
+  } catch {
+    if (/^\{/.test(value) && /"(?:tool|function)"\s*:/.test(value)) return true;
+    return MARKUP_WRAPPER.test(value) && /"(?:tool|function|name)"\s*:/.test(value) && /\{[\s\S]*\}/.test(value);
+  }
 }
+
+function balancedJsonEnd(value: string): number {
+  let depth = 0, quoted = false, escaped = false;
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i];
+    if (quoted) { if (escaped) escaped = false; else if (c === "\\") escaped = true; else if (c === '"') quoted = false; continue; }
+    if (c === '"') quoted = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return i + 1;
+  }
+  return -1;
+}
+
+function safeKeys(value: unknown, depth = 0): boolean {
+  if (depth > 32) return false;
+  if (!value || typeof value !== "object") return true;
+  return Object.entries(value).every(([key, child]) => !["__proto__", "prototype", "constructor"].includes(key) && safeKeys(child, depth + 1));
+}
+
+function toCall(data: unknown, known: Set<string>): TextToolCall | null {
+  if (!object(data)) return null;
+  const name = data.tool ?? data.name ?? (object(data.function) ? data.function.name : undefined);
+  if (typeof name !== "string" || !known.has(name)) return null;
+  let args = Object.hasOwn(data, "args") ? data.args : Object.hasOwn(data, "arguments") ? data.arguments : data.parameters ?? (object(data.function) ? data.function.arguments : undefined) ?? {};
+  if (typeof args === "string") args = JSON.parse(args);
+  if (!object(args) || !safeKeys(args)) return null;
+  return { name, args };
+}
+
+function recoverWrappedCall(value: string, known: Set<string>): TextToolCall | null {
+  if (!/"(?:tool|function|name)"\s*:/.test(value)) return null;
+  const start = value.indexOf("{");
+  if (start < 0) return null;
+  // 前缀只能是标签/尖括号（如 `</think>`、`<tool_call>`、包裹用的 `<`），不能是散文；
+  // 保留“散文里出现 JSON 示例不执行”的既有安全边界。
+  const prefix = value.slice(0, start);
+  if (prefix.trim() && !/^(?:\s*(?:<|>|<\/?[a-zA-Z_][\w:|.-]*>))*\s*$/.test(prefix)) return null;
+  const body = value.slice(start);
+  const end = balancedJsonEnd(body);
+  if (end < 0) return null;
+  // 对象之后只允许空白、闭合标签或包裹用的尖括号，避免从“JSON 示例 + 散文”里抠出可执行调用。
+  const rest = body.slice(end).trim();
+  if (rest && !/^(?:\s*(?:<\/?[a-zA-Z_][\w:|.-]*>|>|<\/))*\s*$/.test(rest)) return null;
+  try { return toCall(JSON.parse(body.slice(0, end)), known); } catch { return null; }
+}
+
 export function parseTextToolCall(text: string, known: Set<string>): TextToolCall | null {
   if (text.length > 64_000) return null;
   let value = text.trim();
@@ -24,31 +76,12 @@ export function parseTextToolCall(text: string, known: Set<string>): TextToolCal
       const args = parser.parse();
       return object(args) ? { name: gemma[1], args } : null;
     }
-    if (!value.startsWith("{")) return null;
-    let depth = 0, quoted = false, escaped = false, end = -1;
-    for (let i = 0; i < value.length; i++) {
-      const c = value[i];
-      if (quoted) { if (escaped) escaped = false; else if (c === "\\") escaped = true; else if (c === '"') quoted = false; continue; }
-      if (c === '"') quoted = true;
-      else if (c === "{") depth++;
-      else if (c === "}" && --depth === 0) { end = i + 1; break; }
-    }
+    if (!value.startsWith("{")) return recoverWrappedCall(value, known);
+    const end = balancedJsonEnd(value);
     // Recover only surplus closing braces after a complete strict JSON object.
     if (end < 0 || !/^\}{0,2}$/.test(value.slice(end).replace(/\s/g, ""))) return null;
-    const data = JSON.parse(value.slice(0, end));
-    if (!object(data)) return null;
-    const name = data.tool ?? data.name ?? (object(data.function) ? data.function.name : undefined);
-    if (typeof name !== "string" || !known.has(name)) return null;
-    let args = Object.hasOwn(data, "args") ? data.args : Object.hasOwn(data, "arguments") ? data.arguments : data.parameters ?? (object(data.function) ? data.function.arguments : undefined) ?? {};
-    if (typeof args === "string") args = JSON.parse(args);
-    if (!object(args) || !safeKeys(args)) return null;
-    return { name, args };
+    return toCall(JSON.parse(value.slice(0, end)), known);
   } catch { return null; }
-}
-function safeKeys(value: unknown, depth = 0): boolean {
-  if (depth > 32) return false;
-  if (!value || typeof value !== "object") return true;
-  return Object.entries(value).every(([key, child]) => !["__proto__", "prototype", "constructor"].includes(key) && safeKeys(child, depth + 1));
 }
 
 // Gemma's finite data grammar: JSON values, bare object keys and <|"|> strings.

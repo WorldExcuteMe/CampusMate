@@ -257,3 +257,10 @@ R2 同契约 + 墙钟 780s/单请求 240s 后 0 超时，终止原因变为 toke
   记录于 general-coverage/RESULTS-20261119.md；下一步为 GDPval 600s 预算归一复测与预览/写入语义强化。
 - **Terminal-Bench 2.1**：试点两题官方评分 constraints-scheduling reward 1.0、largest-eigenval 0.0；
   随后全量可执行子集以并发 2 逐题 Harbor 作业运行（52/73 镜像就绪，21 题镜像缺失单列），账本逐题记录。
+
+- **OfficeBench 2-21/0 在修复后通过（Gemma-4-31B-IT，官方评分器 171.6s、7 次工具）**：产物正确落在
+  `data/classes_taken.docx`，证明 `workspace_run` 默认脚本目录执行的修复有效。同一修复下
+  DeepSeek-V4-Flash 两次复测暴露另一个通用缺陷：模型把工具调用包成 `</think> <{"tool":...}>` 标记，
+  第一次被当成最终答复、第二次触发协议错误。已在 `tool-protocol.ts` 增加“标签包裹 JSON 调用”的有界恢复
+  （仅在标签/尖括号前缀且工具名已注册、参数安全时执行；散文中的 JSON 示例仍拒绝），全量后端 654 项 653 通过、
+  1 跳过，类型检查通过。DeepSeek 同题复测将在模型端点空闲时补跑。

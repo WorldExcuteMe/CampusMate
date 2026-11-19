@@ -18,3 +18,13 @@ test("R2 strict JSON envelope is string-aware, bounded and does not extract code
 test("R2 Gemma finite grammar preserves nested data without evaluating expressions",()=>{
   assert.deepEqual(parseTextToolCall('<|tool_call>call:web_search{query:"a\\nb",options:{limit:2,active:true,empty:null,tags:["x",1]}}<tool_call|>',known),{name:"web_search",args:{query:"a\nb",options:{limit:2,active:true,empty:null,tags:["x",1]}}});
 });
+
+test("R2 标签包裹的 JSON 工具调用可恢复，未知工具与散文示例不执行", () => {
+  const known = new Set(["web_search", "workspace_list"]);
+  assert.deepEqual(parseTextToolCall('</think>\n<{"tool":"workspace_list","args":{"path":"."}}>', known), { name: "workspace_list", args: { path: "." } });
+  assert.deepEqual(parseTextToolCall('<tool_call>{"function":{"name":"web_search","arguments":"{\\"query\\":\\"a\\"}"}}</tool_call>', known), { name: "web_search", args: { query: "a" } });
+  assert.equal(looksLikeToolCall('</think>\n<{"tool":"workspace_list","args":{"path":"."}}>'), true);
+  assert.equal(parseTextToolCall('<{"tool":"rm_rf","args":{}}>', known), null);
+  assert.equal(parseTextToolCall('示例如下：{"tool":"web_search","args":{}} 仅供参考', known), null);
+  assert.equal(parseTextToolCall('<{"tool":"web_search","args":{"query":"a"}}> 然后继续聊天', known), null);
+});
