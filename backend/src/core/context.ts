@@ -105,13 +105,68 @@ export function validatePairing(msgs: ChatMessage[]): { ok: boolean; orphans: nu
   return { ok: orphans === 0, orphans };
 }
 
+function contentOf(m: ChatMessage): string {
+  return contentText(m.content).replace(/\s+/g, " ").trim();
+}
+
+// 结构化压缩：早期轮次被丢弃时保留"目标/计划/产物/证据/未完成"，避免摘要只剩零散句子。
+// 借鉴 DSH/Claude Code 的上下文工程：摘要必须能支撑后续决策，而不只是复述对话。
 function summarizeDropped(groups: ChatMessage[][]): string {
-  const lines: string[] = [];
-  for (const g of groups) for (const m of g) {
-    const c = contentText(m.content).replace(/\s+/g, " ").trim();
-    if (c) lines.push(`[${m.role}] ${c.slice(0, 160)}`);
+  const flat = groups.flat();
+  const goal = flat
+    .map(contentOf)
+    .find((text) => text.length > 0 && !text.startsWith("[工具观测：") && !text.startsWith("[系统提醒]") && !text.startsWith("【历史摘要"));
+  const todoLines: string[] = [];
+  for (const group of groups) {
+    for (const message of group) {
+      for (const call of message.tool_calls ?? []) {
+        if (call.function.name !== "todo_write") continue;
+        try {
+          const args = JSON.parse(call.function.arguments || "{}") as { todos?: Array<{ content?: unknown; status?: unknown }> };
+          if (!Array.isArray(args.todos)) continue;
+          todoLines.length = 0;
+          for (const item of args.todos.slice(0, 8)) {
+            const status = item.status === "completed" ? "✓" : item.status === "in_progress" ? "▶" : "…";
+            todoLines.push(`${status} ${clipLine(String(item.content ?? ""), 60)}`);
+          }
+        } catch { /* ignore malformed todo args */ }
+      }
+    }
   }
-  return `${COMPACTION_SUMMARY_MARKER} ${groups.length} 组早期轮次，保留要点】\n${lines.join("\n").slice(0, 4000)}`;
+  const artifactSet = new Set<string>();
+  const evidenceSet = new Set<string>();
+  const failures: string[] = [];
+  for (const group of groups) {
+    for (const message of group) {
+      const text = `${contentOf(message)} ${message.tool_calls?.map((call) => call.function.arguments).join(" ") ?? ""}`;
+      for (const match of text.matchAll(/[\w./-]+\.(?:md|docx|pdf|xlsx|csv|txt|ics|pptx)\b/gi)) artifactSet.add(match[0]);
+      for (const match of contentOf(message).matchAll(/https?:\/\/[^\s"')]+/g)) evidenceSet.add(match[0]);
+      if (message.role === "tool" && /失败|超时|error|failed|HTTP\s*[45]\d\d/i.test(contentOf(message))) {
+        failures.push(clipLine(contentOf(message), 120));
+      }
+    }
+  }
+  const recent: string[] = [];
+  for (const group of groups.slice(-2)) {
+    const first = group[0];
+    if (first && contentOf(first)) recent.push(clipLine(contentOf(first), 140));
+  }
+  const artifacts = [...artifactSet].slice(-8);
+  const evidence = [...evidenceSet].slice(-5);
+  const sections: string[] = [];
+  if (goal) sections.push(`【目标】${clipLine(goal, 240)}`);
+  if (todoLines.length) sections.push(`【计划】\n${todoLines.join("\n")}`);
+  if (artifacts.length) sections.push(`【产物】${artifacts.join("、")}`);
+  if (evidence.length) sections.push(`【证据】${evidence.join(" ")}`);
+  if (failures.length) sections.push(`【未完成/错误】\n${failures.slice(-3).join("\n")}`);
+  if (recent.length) sections.push(`【最近步骤】\n${recent.join("\n")}`);
+  const body = sections.join("\n").slice(0, 2400);
+  return `${COMPACTION_SUMMARY_MARKER} ${groups.length} 组早期轮次，保留要点】\n${body}`;
+}
+
+function clipLine(text: string, max: number): string {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length > max ? `${one.slice(0, max)}…` : one;
 }
 
 export interface TrimResult { messages: ChatMessage[]; compressed: boolean; pruned: boolean; }

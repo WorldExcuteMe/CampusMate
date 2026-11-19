@@ -7,6 +7,7 @@ import { errorMessage, isTransportError, isStorageUnavailable } from "./errors.t
 import { trimToBudget, toolsTokens, resolveContextCap, messagesTokens, RESERVE_OUTPUT } from "./context.ts";
 import { checkBudget } from "./budget.ts";
 import { budgetStopSummary } from "./budget.ts";
+import { TOOL_SPECS } from "./tool-registry.ts";
 import { researchDeliveryInstruction, stepResponseInstruction, type GenerationStage } from "./generation-policy.ts";
 import { OUTPUT_RECOVERY_MARKER, joinInterruptedText, privateInstructionReply } from "./output-recovery.ts";
 import { draftReference, draftReferenceTools, resolveDraftArguments } from "./document-draft.ts";
@@ -45,6 +46,7 @@ export interface AgentLoopDeps {
   budget: Budget;
   hooks?: AgentLoopHooks;
   maxRounds?: number;
+  parallelReads?: boolean;
   contextLimit?: number | null;
   reasoning?: string;
   stage?: GenerationStage;
@@ -90,6 +92,14 @@ const MUTATION_INTENT = /(?:写入|保存|创建|生成|导出|修改|整理|移
 
 export function parseJsonTool(content: string, known: Set<string>): { name: string; args: Record<string, unknown> } | null {
   return parseTextToolCall(content, known);
+}
+
+// 并行只读调度：显式开启、整批只读且工具预算余量足够时才并发；写入/审批/有依赖的调用保持串行。
+// 只读工具幂等，即使并发中途被预算/取消打断，恢复后重放也不会产生副作用。
+function parallelReadSafe(name: string): boolean {
+  const spec = TOOL_SPECS[name];
+  if (spec) return !spec.requiresApproval && spec.permission === "read" && (spec.sideEffects === "none" || spec.sideEffects === "network");
+  return READ_PARALLEL.test(name) || /^(?:rag_search|read_artifact|list_|search_|match_)/.test(name);
 }
 
 function canonicalKey(name: string, args: Record<string, unknown>): string {
@@ -320,6 +330,7 @@ async function runAgentLoopInternal(opts: {
       ...(deliveryPlan ? [{ role: "system" as const, content: deliveryPlan }] : []),
       ...(effectiveStage === "write" ? [{ role: "system" as const, content: "用户列出章节或小节标题时，原样保留用户指定的标题文字和顺序，使用清晰的 Markdown 标题层级。标题下可增加用户未指定的子节。" }] : []),
       ...(workspaceProgram ? [{ role: "system" as const, content: "【编程验证】编写或运行程序时，先读取输入样例和格式契约，按结构字段解析。用能区分边界条件与相似文本的反例验证，先确认交付文件的完整相对路径及工作目录。文件转换只给出目标文件名时，默认把产物放在原文件所在目录。表格或文档的结构调整（交换、重排、转置行或列）把整行或整列连同表头/标签作为单位处理，写回后回读核对结构与值。表格类修改写回后打印表头与首行（或读回目标单元格）确认变换方向与要求一致。完成任务前列出任务要求的全部产物并逐个回读；只有真实存在且内容符合要求才能报告完成，缺失就补齐。" }] : []),
+  ...(known.has("todo_write") ? [{ role: "system" as const, content: "【任务计划】多步任务（预计 3 步以上）先用 todo_write 建立 3–8 步计划清单，并在每完成一步后更新状态；计划每步都要可验证，不要停在计划阶段。简单单步请求不需要使用 todo_write。" }] : []),
       ...(groundedTarget ? [{ role: "system" as const, content: "本轮是收集真实赛事资料并评估适合度。用户输入中priorUserStatements为本会话历史直接陈述，按时间顺序且最新纠正优先；currentRequest为当前要求。保留用户明确约束，但若用户未要求全部免费或当前可报名，不得自行把它们升级为资料收集的硬条件；可以依据原文明确说明某赛事不适合预算。只从本轮真实读取正文形成赛事事实，旧助手结论和搜索标题不是事实。优先检索明确赛名及其规则/高校通知，不以编程语言或年份代替赛事名。" }] : opts.history ?? []),
       { role: "user", content: userContent }];
   const recoveryIndex = messages.findLastIndex(m => m.role === "system" && String(m.content).startsWith(OUTPUT_RECOVERY_MARKER));
@@ -342,6 +353,7 @@ async function runAgentLoopInternal(opts: {
   };
   const deliverableNames = requestedDeliverable(opts.user);
   const deliverableList = requestedDeliverableList(opts.user);
+  let planNudges = 0;
   // 进度控制：连续只读 / 连续跑脚本无产物 两类停滞各提醒一次（上限 1 次/类），并把重复的相同观测
   // 在模型可见上下文里压缩为引用（transcript 保留原文），减少长会话的重复上下文。
   const mutationIntent = MUTATION_INTENT.test(opts.user);
@@ -695,12 +707,28 @@ async function runAgentLoopInternal(opts: {
         messages.push(request);
         transcript.push(structuredClone(request));
         const toolNudges: string[] = [];
+        const prefetched = new Map<string, string>();
+        // 并行只读批处理（需调用方显式开启）：整批只读且工具预算余量足够时并发，减少多读操作的串行 RTT；
+        // 写入/审批/有依赖的调用仍按原顺序执行，审批暂停与预算暂停语义不变。
+        if (deps.parallelReads && res.toolCalls.length > 1 && res.toolCalls.every((call) => parallelReadSafe(call.function.name))
+            && deps.budget.toolCalls - usage.toolCalls >= res.toolCalls.length) {
+          const outputs = await Promise.all(res.toolCalls.map(async (call) => {
+            let callArgs: Record<string, unknown> = {};
+            let callParseError = false;
+            try { callArgs = JSON.parse(call.function.arguments || "{}"); } catch { callParseError = true; }
+            const callOrdinal = transcript.findLastIndex((m) => m.role === "assistant" && Boolean(m.tool_calls?.some((c) => c.id === call.id)));
+            const callOut = await tracedTool(call.function.name, callArgs, call.id, `native:${callOrdinal}:${call.id}`, false, callParseError);
+            return { id: call.id, out: callOut };
+          }));
+          for (const item of outputs) prefetched.set(item.id, item.out);
+          await emit("tool.parallel_batch", { round: i, tools: res.toolCalls.map((call) => call.function.name) });
+        }
         for (const call of res.toolCalls) {
           let args: Record<string, unknown> = {};
           let parseError = false;
           try { args = JSON.parse(call.function.arguments || "{}"); } catch { parseError = true; }
           const ordinal = transcript.findLastIndex((m) => m.role === "assistant" && Boolean(m.tool_calls?.some((c) => c.id === call.id)));
-          const out = await tracedTool(call.function.name, args, call.id, `native:${ordinal}:${call.id}`, false, parseError);
+          const out = prefetched.get(call.id) ?? await tracedTool(call.function.name, args, call.id, `native:${ordinal}:${call.id}`, false, parseError);
           usage.toolCalls += 1;
           const prepared = await hooks.prepareToolResult?.(call.function.name, out) ?? out;
           const visible = rememberObservation(call.function.name, args, prepared);
@@ -795,6 +823,12 @@ async function runAgentLoopInternal(opts: {
           messages.push(notice); transcript.push(structuredClone(notice)); await checkpoint(); continue;
         }
       }
+      // 计划提醒：有 todo 工具、任务是写入/多步类、已跑 4 轮仍未建立计划时提醒一次（借鉴 TodoWrite 纪律）。
+      if (known.has("todo_write") && mutationIntent && planNudges < 1 && i >= 3 && !actions.includes("todo_write") && !synthesizing) {
+        planNudges += 1;
+        const notice: ChatMessage = { role: "system", content: "【计划提醒】这是多步任务，但还没有建立计划清单。请先用 todo_write 列出 3–8 步可验证计划（含当前步骤 in_progress），然后继续执行并逐步更新状态。" };
+        messages.push(notice); transcript.push(structuredClone(notice)); await checkpoint(); continue;
+      }
       const warning = uncertainEffects ? "存在操作结果未确认，请核对后用新消息继续。\n\n" : "";
       let finalReply = warning + (res.content.trim() ? res.content : (actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}。` : "（模型未返回内容，请重试或换一种问法）"));
       if (briefInformation && attemptedWeb && !known.has("web_fetch")) finalReply += "\n\n以上仅为搜索线索，当前未读取网页正文，报名日期等细节尚未核实。";
@@ -852,5 +886,8 @@ async function runAgentLoopInternal(opts: {
     return { reply: `${done}处理过程中出现异常（${reason}），这不是模型连接问题。`, actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, error: reason };
   }
 }
+
+
+
 
 

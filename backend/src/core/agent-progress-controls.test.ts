@@ -83,4 +83,58 @@ test("网络中断后做一次有界重发，并保留续跑提示", async () =>
   assert.ok(f.requests[1].messages.some((m) => typeof m.content === "string" && m.content.startsWith("【网络中断续跑】")));
   assert.match(r.reply, /继续完成/);
 });
+test("todo 工具存在时注入计划指导", async () => {
+  const f = fixture([{ content: "好的。" }]);
+  const deps = { ...f.deps, tools: [...f.deps.tools, tool("todo_write")] };
+  await runAgentLoop({ system: "s", user: "整理数据并写入报告", deps });
+  assert.ok(f.requests[0].messages.some((m) => typeof m.content === "string" && m.content.startsWith("【任务计划】")));
+});
 
+test("多步任务 4 轮仍无计划时提醒一次建立计划", async () => {
+  const script = [
+    readRound(0), readRound(1), readRound(2), readRound(3),
+    { content: "已完成。" },
+  ];
+  const f = fixture(script);
+  const deps = { ...f.deps, tools: [...f.deps.tools, tool("todo_write")] };
+  await runAgentLoop({ system: "s", user: "整理这些文件并写入汇总报告", deps });
+  assert.ok(f.requests.length >= 6);
+  assert.ok(f.requests[5].messages.some((m) => typeof m.content === "string" && m.content.startsWith("【计划提醒】")));
+});
+test("parallelReads 开启时同一轮多个只读并发执行，观测顺序保持调用顺序", async () => {
+  const calls = [0, 1, 2].map((i) => ({ id: `p${i}`, type: "function", function: { name: "workspace_read", arguments: JSON.stringify({ path: `p${i}.txt` }) } }));
+  const f = fixture([{ content: "", toolCalls: calls }, { content: "读取完成" }]);
+  let active = 0, maxActive = 0;
+  const deps = {
+    ...f.deps,
+    parallelReads: true,
+    executeTool: async (_name: string, args: Record<string, unknown>) => {
+      active += 1; maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      active -= 1;
+      return JSON.stringify({ ok: true, path: args.path });
+    },
+  };
+  const r = await runAgentLoop({ system: "s", user: "读取这三个文件", deps });
+  assert.ok(maxActive >= 2, `expect parallel reads, maxActive=${maxActive}`);
+  const paths = r.transcript.filter((m) => m.role === "tool").map((m) => { try { return JSON.parse(String(m.content)).path; } catch { return null; } });
+  assert.deepEqual(paths, ["p0.txt", "p1.txt", "p2.txt"]);
+  assert.match(r.reply, /读取完成/);
+});
+
+test("parallelReads 关闭时保持串行", async () => {
+  const calls = [0, 1, 2].map((i) => ({ id: `s${i}`, type: "function", function: { name: "workspace_read", arguments: JSON.stringify({ path: `s${i}.txt` }) } }));
+  const f = fixture([{ content: "", toolCalls: calls }, { content: "读取完成" }]);
+  let active = 0, maxActive = 0;
+  const deps = {
+    ...f.deps,
+    executeTool: async (_name: string, args: Record<string, unknown>) => {
+      active += 1; maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return JSON.stringify({ ok: true, path: args.path });
+    },
+  };
+  await runAgentLoop({ system: "s", user: "读取这三个文件", deps });
+  assert.equal(maxActive, 1);
+});

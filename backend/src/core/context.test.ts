@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupTurns, validatePairing, trimToBudget, composeContext, estimateTokens, messagesTokens } from "./context.ts";
+import { groupTurns, validatePairing, trimToBudget, composeContext, estimateTokens, messagesTokens, COMPACTION_SUMMARY_MARKER } from "./context.ts";
 import { InMemoryMemoryStore } from "./memory.ts";
 import { buildContext, retrieveRelevantMemory, taskContextSummary } from "./context-builder.ts";
 import type { ChatMessage } from "./types.ts";
@@ -130,4 +130,35 @@ test("retrieveRelevantMemory 按 user+task 隔离检索", async () => {
   assert.match(mem, /核验流程/);
   const other = await retrieveRelevantMemory(store, "u2", "t1");
   assert.equal(other, ""); // 跨用户无记忆
+});
+test("压缩摘要结构化保留目标/计划/产物/证据/未完成", () => {
+  const filler = (i: number): ChatMessage[] => [
+    { role: "assistant", content: "", tool_calls: [{ id: `f${i}`, type: "function", function: { name: "workspace_read", arguments: JSON.stringify({ path: `data/f${i}.txt` }) } }] },
+    { role: "tool", content: "x".repeat(500), tool_call_id: `f${i}` },
+  ];
+  const messages: ChatMessage[] = [
+    sys("规则"),
+    usr("把成绩表整理成 data/report.docx 并引用官方来源"),
+    { role: "assistant", content: "", tool_calls: [{ id: "s1", type: "function", function: { name: "web_search", arguments: JSON.stringify({ query: "通知" }) } }] },
+    { role: "tool", content: JSON.stringify({ results: [{ title: "官方通知", url: "https://example.edu/notice" }] }), tool_call_id: "s1" },
+    { role: "assistant", content: "", tool_calls: [{ id: "t1", type: "function", function: { name: "todo_write", arguments: JSON.stringify({ todos: [{ content: "读取成绩表", status: "completed" }, { content: "生成 report.docx", status: "in_progress" }] }) } }] },
+    { role: "tool", content: JSON.stringify({ ok: true }), tool_call_id: "t1" },
+    { role: "assistant", content: "", tool_calls: [{ id: "w1", type: "function", function: { name: "workspace_write", arguments: JSON.stringify({ path: "data/report.docx", content: "..." }) } }] },
+    { role: "tool", content: JSON.stringify({ ok: true, path: "data/report.docx" }), tool_call_id: "w1" },
+    { role: "assistant", content: "", tool_calls: [{ id: "e1", type: "function", function: { name: "workspace_run", arguments: JSON.stringify({ program: "python3", argv: ["-c", "print(1)"] }) } }] },
+    { role: "tool", content: JSON.stringify({ error: "web_fetch 失败：读取超时" }), tool_call_id: "e1" },
+    ...Array.from({ length: 6 }, (_, i) => filler(i)).flat(),
+  ];
+  const out = trimToBudget(messages, 900, 0, 120);
+  assert.equal(out.compressed, true);
+  const summary = out.messages.find((m) => m.role === "system" && String(m.content).startsWith(COMPACTION_SUMMARY_MARKER));
+  assert.ok(summary);
+  const text = String(summary!.content);
+  assert.match(text, /【目标】/);
+  assert.match(text, /report\.docx/);
+  assert.match(text, /https:\/\/example\.edu\/notice/);
+  assert.match(text, /【计划】/);
+  assert.match(text, /读取成绩表|生成 report\.docx/);
+  assert.match(text, /【未完成\/错误】/);
+  assert.equal(validatePairing(out.messages).ok, true);
 });

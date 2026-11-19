@@ -80,6 +80,43 @@ export function workspaceTools(files: WorkspaceFiles): WorkspaceTool[] {
         return files.run(program, argv, cwd, bounded(args.timeoutMs, 15000, 500, 45000));
       },
     },
+    {
+      // 计划清单：整表替换（last-write-wins），无 id/优先级，只保留 content+三态。
+      // 借鉴 DSH todo 与 Claude Code TodoWrite：长任务把计划外化为可回放的显式状态，压缩摘要与恢复都保留它。
+      definition: tool("todo_write", "维护当前多步任务的计划清单（整表替换）。多步任务开始前先建立 3–8 步计划；每完成一步更新状态；全部完成后才报告完成。todos 为 [{content, status}]，status 取 pending/in_progress/completed。", {
+        todos: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { content: text, status: { type: "string", enum: ["pending", "in_progress", "completed"] } },
+            required: ["content", "status"],
+            additionalProperties: false,
+          },
+        },
+      }, ["todos"]),
+      capability: "skills.builtin",
+      execute: (args) => {
+        const todos = args.todos;
+        if (!Array.isArray(todos) || todos.length > 20) throw new Error("todos 必须是 0–20 条的数组");
+        const normalized = todos.map((item, index) => {
+          const entry = item as { content?: unknown; status?: unknown };
+          const content = String(entry.content ?? "").trim();
+          if (!content || content.length > 300) throw new Error(`第 ${index + 1} 条计划的内容必须在 1–300 字符之间`);
+          const status = String(entry.status ?? "");
+          if (!["pending", "in_progress", "completed"].includes(status)) throw new Error(`第 ${index + 1} 条计划的状态必须是 pending/in_progress/completed`);
+          return { content, status: status as "pending" | "in_progress" | "completed" };
+        });
+        const done = normalized.filter((item) => item.status === "completed").length;
+        const active = normalized.find((item) => item.status === "in_progress");
+        return {
+          ok: true,
+          todos: normalized,
+          progress: `${done}/${normalized.length}`,
+          next: active?.content ?? null,
+          note: "计划已记录（整表替换）。继续执行当前步骤；完成一步后更新状态；全部完成后再报告完成，不要停在计划阶段。",
+        };
+      },
+    },
   ];
 }
 
