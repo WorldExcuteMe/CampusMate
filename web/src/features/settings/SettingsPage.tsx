@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { useRepository } from "@/app/auth";
 import { resetDemo } from "@/lib/data/demo";
-import { useAppearance, type ThemeMode, type StepDensity } from "@/lib/theme";
+import { useAppearance, type ThemeMode, type StepDensity, type StepCollapseTiming, type StepReplyRetention } from "@/lib/theme";
 import { useSessions } from "@/lib/agent/sessions-context";
 import { useAuth } from "@/app/auth";
 import { cn } from "@/lib/utils";
@@ -186,11 +186,30 @@ export function SettingsPage() {
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label className="text-xs text-muted-foreground">工作步骤展示</Label>
-                  <select className="h-9 rounded-md border border-input bg-background px-2 text-sm" value={appearance.stepDensity} onChange={(e) => setAppearance({ stepDensity: e.target.value as StepDensity })}>
+                  <select aria-label="工作步骤展示" className="h-9 rounded-md border border-input bg-background px-2 text-sm" value={appearance.stepDensity} onChange={(e) => setAppearance({ stepDensity: e.target.value as StepDensity })}>
                     <option value="compact">精简</option>
                     <option value="standard">标准</option>
                     <option value="detailed">详细</option>
                   </select>
+                  <p className="text-[11px] text-muted-foreground">选择希望看到多少工具调用细节</p>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label className="text-xs text-muted-foreground">工作步骤收起时机</Label>
+                  <select aria-label="工作步骤收起时机" className="h-9 rounded-md border border-input bg-background px-2 text-sm" value={appearance.stepCollapseTiming} onChange={(e) => setAppearance({ stepCollapseTiming: e.target.value as StepCollapseTiming })}>
+                    <option value="after_answer">回答结束后</option>
+                    <option value="immediate">立即收起</option>
+                    <option value="manual">手动收起</option>
+                  </select>
+                  <p className="text-[11px] text-muted-foreground">选择何时自动收起工作步骤</p>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label className="text-xs text-muted-foreground">收起后显示的回复</Label>
+                  <select aria-label="收起后显示的回复" className="h-9 rounded-md border border-input bg-background px-2 text-sm" value={appearance.stepReplyRetention} onChange={(e) => setAppearance({ stepReplyRetention: e.target.value as StepReplyRetention })}>
+                    <option value="all">全部回复</option>
+                    <option value="final">仅最终回复</option>
+                    <option value="hidden">不显示</option>
+                  </select>
+                  <p className="text-[11px] text-muted-foreground">工作步骤收起后，保留哪些助手回复</p>
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label className="text-xs text-muted-foreground">语言</Label>
@@ -255,3 +274,5 @@ export function SettingsPage() {
     </div>
   );
 }
+
+

@@ -50,7 +50,8 @@ export async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return JSON.parse(text) as T;
 }
 
-export interface TaskInput { title: string; intent?: string; sessionId?: string; turnId?: string; images?: string[]; providerId?: string; reasoning?: "auto" | "low" | "medium" | "high"; }
+export type ReasoningPreference = "auto" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export interface TaskInput { title: string; intent?: string; sessionId?: string; turnId?: string; images?: string[]; providerId?: string; reasoning?: ReasoningPreference; }
 export async function createTask(input: TaskInput): Promise<{ taskId: string; status: string }> {
   return req("/v1/tasks", { method: "POST", body: JSON.stringify(input) });
 }
@@ -224,3 +225,4 @@ export async function runTaskViaBackend(input: TaskInput, onProgress?: (t: Agent
     if (options.signal?.aborted) abort();
   });
 }
+

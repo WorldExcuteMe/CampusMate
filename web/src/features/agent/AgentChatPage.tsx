@@ -16,7 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useRepository } from "@/app/auth";
 import { runChat } from "@/lib/agent/chat";
-import { backendEnabled, runTaskViaBackend, ensureSession, getLocalWorkspace, setLocalWorkspacePermission } from "@/lib/agent/api-client";
+import { backendEnabled, runTaskViaBackend, ensureSession, getLocalWorkspace, setLocalWorkspacePermission, type ReasoningPreference } from "@/lib/agent/api-client";
 import { localWorkspaceIdentity } from "@/lib/agent/local-workspace";
 import { errorMessage } from "@/lib/llm/errors";
 import { listProviders, type ProviderPublic, type ChatMessage } from "@/lib/llm/proxy";
@@ -32,6 +32,7 @@ import { useTaskMonitor } from "./use-task-monitor";
 import { TaskWorkspace } from "./TaskWorkspace";
 import { ChatMessageRow } from './ChatMessageRow';
 import { AgentActivityCard } from "./AgentActivityCard";
+import { ContextUsage } from "./ContextUsage";
 import type { AgentActivity } from "@/lib/agent/progress";
 import { IMAGE_LIMIT_HINT, imageLimitError } from '../../../../shared/attachments';
 import { ATTACHMENT_ACCEPT, ATTACHMENT_LIMIT_DETAILS, ATTACHMENT_LIMIT_HINT, attachmentSendError, composeAttachmentText } from '@/lib/ingest/limits';
@@ -101,6 +102,7 @@ export function AgentChatPage() {
   const provider = providers.find((p: ProviderPublic) => p.id === providerId) ?? providers.find((p) => p.isDefault) ?? providers[0];
   const modelName = provider?.model || "未知模型";
   const contextCap = (backendEnabled() ? active.contextCap : provider?.contextLimit) ?? null;
+  const currentTask = active.currentTaskId ? active.taskViews?.[active.currentTaskId]?.task : undefined;
   const monitor = useTaskMonitor(active, update, busy);
   const busyUI = busy || Object.values(active.taskViews ?? {}).some((view) => ["queued", "running"].includes(view.task.status));
 
@@ -438,24 +440,21 @@ export function AgentChatPage() {
             </Select>
             <label className="flex items-center gap-1 text-xs text-muted-foreground">思考
               <select aria-label="思考强度" className="h-8 rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={reasoning} onChange={(e) => { const value = e.target.value as typeof reasoning; setReasoning(value); localStorage.setItem(`campusmate.reasoning:${owner}`, value); }}>
-                <option value="auto">自动</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option>
+                <option value="auto">自动</option><option value="minimal">最低</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">极高</option><option value="max">最大</option>
               </select>
             </label>
             {provider?.capabilities?.reasoning === 'deepseek_thinking' ? <span className="text-xs text-muted-foreground" title="当前模型已接入思考与工具调用；低/中/高分别对应官方low/high/max，内部思考不作为聊天正文展示。">DeepSeek 思考已接入</span> : !["reasoning_effort", "enable_thinking", "chat_template_kwargs"].includes(String(provider?.capabilities?.reasoning)) && <span className="text-xs text-muted-foreground">尚未确认该接口的思考控制能力</span>}
             {providerError && <span className="text-xs text-destructive">模型目录加载失败：{errorMessage(providerError)}</span>}
             {active.actualModel && <span className="text-xs text-muted-foreground" title={`最近任务配置：${active.configuredModel ?? "未知"}`}>最近返回：{active.actualModel}</span>}
-            <span
-              className="text-xs text-muted-foreground"
-              title={`上下文组成：system+工具定义+历史摘要+近期历史+当前输入+输出预留；模型 ${active.actualModel ?? modelName} 上限 ${contextCap?.toLocaleString() ?? "未知"} tok；累计用量 ${(active?.tokens ?? 0).toLocaleString()} tok`}
-            >
-              窗口输入 {active?.contextUsed === undefined ? "未知" : `${active.promptSource === "estimated" ? "约 " : ""}${active.contextUsed.toLocaleString()}`} / {contextCap?.toLocaleString() ?? "上限未知"} tok · 累计 {(active?.tokens ?? 0).toLocaleString()} tok
-              {active?.compressed && (
-                <span className="ml-1 rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">已压缩</span>
-              )}
-              {active?.pruned && !active?.compressed && (
-                <span className="ml-1 rounded bg-info/15 px-1 py-0.5 text-info">工具截断</span>
-              )}
-            </span>
+            <ContextUsage
+              used={active?.contextUsed}
+              cap={contextCap}
+              tokens={active?.tokens}
+              lastRequest={currentTask?.modelRuntime?.lastRequest}
+              compressed={active?.compressed}
+              pruned={active?.pruned}
+              model={active.actualModel ?? modelName}
+            />
             <Button size="sm" className="ml-auto" disabled={initialLoading || !composer.ready || composer.resolving || Boolean(composer.conflict) || incompleteAttachments || busyUI || (!input.trim() && attachments.length === 0)} onClick={() => send()}>
               {busyUI ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
               {busyUI ? "处理中" : "发送"}
@@ -467,3 +466,5 @@ export function AgentChatPage() {
     </div>
   );
 }
+
+

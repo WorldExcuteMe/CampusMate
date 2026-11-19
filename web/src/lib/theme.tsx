@@ -2,15 +2,19 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 
 export type ThemeMode = "light" | "dark" | "system";
 export type StepDensity = "compact" | "standard" | "detailed";
+export type StepCollapseTiming = "after_answer" | "immediate" | "manual";
+export type StepReplyRetention = "all" | "final" | "hidden";
 export interface Appearance {
   theme: ThemeMode;
   fontSize: number;
   stepDensity: StepDensity;
+  stepCollapseTiming: StepCollapseTiming;
+  stepReplyRetention: StepReplyRetention;
   language: "zh" | "en";
 }
 
 const KEY = "campusmate.appearance";
-const DEFAULT: Appearance = { theme: "light", fontSize: 14, stepDensity: "standard", language: "zh" };
+const DEFAULT: Appearance = { theme: "light", fontSize: 14, stepDensity: "standard", stepCollapseTiming: "after_answer", stepReplyRetention: "all", language: "zh" };
 
 function load(): Appearance {
   try {
@@ -62,3 +66,4 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
 }
 
 export const useAppearance = () => useContext(Ctx);
+

@@ -10,6 +10,8 @@ import { backendEnabled } from "@/lib/agent/api-client";
 import { useAuth } from "@/app/auth";
 import { errorMessage } from "@/lib/llm/errors";
 
+const CONTEXT_PRESETS: number[] = [131072, 200000, 262144, 500000, 1000000];
+const CONTEXT_LABELS: Record<string, string> = { "131072": "128K", "200000": "200K", "262144": "256K", "500000": "500K", "1000000": "1M" };
 const blank = () => ({ id: `provider-${crypto.randomUUID()}`, name: "", baseUrl: "", protocol: "openai", model: "", apiKey: "", contextLimit: "" });
 const capabilityLabel = (value: unknown) => value === true ? "支持" : value === false ? "不支持" : "待实际请求确认";
 
@@ -89,7 +91,12 @@ export function ProviderSettings() {
           <div><Label htmlFor="provider-url">API 地址</Label><Input id="provider-url" type="url" required disabled={!enabled} placeholder="https://api.example.com/v1" value={form.baseUrl} onChange={set("baseUrl")} /></div>
           <div><Label htmlFor="provider-model">模型 ID</Label><Input id="provider-model" required disabled={!enabled} placeholder="服务商提供的模型ID" value={form.model} onChange={set("model")} /></div>
           <div><Label htmlFor="provider-key">API 密钥</Label><Input id="provider-key" type="password" autoComplete="off" disabled={!enabled} placeholder={editing ? "留空保留原密钥" : "仅提交到认证后端"} value={form.apiKey} onChange={set("apiKey")} /></div>
-          <p className="text-xs text-muted-foreground sm:col-span-2">只需填写API地址、模型ID和密钥，连接ID已自动生成，显示名称可留空。已知接口按厂商规则自动适配，其他能力在实际请求中确认；当前支持OpenAI Chat Completions兼容协议。</p>
+          <div><Label htmlFor="provider-context">上下文容量</Label><select id="provider-context" aria-label="上下文容量" disabled={!enabled} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={form.contextLimit} onChange={(e) => setForm((old) => ({ ...old, contextLimit: e.target.value }))}>
+            <option value="">默认（按模型能力自动）</option>
+            {CONTEXT_PRESETS.map((n) => <option key={n} value={n}>{CONTEXT_LABELS[String(n)]}（{n.toLocaleString()} tok）</option>)}
+            {form.contextLimit && !CONTEXT_LABELS[form.contextLimit] && <option value={form.contextLimit}>自定义（{Number(form.contextLimit).toLocaleString()} tok）</option>}
+          </select><p className="mt-1 text-[11px] text-muted-foreground">窗口越大缓存与成本越高；留空则使用端点默认。</p></div>
+          <p className="text-xs text-muted-foreground sm:col-span-2">只需填写 API 地址、模型 ID 和密钥；上下文容量按 200K/500K/1M 等预设选择（也可留空自动）。已知接口按厂商规则自动适配，思考/推理能力按端点返回自动识别。</p>
           {(save.error || action.error) && <p role="alert" className="text-sm text-destructive sm:col-span-2">{errorMessage(save.error ?? action.error)}</p>}
           <div className="flex gap-2 sm:col-span-2"><Button type="submit" disabled={!enabled || !form.id || !form.model || !form.baseUrl || save.isPending}><Plus className="size-4" />{save.isPending ? "正在保存…" : editing ? "保存更改" : "添加供应商"}</Button>{editing && <Button type="button" variant="ghost" onClick={() => { setForm(blank()); setEditing(false); }}>取消编辑</Button>}</div>
         </form>
@@ -97,3 +104,5 @@ export function ProviderSettings() {
     </Card>
   );
 }
+
+
