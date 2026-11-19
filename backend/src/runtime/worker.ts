@@ -429,29 +429,33 @@ export class Worker {
         }) : await runAgentLoop(loopOptions);
       await eventQueue;
       await checkCurrent();
-      const recoveredCalls = new Set((await store.listEvents(task.id)).filter(e => e.type === 'tool.recovered').map(e => String(e.payload.callInstanceId)));
-      if (!result.delivery && this.artifacts) {
-        const events = (await store.listEvents(task.id)).filter((e) => e.type === "tool.result" && String(e.payload.name).startsWith("document_") && !recoveredCalls.has(String(e.payload.callInstanceId)));
-        if (events.length) {
-          const latest = new Map(events.map((e) => [String(e.payload.invocationId ?? e.payload.callInstanceId), e]));
-          const documents = (await this.artifacts.listByTask(task.userId, task.id)).filter((a) => a.kind === "document");
-          const byDocument = new Map<string, typeof documents[number]>(); for (const a of documents) if ((byDocument.get(a.documentId)?.revision ?? 0) < a.revision) byDocument.set(a.documentId, a);
-          const checks = [{ id: "document_tools", passed: [...latest.values()].every((e) => e.payload.ok === true), detail: "文档工具请求均有真实成功结果；失败保留为未完成" }, { id: "document_artifact", passed: !events.some((e) => e.payload.name === "document_create") || documents.length > 0, detail: "创建请求必须存在可读取的文档产物" }];
-          result.delivery = { artifactIds: [...byDocument.values()].map((a) => a.id).slice(-8), checks, passed: checks.every((c) => c.passed) };
+      let recoveredCalls = new Set<string>();
+      const prepareDelivery = async () => {
+        recoveredCalls = new Set((await store.listEvents(task.id)).filter(e => e.type === 'tool.recovered').map(e => String(e.payload.callInstanceId)));
+        if (!result.delivery && this.artifacts) {
+          const events = (await store.listEvents(task.id)).filter((e) => e.type === "tool.result" && String(e.payload.name).startsWith("document_") && !recoveredCalls.has(String(e.payload.callInstanceId)));
+          if (events.length) {
+            const latest = new Map(events.map((e) => [String(e.payload.invocationId ?? e.payload.callInstanceId), e]));
+            const documents = (await this.artifacts.listByTask(task.userId, task.id)).filter((a) => a.kind === "document");
+            const byDocument = new Map<string, typeof documents[number]>(); for (const a of documents) if ((byDocument.get(a.documentId)?.revision ?? 0) < a.revision) byDocument.set(a.documentId, a);
+            const checks = [{ id: "document_tools", passed: [...latest.values()].every((e) => e.payload.ok === true), detail: "文档工具请求均有真实成功结果；失败保留为未完成" }, { id: "document_artifact", passed: !events.some((e) => e.payload.name === "document_create") || documents.length > 0, detail: "创建请求必须存在可读取的文档产物" }];
+            result.delivery = { artifactIds: [...byDocument.values()].map((a) => a.id).slice(-8), checks, passed: checks.every((c) => c.passed) };
+          }
         }
-      }
-      const businessEvents = (await store.listEvents(task.id)).filter(e => e.type === 'tool.result' && BUSINESS_TOOL_NAMES.some(name => name === e.payload.name) && !recoveredCalls.has(String(e.payload.callInstanceId)));
-      if (businessEvents.length) {
-        const latest = new Map(businessEvents.map(e => [String(e.payload.invocationId ?? e.payload.callInstanceId), e]));
-        const passed = [...latest.values()].every(e => e.payload.ok === true);
-        const check = { id: 'business_tools', passed, detail: '通知、待办、目标与合并请求必须收到实际保存成功结果，模型口头承诺不算完成' };
-        result.delivery = { artifactIds: result.delivery?.artifactIds ?? [], checks: [...(result.delivery?.checks ?? []), check], passed: (result.delivery?.passed ?? true) && passed };
-        if (!passed) {
-          result.reply = '任务未通过验收：本轮业务操作未全部确认成功。已提交的部分结果会保留，请查看执行记录及通知/待办列表，核实后重试；不能把模型口头答复当作保存成功。';
-          if (/只.*预览|(?:不要|不|勿)(?:写入|保存)/.test(task.intent)) result.reply = '本轮要求仅预览，写入请求未获成功确认。' + result.reply;
-          for (const messages of [result.messages, result.transcript]) { const last = messages.at(-1); if (last?.role === 'assistant') last.content = result.reply; }
+        const businessEvents = (await store.listEvents(task.id)).filter(e => e.type === 'tool.result' && BUSINESS_TOOL_NAMES.some(name => name === e.payload.name) && !recoveredCalls.has(String(e.payload.callInstanceId)));
+        if (businessEvents.length) {
+          const latest = new Map(businessEvents.map(e => [String(e.payload.invocationId ?? e.payload.callInstanceId), e]));
+          const passed = [...latest.values()].every(e => e.payload.ok === true);
+          const check = { id: 'business_tools', passed, detail: '通知、待办、目标与合并请求必须收到实际保存成功结果，模型口头承诺不算完成' };
+          result.delivery = { artifactIds: result.delivery?.artifactIds ?? [], checks: [...(result.delivery?.checks ?? []), check], passed: (result.delivery?.passed ?? true) && passed };
+          if (!passed) {
+            result.reply = '任务未通过验收：本轮业务操作未全部确认成功。已提交的部分结果会保留，请查看执行记录及通知/待办列表，核实后重试；不能把模型口头答复当作保存成功。';
+            if (/只.*预览|(?:不要|不|勿)(?:写入|保存)/.test(task.intent)) result.reply = '本轮要求仅预览，写入请求未获成功确认。' + result.reply;
+            for (const messages of [result.messages, result.transcript]) { const last = messages.at(-1); if (last?.role === 'assistant') last.content = result.reply; }
+          }
         }
-      }
+      };
+      await prepareDelivery();
       latestState = { messages: result.messages, transcript: result.transcript, documentRun: latestState?.documentRun, stepProgress: latestState?.stepProgress ?? {}, repeat: latestState?.repeat ?? {}, usage: result.usage, pendingApprovals: [] };
       if (!task.turnId) await saveTranscript(result.transcript);
 
@@ -476,11 +480,48 @@ export class Worker {
         return;
       }
 
-      let certificate = await this.evaluator(task, result);
-      const executionPassed = !result.error && !result.mock && !result.truncated && !result.budgetExceeded && !result.toolErrors && (!result.stopReason || result.stopReason === "completed");
-      certificate = { ...certificate, passed: certificate.passed && executionPassed, criteria: [...certificate.criteria, { id: "runtime_execution", passed: executionPassed, evidenceIds: [], note: executionPassed ? recoveredCalls.size ? `正常结束，${recoveredCalls.size}次工具失败已由同一操作的成功重试恢复` : "正常结束，未观测到工具失败" : executionFailure(result) }] };
-      if (result.delivery) certificate = { ...certificate, passed: certificate.passed && result.delivery.passed, criteria: [...certificate.criteria, ...result.delivery.checks.map((c) => ({ id: c.id, passed: c.passed, evidenceIds: [], note: c.detail }))] };
+      const applyRuntimeCriteria = (cert: CompletionCertificate): CompletionCertificate => {
+        const executionPassed = !result.error && !result.mock && !result.truncated && !result.budgetExceeded && !result.toolErrors && (!result.stopReason || result.stopReason === "completed");
+        let next: CompletionCertificate = { ...cert, passed: cert.passed && executionPassed, criteria: [...cert.criteria, { id: "runtime_execution", passed: executionPassed, evidenceIds: [], note: executionPassed ? recoveredCalls.size ? `正常结束，${recoveredCalls.size}次工具失败已由同一操作的成功重试恢复` : "正常结束，未观测到工具失败" : executionFailure(result) }] };
+        if (result.delivery) next = { ...next, passed: next.passed && result.delivery.passed, criteria: [...next.criteria, ...result.delivery.checks.map((c) => ({ id: c.id, passed: c.passed, evidenceIds: [], note: c.detail }))] };
+        return next;
+      };
+      let certificate = applyRuntimeCriteria(await this.evaluator(task, result));
       await store.appendEvent({ taskId: task.id, userId: task.userId, type: certificate.passed ? "eval.passed" : "eval.failed", payload: { certificate } });
+
+      // 验收修复轮：验收失败时允许一次有界重入（借鉴 DSH/OpenHands 的 verification→repair 闭环）。
+      // 只把未通过项作为修复目标；预算/墙钟不足或执行异常时不重入，避免放大失败。
+      let repairAttempts = 0;
+      if (!certificate.passed && !result.paused && !result.truncated && !result.budgetExceeded && !result.error && !result.toolErrors && repairAttempts < 1) {
+        const failedCriteria = certificate.criteria.filter((c) => !c.passed);
+        if (failedCriteria.length > 0 && task.budget.wallMs - result.usage.wallMs > 90_000) {
+          repairAttempts += 1;
+          await store.appendEvent({ taskId: task.id, userId: task.userId, type: "eval.repair", payload: { attempt: repairAttempts, failed: failedCriteria.map((c) => c.id) } });
+          const repairNotice = "【验收修复】上一轮结束时仍有验收项未通过：" + failedCriteria.map((c) => `${c.id}:${c.note}`).slice(0, 6).join("；") + "。请只修复这些缺口：核对真实产物与证据，补齐后回读确认；不要重复已完成步骤，不要只解释。";
+          try {
+            const repaired = await runAgentLoop({ ...loopOptions, user: repairNotice, resumeMessages: result.messages, resumeTranscript: result.transcript, initialUsage: { ...result.usage }, repeat, deps: { ...loopOptions.deps, maxRounds: 6 } });
+            await eventQueue;
+            await checkCurrent();
+            result.actions = [...result.actions, ...repaired.actions];
+            result.usage = repaired.usage;
+            result.reply = repaired.reply;
+            result.transcript = repaired.transcript;
+            result.messages = repaired.messages;
+            result.telemetry = repaired.telemetry ?? result.telemetry;
+            result.toolErrors = (result.toolErrors ?? 0) + (repaired.toolErrors ?? 0);
+            result.stopReason = repaired.stopReason;
+            result.error = repaired.error;
+            result.truncated = repaired.truncated;
+            result.budgetExceeded = repaired.budgetExceeded;
+            result.paused = repaired.paused;
+            await prepareDelivery();
+            certificate = applyRuntimeCriteria(await this.evaluator(task, result));
+            await store.appendEvent({ taskId: task.id, userId: task.userId, type: certificate.passed ? "eval.passed" : "eval.failed", payload: { certificate, repair: true } });
+          } catch (error) {
+            await store.appendEvent({ taskId: task.id, userId: task.userId, type: "eval.repair_failed", payload: { message: errorMessage(error) } }).catch(() => {});
+          }
+        }
+      }
 
       if (canMarkSucceeded(certificate.passed)) {
         await finishTurn({
@@ -570,3 +611,6 @@ function withTimeout<T>(p: Promise<T>, ms: number, tool: string): Promise<T> {
     p.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
   });
 }
+
+
+

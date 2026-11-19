@@ -88,3 +88,33 @@ test("propose_verification 自填 VERIFIED → acceptedStatus 降级 UNVERIFIED�
   assert.equal(parsed.evidenceIds.length, 1);
   assert.equal((await evidenceStore.listByTask("t1")).length, 1);
 });
+test("验收失败后执行一次有界修复轮，修复后通过", async () => {
+  const store = new InMemoryStore();
+  const t = await store.createTask({ userId: "u1", title: "生成报告" });
+  let chatCalls = 0;
+  const transport: LlmTransport = {
+    async chat(): Promise<ChatResult> { chatCalls += 1; return { content: "已修复并核对。", toolCalls: [], usage: { input: 10, output: 5 }, model: "fake" }; },
+  };
+  let evaluations = 0;
+  const worker = new Worker({
+    store, transport, tools: [], approvals: new InMemoryApprovalStore(),
+    acceptance: () => [{ id: "deliverable", kind: "artifact_exists", params: {}, required: true }],
+    evaluator: async (task) => {
+      evaluations += 1;
+      return evaluations === 1
+        ? { taskId: task.id, evaluatedBy: "evaluator", passed: false, criteria: [{ id: "deliverable", passed: false, evidenceIds: [], note: "缺少 report.docx" }], evaluatedAt: Date.now() }
+        : { taskId: task.id, evaluatedBy: "evaluator", passed: true, criteria: [{ id: "deliverable", passed: true, evidenceIds: [], note: "report.docx 已存在" }], evaluatedAt: Date.now() };
+    },
+    buildSystem: () => "s",
+    executeTool: async () => "{}",
+    workerId: "w1", heartbeatMs: 1e9,
+  });
+  await worker.tick();
+  const done = await store.getTask(t.id);
+  assert.equal(done?.status, "succeeded");
+  assert.ok(evaluations >= 2);
+  assert.ok(chatCalls >= 2, `expect at least the initial and repair calls, got ${chatCalls}`);
+  const events = await store.listEvents(t.id);
+  assert.ok(events.some((e) => e.type === "eval.repair"));
+});
+
