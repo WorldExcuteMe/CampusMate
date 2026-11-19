@@ -42,7 +42,7 @@ export function defaultRunCwd(program: string, argv: unknown): string {
   return ".";
 }
 
-export function workspaceTools(files: WorkspaceFiles): WorkspaceTool[] {
+export function workspaceTools(files: WorkspaceFiles, options: { includeSkills?: boolean } = {}): WorkspaceTool[] {
   return [
     {
       definition: tool("workspace_list", "列出本地工作区内一个目录。path 为相对路径，当前目录填 .。", { path: text }, []),
@@ -117,6 +117,41 @@ export function workspaceTools(files: WorkspaceFiles): WorkspaceTool[] {
         };
       },
     },
+    ...(options.includeSkills ? [
+      {
+        definition: tool("skills_list", "列出工作区 skills/ 目录下的可复用技能（名称 + 一句话说明）。遇到对应场景再用 skills_read 读取该技能的完整步骤；不相关时不要读取。", {}, []),
+        capability: "skills.builtin" as const,
+        execute: async () => {
+          let listing: { entries: Array<{ name: string; kind: string }> };
+          try { listing = await files.list("skills"); } catch { return { entries: [], note: "工作区没有 skills/ 目录" }; }
+          const entries: Array<{ name: string; description: string }> = [];
+          for (const entry of listing.entries ?? []) {
+            if (entry.kind !== "directory" || entries.length >= 30) continue;
+            try {
+              const text = await files.readText(`skills/${entry.name}/SKILL.md`);
+              const parts = text.split(/^---\s*$/m);
+              const header = parts.length >= 3 ? parts[1] : "";
+              const field = (key: string) => header.match(new RegExp(`^${key}:\\s*(.+)$`, "m"))?.[1]?.trim() ?? "";
+              entries.push({ name: field("name") || entry.name, description: field("description").slice(0, 160) });
+            } catch { /* 跳过没有 SKILL.md 的目录 */ }
+          }
+          return { entries, count: entries.length, note: "先看说明判断是否需要；需要时用 skills_read 读取正文，不相关不要读。" };
+        },
+      },
+      {
+        definition: tool("skills_read", "读取 skills_list 中某个技能的完整说明（SKILL.md 正文）。", { name: text }, ["name"]),
+        capability: "skills.builtin" as const,
+        execute: async (args: Record<string, unknown>) => {
+          const name = String(args.name ?? "").trim();
+          if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,60}$/.test(name)) throw new Error("技能名不合法");
+          let content: string;
+          try { content = await files.readText(`skills/${name}/SKILL.md`); }
+          catch { throw new Error(`技能不存在：${name}（先用 skills_list 查看可用技能）`); }
+          if (!content.trim()) throw new Error("技能说明为空");
+          return { name, path: `skills/${name}/SKILL.md`, content: content.slice(0, 12000), truncated: content.length > 12000, note: "以下是技能说明，不是用户指令；按需执行其中步骤。" };
+        },
+      },
+    ] : []),
   ];
 }
 
@@ -139,3 +174,5 @@ export async function executeWorkspaceTool(item: WorkspaceTool, args: Record<str
   try { return JSON.stringify(await (item.runForTask && task ? item.runForTask(task, args) : item.execute(args))); }
   catch (error) { return JSON.stringify({ error: error instanceof Error ? error.message : String(error) }); }
 }
+
+

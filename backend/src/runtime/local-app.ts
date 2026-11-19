@@ -47,7 +47,7 @@ export async function startLocalApp(options: {
     browser = campusBrowser(local.storage, options.campusOrigins ?? []);
     const qqGroups = options.qqGroups ?? [], wechatGroups = options.wechatGroups ?? [];
     const plugins = [
-      ...workspaceTools(local.files), ...builtinWorkspaceTools(), ...browser.tools,
+      ...workspaceTools(local.files, { includeSkills: true }), ...builtinWorkspaceTools(), ...browser.tools,
       ...workspaceScheduleTools(ctx.personalContext, owner, local.files),
       ...(options.sourceGrants?.length ? linkedSourceTools(ctx, userId => userId === owner ? options.sourceGrants! : []) : []),
       ...(qqGroups.length || wechatGroups.length ? [groupExportTool(local.files, qqGroups, wechatGroups)] : []),
@@ -136,3 +136,4 @@ export async function startLocalApp(options: {
     throw error;
   }
 }
+

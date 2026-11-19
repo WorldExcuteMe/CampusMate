@@ -65,7 +65,8 @@
 | 2 | **TodoWrite 计划工具**：整表替换、三态、进度反馈；工具存在时注入计划规范，多步写入任务 4 轮无计划给一次提醒 | DSH todo / Claude Code TodoWrite | `runtime/workspace-tools.ts` 新增 `todo_write`；`agent-loop.ts` 注入 `【任务计划】` 与 `【计划提醒】` | `aa2e445` |
 | 3 | **并行只读批处理**：整批只读 + 无审批 + 工具预算余量足够时并发；观测顺序保持，写入/审批仍串行；事件 `tool.parallel_batch` | Codex 子代理/批处理、Gemini Scheduler | `agent-loop.ts`：`parallelReadSafe()` + Promise.all 预取；`deps.parallelReads` opt-in；串行/并行测试 | `aa2e445` |
 | 4 | **验收→修复轮**：验收失败且无暂停/截断/预算超限/未恢复工具错误时，用未通过项做一次有界重入（≤6 轮、剩余墙钟 >90s），重算交付检查并重新验收；记录 `eval.repair` 事件 | DSH Evaluator 重入、OpenHands/SWE-agent 有界恢复 | `runtime/worker.ts`：`applyRuntimeCriteria` 抽取 + `prepareDelivery` 可重算 + repair 分支；worker 测试 fail→repair→pass | `235b37b` |
-| 5 | 此前标准臂配套：预算自适应、停滞提醒、观测去重、网络重试、交付校验升级（逐文件观测）、web_fetch 重试、max 推理档位 | — | 见更早提交 | `5519895` 等 |
+| 5 | **文件化技能 + 渐进披露**：`skills_list` 只返回名称+一句话说明，`skills_read` 按需读取 `skills/<name>/SKILL.md` 正文；仅在本地工作区（`includeSkills`）暴露，评测驱动不受影响；工具存在时注入 `【技能库】` 规范 | DSH 技能渐进披露 | `runtime/workspace-tools.ts` 新增两个工具（路径校验/大小上限）、`local-app.ts` 开启、`agent-loop.ts` 注入规范；测试覆盖目录扫描/正文读取/路径穿越拒绝/默认不暴露 | 本次提交 |
+| 6 | 此前标准臂配套：预算自适应、停滞提醒、观测去重、网络重试、交付校验升级（逐文件观测）、web_fetch 重试、max 推理档位 | — | 见更早提交 | `5519895` 等 |
 
 **验证状态**：全量后端 **670 项：669 通过、1 跳过、0 失败**；类型检查通过；评测侧标准臂配置（`reasoning_effort=max`、
 32768 输出、240/360s 超时）独立于产品代码，评测快照隔离未被破坏。
@@ -77,11 +78,13 @@
 - **完整子代理体系**：需要父子会话隔离、工作树/工具集继承、结果协议；产品暂无此需求场景，列入下一阶段。
 - **MCP 客户端**：生态价值高（本会话横向对比也指出 MCP 是缺口），但需要连接管理/凭据/工具名冲突策略；
   建议作为独立迭代（1–2 周），而不是本次塞进循环。
-- **文件系统 skills 渐进披露**：现有 5 个内置技能已可用；改造成 SKILL.md 目录 + 按需读取是中等收益，
-  等有第 6+ 个技能需求时再做。
+- **文件系统 skills 渐进披露**：已实现（本轮第 5 项：`skills_list`/`skills_read`，读 `skills/*/SKILL.md`，按需披露）；
+  旧的 5 个内置 `skill_open` 保留不动。
 - **DSH/Gemini 的 in-loop LLM 微评审**（next-speaker、Guardian、循环双检）：会显著增加延迟与成本，
   本次评测显示端点长尾已经吃紧；先用确定性守卫（我们已有）替代。
 - **前缀策略默认开启**：观测已就绪，但需要相邻时段 A/B 证明收益（缓存命中 vs 提示变动风险）后再默认开。
+- **并行只读在评测驱动中启用**：机制已就绪（opt-in），但当前 Terminal 标准臂批次正在运行，为避免同批内配置漂移，
+  在批次结束后再把 `parallelReads` 接入 Terminal/Office 驱动并单独标记。
 
 ## 5. 落地后的评测验证计划（与当前批次并行）
 
