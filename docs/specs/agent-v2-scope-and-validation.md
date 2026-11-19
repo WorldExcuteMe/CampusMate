@@ -119,3 +119,22 @@ JS 渲染、登录态、分页、反爬、非结构化页面解析、批量校�
 
 评测：golden 增加 "coding 信息获取" 旅程（本次已加 J2 骨架）；Terminal-Bench 代码子集 canary；
 真实校园网站授权样本人工核对。coding 相关失败进入失败模式库，反哺技能与工具改进。
+
+## 9. 真实评测策略（用户要求，2026-11-19 起生效）
+
+**所有"真实测评"一律通过产品 Agent 代码 + DeepSeek V4 Flash 执行**：真实模型、真实工具执行、真实产物、
+官方评分器/真实校验，禁止用 mock 或 harness 捷径冒充真实评测结论。
+
+- **被测对象**：产品 Agent 代码（`agent-loop` + 工具/审批/预算/检查点/验证全链路），冻结快照隔离：
+  `eval-freeze-20261119T2015`（sha f069b425，HEAD d5b613f）。
+- **模型与配置**：`DeepSeek-V4-Flash`，能力声明 `reasoning_effort`，偏好 `max` 按任务锁定，
+  `maxOutputTokens=32768`，单请求超时 360s。
+- **真实 canary 集**（固定小样本、可重复、相邻时段对照）：
+  1. GDPval public sample 3 题（研究→写作→真实导出）；
+  2. HORIZON-001（长程十轮真实产物）；
+  3. AppWorld `325d6ec_1`（多步工具/官方评分）；
+  4. OfficeBench `1-14/1`（结构化变换/真实文件评分）；
+  5. Terminal-Bench 代码子集 8–10 题（可选代码 canary：官方 verifier、docker；单独批次跑）。
+- **L2 golden 的 mock 用例只用于确定性机制回归**，结论以 canary + L3 真实体验流（真实后端 API + 真实模型）为准；
+- **记录**：`CANARY-REPORT.md`、各阶段日志、`run.summary`/事件日志中的 token/cost/缓存/计划/修复轮指标；
+- **对照口径**：架构改动前跑一次基线，改动后同配置重跑；只看"相对基线是否改善 + 失败类型是否减少"。
