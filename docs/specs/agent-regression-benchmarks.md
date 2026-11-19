@@ -241,3 +241,19 @@ R2 同契约 + 墙钟 780s/单请求 240s 后 0 超时，终止原因变为 toke
 **本批暂停与续跑。** 用户关机前已停止全部模型负载并清除 Terminal 自动启动标记；冻结快照、运行产物与续跑命令见
 `acceptance-20261118/PAUSE-HANDOFF.md`。续跑顺序：R4 剩余两题 → GDPval → HORIZON → Terminal-Bench 逐题队列（52/73 镜像就绪，逐题可续跑）。
 交付校验已强化为“只跑过只读脚本也算未交付、先核验文件存在再创建”，定向测试 12/12 与类型检查通过，全量后端测试与 OfficeBench 2-21/0 复测留待续跑。
+
+### 2026-11-19 上午：泛化与复测的新根因
+
+- **AppWorld 泛化 1/3**：2d9f728_1 通过； d01c76_1（1/6）与  42a9fc_1（0/5）失败根因是桥同时暴露了
+  ppworld_docs 工具与模拟器自带 pi_docs 元应用两条文档路径，模型在 ppworld_call(api_docs, list_*)
+  上空转（41 次调用中 38 次、55 次调用 0 次写）。已在 ppworld_bridge_full_docs.py 移除 pi_docs 元应用，
+  保留唯一规范文档路径，待同两题复测验证。证据 cceptance-20261118/external-benchmarks/general-coverage/RESULTS-20261119.md。
+- **OfficeBench 2-21/0 复测仍未通过，但根因已精确定位**：模型真实创建了 classes_taken.docx（内容正确），
+  却写在**工作区根目录**而非官方要求的 data/；触发链是脚本写在 data/、却以 cwd=工作区根执行，
+  脚本内相对路径产物落到根目录。产品修复：workspace_run 未显式给 cwd 且运行工作区内脚本文件时，
+  默认在该脚本所在目录执行（ackend/src/runtime/workspace-tools.ts defaultRunCwd，含单元测试）；
+  OfficeBench 适配器环境说明同时明确"输入与要求的产物都在 data/ 下并回读该路径"。
+- **GDPval 0/3（3 个 420s 超时）**、**HORIZON-001 十轮导出全部成功但第 1 轮"仅预览"语义被判失败**，
+  记录于 general-coverage/RESULTS-20261119.md；下一步为 GDPval 600s 预算归一复测与预览/写入语义强化。
+- **Terminal-Bench 2.1**：试点两题官方评分 constraints-scheduling reward 1.0、largest-eigenval 0.0；
+  随后全量可执行子集以并发 2 逐题 Harbor 作业运行（52/73 镜像就绪，21 题镜像缺失单列），账本逐题记录。
