@@ -127,11 +127,17 @@ export interface AgentEvent {
   createdAt: number;
 }
 
+export interface PlanItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 export interface CheckpointState {
   documentRun?: import("./proposal.ts").DocumentRun;
   messages: ChatMessage[];
   transcript?: ChatMessage[];
   stepProgress: Record<string, StepStatus>;
+  plan?: PlanItem[]; // todo_write 的最近整表快照；resume 时回注为【当前计划】
   repeat: Record<string, number>;
   usage: Usage;
   pendingApprovals: string[];
@@ -209,6 +215,7 @@ export interface ToolError { ok: false; error: string; class: ErrorClass; retrya
 
 export const DEFAULT_BUDGET: Budget = { tokens: 200_000, toolCalls: 40, wallMs: 600_000, costUsd: 0.5 };
 export const EMPTY_USAGE: Usage = { tokens: 0, toolCalls: 0, wallMs: 0, costUsd: 0 };
+
 
 
 

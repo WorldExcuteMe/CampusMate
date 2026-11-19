@@ -161,3 +161,28 @@ test("会话事件日志双写：turn/user/assistant/tool/turn-end 可重放", a
   assert.equal(state.messages[2].tool_call_id, "r1");
   assert.match(r.reply, /文件内容已读取/);
 });
+test("todo 计划持久化进 checkpoint，并在 resume 时回注【当前计划】", async () => {
+  const checkpoints: Array<{ plan?: Array<{ content: string; status: string }> }> = [];
+  const todoCall = { id: "p1", type: "function", function: { name: "todo_write", arguments: JSON.stringify({ todos: [{ content: "读取输入", status: "completed" }, { content: "生成 report.docx", status: "in_progress" }] }) } };
+  const f = fixture([
+    { content: "", toolCalls: [todoCall] },
+    { content: "计划已更新，继续执行。" },
+  ]);
+  const deps = {
+    ...f.deps,
+    tools: [...f.deps.tools, tool("todo_write")],
+    hooks: { onCheckpoint: (state: { plan?: Array<{ content: string; status: string }> }) => { checkpoints.push(structuredClone(state)); } },
+  };
+  await runAgentLoop({ system: "s", user: "整理数据并写入 report.docx", deps });
+  const withPlan = checkpoints.find((state) => state.plan?.length === 2);
+  assert.ok(withPlan, "checkpoint must contain the todo plan");
+  assert.equal(withPlan!.plan![1].content, "生成 report.docx");
+  assert.equal(withPlan!.plan![1].status, "in_progress");
+
+  const resumed = fixture([{ content: "继续完成。" }]);
+  const resumedDeps = { ...resumed.deps, tools: [...resumed.deps.tools, tool("todo_write")] };
+  await runAgentLoop({ system: "s", user: "继续", deps: resumedDeps, resumePlan: withPlan!.plan as Array<{ content: string; status: "pending" | "in_progress" | "completed" }> });
+  assert.ok(resumed.requests[0].messages.some((m) => typeof m.content === "string" && m.content.startsWith("【当前计划】")));
+  assert.match(String(resumed.requests[0].messages.find((m) => typeof m.content === "string" && m.content.startsWith("【当前计划】"))?.content), /生成 report\.docx/);
+});
+

@@ -328,3 +328,5 @@ R2 同契约 + 墙钟 780s/单请求 240s 后 0 超时，终止原因变为 toke
   StoreSessionLog 持久化与脱敏）；agent-loop 双写事件（turn/user/assistant/tool/checkpoint/turn-end）；worker 按任务
   持久化 `session.event` 并从事件流重建连续日志；全量后端 679 项 678 通过 1 跳过、tsc 干净。
 - **下一步**：P1（resume 从事件重建消息、计划持久化、golden 回归集、成本账本）→ P2（受限子代理、MCP、记忆闭环、OTel）。
+
+- **v2 方向取舍与验证方案**：按项目初衷裁剪（砍 PTC/code mode、computer use、多代理团队/A2A、通用子代理、自进化管线、重型向量记忆、MCP 核心化），保留事件溯源、上下文工程、工具契约、验证收敛、轻量记忆、可观测；测试改为 L1 单元 → L2 golden 回归（20-30 旅程，CI）→ L3 体验流 E2E（5 条真实用户流）→ L4 轨迹复盘 → L5 dogfood。文档 `docs/specs/agent-v2-scope-and-validation.md`。

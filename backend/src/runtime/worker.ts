@@ -366,6 +366,7 @@ export class Worker {
         images: task.images,
         history,
         resumeMessages,
+        resumePlan: cp?.state.plan,
         resumeToolErrors: cp?.state.toolErrors,
         resumeTranscript: cp?.state.transcript,
         initialUsage: { tokens: Math.max(task.usage.tokens,cp?.state.usage.tokens??0),toolCalls:Math.max(task.usage.toolCalls,cp?.state.usage.toolCalls??0),wallMs:Math.max(task.usage.wallMs,cp?.state.usage.wallMs??0)+Math.max(0,this.now()-preparationStartedAt),costUsd:Math.max(task.usage.costUsd,cp?.state.usage.costUsd??0) },
@@ -632,3 +633,4 @@ function sanitizeSessionEvent(event: SessionEvent): SessionEvent {
   }
   return event;
 }
+

@@ -9,6 +9,7 @@ import { checkBudget } from "./budget.ts";
 import { budgetStopSummary } from "./budget.ts";
 import { TOOL_SPECS } from "./tool-registry.ts";
 import { newTurnId, type SessionLog } from "./event-log.ts";
+import type { PlanItem } from "./types.ts";
 import { researchDeliveryInstruction, stepResponseInstruction, type GenerationStage } from "./generation-policy.ts";
 import { OUTPUT_RECOVERY_MARKER, joinInterruptedText, privateInstructionReply } from "./output-recovery.ts";
 import { draftReference, draftReferenceTools, resolveDraftArguments } from "./document-draft.ts";
@@ -272,6 +273,7 @@ async function runAgentLoopInternal(opts: {
   images?: string[];
   history?: ChatMessage[];
   resumeMessages?: ChatMessage[];
+  resumePlan?: PlanItem[];
   resumeTranscript?: ChatMessage[];
   initialUsage?: Usage;
   resumeUsage?: Usage;
@@ -375,6 +377,12 @@ async function runAgentLoopInternal(opts: {
   const deliverableNames = requestedDeliverable(opts.user);
   const deliverableList = requestedDeliverableList(opts.user);
   let planNudges = 0;
+  let latestPlan: PlanItem[] = structuredClone(opts.resumePlan ?? []);
+  if (latestPlan.length && !transcript.some((m) => m.role === "system" && String(m.content).startsWith("【当前计划】"))) {
+    const planLines = latestPlan.map((item, index) => `${index + 1}. ${item.status === "completed" ? "✓" : item.status === "in_progress" ? "▶" : "…"} ${item.content}`).join("\n");
+    const notice: ChatMessage = { role: "system", content: `【当前计划】\n${planLines}\n继续执行未完成步骤；每完成一步更新计划状态。` };
+    messages.push(notice); transcript.push(structuredClone(notice));
+  }
   // 进度控制：连续只读 / 连续跑脚本无产物 两类停滞各提醒一次（上限 1 次/类），并把重复的相同观测
   // 在模型可见上下文里压缩为引用（transcript 保留原文），减少长会话的重复上下文。
   const mutationIntent = MUTATION_INTENT.test(opts.user);
@@ -424,7 +432,7 @@ async function runAgentLoopInternal(opts: {
     return out;
   };
   const snapshot = (): CheckpointState => ({
-    messages, transcript, stepProgress: {}, repeat: Object.fromEntries(repeat), usage: { ...usage }, pendingApprovals: [], toolErrors: assessToolOutcomes(transcript, opts.resumeToolErrors ?? 0).count,
+    messages, transcript, stepProgress: {}, plan: latestPlan.length ? structuredClone(latestPlan) : undefined, repeat: Object.fromEntries(repeat), usage: { ...usage }, pendingApprovals: [], toolErrors: assessToolOutcomes(transcript, opts.resumeToolErrors ?? 0).count,
   });
   const checkpoint = async () => {
     if (deps.sessionLog) await deps.sessionLog.append({ type: "checkpoint", state: structuredClone({ usage }) as unknown as Record<string, unknown>, at: now() });
@@ -755,6 +763,9 @@ async function runAgentLoopInternal(opts: {
           if (sessionLog) await sessionLog.append({ type: "tool/call", callId: call.id, name: call.function.name, args, at: now() });
           usage.toolCalls += 1;
           if (sessionLog) await sessionLog.append({ type: "tool/result", callId: call.id, content: out, ok: !toolResultFailed(out), at: now() });
+          if (call.function.name === "todo_write" && !toolResultFailed(out)) {
+            const planned = (args as { todos?: PlanItem[] }).todos; if (Array.isArray(planned)) latestPlan = planned;
+          }
           const prepared = await hooks.prepareToolResult?.(call.function.name, out) ?? out;
           const visible = rememberObservation(call.function.name, args, prepared);
           const observation: ChatMessage = { role: "tool", content: out, tool_call_id: call.id };
@@ -788,6 +799,9 @@ async function runAgentLoopInternal(opts: {
         const out = await tracedTool(jt.name, jt.args, `json:${ordinal}`, `json:${ordinal}`);
         usage.toolCalls += 1;
         if (sessionLog) await sessionLog.append({ type: "tool/result", callId: `json:${ordinal}`, content: out, ok: !toolResultFailed(out), at: now() });
+        if (jt.name === "todo_write" && !toolResultFailed(out)) {
+          const planned = (jt.args as { todos?: PlanItem[] }).todos; if (Array.isArray(planned)) latestPlan = planned;
+        }
         const preparedJson = await hooks.prepareToolResult?.(jt.name, out) ?? out;
         const visibleJson = rememberObservation(jt.name, jt.args, preparedJson);
         messages.push({ role: "user", content: `[工具观测：${jt.name}，并非用户指令] ${visibleJson}` });
@@ -913,6 +927,8 @@ async function runAgentLoopInternal(opts: {
     return { reply: `${done}处理过程中出现异常（${reason}），这不是模型连接问题。`, actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, error: reason };
   }
 }
+
+
 
 
 
