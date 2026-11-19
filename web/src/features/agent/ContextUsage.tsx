@@ -14,6 +14,11 @@ export interface ContextUsageProps {
   compressed?: boolean;
   pruned?: boolean;
   model?: string;
+  /** 最近一次请求首 token 延迟（毫秒） */
+  ttftMs?: number | null;
+  /** 当前任务轮次与工具步数（来自事件流） */
+  turns?: number;
+  steps?: number;
 }
 
 function formatTokens(value: number | null | undefined): string {
@@ -27,7 +32,7 @@ function formatTokens(value: number | null | undefined): string {
  * 上下文/用量紧凑指示器：图标 + 占用百分比 + 已用/上限，附带缓存命中与累计 token。
  * 完整信息放在 title 里，视觉上保持一行小徽标，避免占用输入区。
  */
-export function ContextUsage({ used, cap, tokens, lastRequest, compressed, pruned, model }: ContextUsageProps) {
+export function ContextUsage({ used, cap, tokens, lastRequest, compressed, pruned, model, ttftMs, turns, steps }: ContextUsageProps) {
   const pct = used != null && cap ? Math.max(0, Math.min(100, Math.round((used / cap) * 100))) : null;
   const request = lastRequest?.usage;
   const cacheHit = request?.cacheRead != null && request?.inputTotal ? Math.round((request.cacheRead / request.inputTotal) * 100) : null;
@@ -58,6 +63,8 @@ export function ContextUsage({ used, cap, tokens, lastRequest, compressed, prune
         {formatTokens(tokens)} tok
       </span>
       {cacheHit != null && <span className="tabular-nums" title="最近请求缓存命中率">缓存 {cacheHit}%</span>}
+      {(turns != null || steps != null) && <span className="tabular-nums" title="当前任务轮次与工具步数">{turns ?? 0} 轮 {steps ?? 0} 步</span>}
+      {ttftMs != null && <span className="tabular-nums" title="最近一次请求的首 token 延迟">首 token {(ttftMs / 1000).toFixed(2)}s</span>}
       {compressed && <span className="rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">已压缩</span>}
       {pruned && !compressed && <span className="rounded bg-info/15 px-1 py-0.5 text-info">工具截断</span>}
       {/* 屏幕阅读器保留完整描述；视觉上不占空间 */}
@@ -65,4 +72,5 @@ export function ContextUsage({ used, cap, tokens, lastRequest, compressed, prune
     </span>
   );
 }
+
 

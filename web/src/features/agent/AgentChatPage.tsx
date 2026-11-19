@@ -103,6 +103,12 @@ export function AgentChatPage() {
   const modelName = provider?.model || "未知模型";
   const contextCap = (backendEnabled() ? active.contextCap : provider?.contextLimit) ?? null;
   const currentTask = active.currentTaskId ? active.taskViews?.[active.currentTaskId]?.task : undefined;
+  const currentEvents = active.currentTaskId ? active.taskViews?.[active.currentTaskId]?.events ?? [] : [];
+  const runTurns = currentEvents.filter((e) => e.type === "llm.request").length;
+  const runSteps = currentEvents.filter((e) => e.type === "tool.called").length;
+  const runTtft = currentTask?.modelRuntime?.lastRequest?.ttftMs ?? null;
+  // 只读/纯问答任务不展示工作台，保持简洁界面；出现工具、审批或产物时才展开。
+  const hasWorkbench = Object.values(active.taskViews ?? {}).some((view) => (view.task.result?.artifactIds?.length ?? 0) > 0 || view.events.some((event) => ["tool.called", "tool.approval_requested", "step.started"].includes(event.type)));
   const monitor = useTaskMonitor(active, update, busy);
   const busyUI = busy || Object.values(active.taskViews ?? {}).some((view) => ["queued", "running"].includes(view.task.status));
 
@@ -342,7 +348,7 @@ export function AgentChatPage() {
           <div ref={endRef} />
         </div>
       </div>
-      <TaskWorkspace key={active.id} session={active} sending={busy} loadError={monitor.error} onSelect={(id) => update(active.id, (s) => ({ ...s, currentTaskId: id }))} onTask={(task) => update(active.id, (s) => mergeTask(s, task))} onRefresh={monitor.refresh} onContinue={(title) => setInput(`请基于已有记录继续：${title}`)} />
+      {hasWorkbench && <TaskWorkspace key={active.id} session={active} sending={busy} loadError={monitor.error} onSelect={(id) => update(active.id, (s) => ({ ...s, currentTaskId: id }))} onTask={(task) => update(active.id, (s) => mergeTask(s, task))} onRefresh={monitor.refresh} onContinue={(title) => setInput(`请基于已有记录继续：${title}`)} />}
       </div>
 
       {/* 输入区：工作区在输入栏左；模型选择在输入框下、Enter 左；上下文状态 */}
@@ -359,7 +365,9 @@ export function AgentChatPage() {
           {!composer.ready && <p role="status" className="mb-2 text-xs text-muted-foreground">正在恢复本地草稿…</p>}
           {composer.ready && !composer.error && <p role="status" className="mb-2 text-[10px] text-muted-foreground">{composer.saving ? '草稿正在保存到本机…' : '草稿按会话保存在本机，不跨设备同步'}</p>}
           {attachments.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-2">
+            <section aria-label="附件工作流" className="mb-2 rounded-xl border border-border/70 bg-muted/30 p-2.5">
+              <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">附件工作流 · {attachments.length} 个 · 解析完成后随消息发送</p>
+              <div className="flex flex-wrap gap-2">
               {attachments.map((a) => (
                 <span key={a.id} className="flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs">
                   {a.kind === "image" && a.dataUrl ? (
@@ -375,7 +383,8 @@ export function AgentChatPage() {
                   </button>
                 </span>
               ))}
-            </div>
+              </div>
+            </section>
           )}
           <Textarea
             disabled={initialLoading || !composer.ready || composer.resolving}
@@ -392,9 +401,9 @@ export function AgentChatPage() {
               <div className="flex items-center gap-2 rounded-md bg-muted px-2 py-1 text-xs">
                 <FolderOpen className="size-3.5 shrink-0 text-primary" />
                 <span>{workspace.data ? `本地工作区 · ${workspace.data.name}` : workspace.isError ? "本地工作区连接失败" : "正在读取本地工作区"}</span>
-                {workspace.data && <select aria-label="工作区权限" className="rounded bg-background px-1 py-0.5" disabled={savingPermission} value={workspace.data.permission} onChange={(e) => void changePermission(e.target.value as "ask" | "full")}>
-                  <option value="ask">请求批准</option>
-                  <option value="full">完全访问</option>
+                {workspace.data && <select aria-label="工作区权限" title="仅限工作区：本机文件/命令逐次审批；完全权限：新任务不再逐次审批（有风险）" className="rounded bg-background px-1 py-0.5" disabled={savingPermission} value={workspace.data.permission} onChange={(e) => void changePermission(e.target.value as "ask" | "full")}>
+                  <option value="ask">仅限工作区 · 逐次审批</option>
+                  <option value="full">完全权限 · 免审批</option>
                 </select>}
               </div>
             )}
@@ -466,5 +475,6 @@ export function AgentChatPage() {
     </div>
   );
 }
+
 
 

@@ -78,63 +78,69 @@ export function Layout() {
                   {item.label}
                   {expand ? <ChevronDown className="ml-auto size-3.5" /> : <ChevronRight className="ml-auto size-3.5" />}
                 </button>
-                {expand && (
-                  <div className="mt-1 flex flex-col gap-0.5 pl-4">
-                    {sessions.filter((s) => (showArchived ? s.archived : !s.archived)).map((s) => (
-                      <div
-                        key={s.id}
-                        data-session-id={s.id}
-                        className={cn(
-                          "group/session flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors",
-                          s.id === activeId ? "bg-sidebar-accent text-sidebar-foreground" : "text-muted-foreground hover:bg-sidebar-accent/60",
-                        )}
-                        onClick={() => { setActiveId(s.id); nav("/app/agent"); }}
-                      >
-                        <MessageSquare className="size-3 shrink-0" />
-                        <span className="min-w-0 flex-1 truncate">{s.name}</span>
-                        {confirmId === s.id ? (
-                          <button
-                            className="shrink-0 rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] text-destructive"
-                            aria-label="确认删除"
-                            onClick={(e) => { e.stopPropagation(); remove(s.id); setConfirmId(null); }}
+                {expand && (() => {
+                  const recent = sessions.filter((s) => !s.archived).slice(0, 20);
+                  const completed = sessions.filter((s) => s.archived);
+                  const row = (s: (typeof sessions)[number]) => (
+                    <div
+                      key={s.id}
+                      data-session-id={s.id}
+                      className={cn(
+                        "group/session flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors",
+                        s.id === activeId ? "bg-sidebar-accent text-sidebar-foreground" : "text-muted-foreground hover:bg-sidebar-accent/60",
+                      )}
+                      onClick={() => { setActiveId(s.id); nav("/app/agent"); }}
+                    >
+                      <MessageSquare className="size-3 shrink-0" />
+                      <span className="min-w-0 flex-1 truncate">{s.name}</span>
+                      {confirmId === s.id ? (
+                        <button
+                          className="shrink-0 rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] text-destructive"
+                          aria-label="确认删除"
+                          onClick={(e) => { e.stopPropagation(); remove(s.id); setConfirmId(null); }}
+                        >
+                          确认删除?
+                        </button>
+                      ) : (
+                        <>
+                          <SessionAction
+                            label={s.archived ? "移回最近" : "标记完成"}
+                            hint={s.archived ? "移回最近会话" : "标记为已完成会话 · 记录保留"}
+                            onClick={(e) => { e.stopPropagation(); s.archived ? restore(s.id) : archive(s.id); }}
                           >
-                            确认删除?
-                          </button>
-                        ) : (
-                          <>
-                            <SessionAction
-                              label={s.archived ? "恢复会话" : "归档会话"}
-                              hint={s.archived ? "恢复会话 · 移回活跃列表" : "归档会话 · 保留聊天记录"}
-                              onClick={(e) => { e.stopPropagation(); s.archived ? restore(s.id) : archive(s.id); }}
-                            >
-                              {s.archived ? <ArchiveRestore aria-hidden="true" className="size-3.5" /> : <Archive aria-hidden="true" className="size-3.5" />}
-                            </SessionAction>
-                            <SessionAction
-                              label="删除会话"
-                              hint="删除会话 · 需再次确认"
-                              destructive
-                              onClick={(e) => { e.stopPropagation(); setConfirmId(s.id); }}
-                            >
-                              <Trash2 aria-hidden="true" className="size-3.5" />
-                            </SessionAction>
-                          </>
-                        )}
-                      </div>
-                    ))}
-                    <button
-                      className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-sidebar-accent/60"
-                      onClick={() => { create(); nav("/app/agent"); }}
-                    >
-                      <Plus className="size-3" /> 新会话
-                    </button>
-                    <button
-                      className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-sidebar-accent/60"
-                      onClick={() => setShowArchived((v) => !v)}
-                    >
-                      <Archive className="size-3" /> {showArchived ? "返回活跃会话" : `归档（${sessions.filter((s) => s.archived).length}）`}
-                    </button>
-                  </div>
-                )}
+                            {s.archived ? <ArchiveRestore aria-hidden="true" className="size-3.5" /> : <Archive aria-hidden="true" className="size-3.5" />}
+                          </SessionAction>
+                          <SessionAction
+                            label="删除会话"
+                            hint="删除会话 · 需再次确认"
+                            destructive
+                            onClick={(e) => { e.stopPropagation(); setConfirmId(s.id); }}
+                          >
+                            <Trash2 aria-hidden="true" className="size-3.5" />
+                          </SessionAction>
+                        </>
+                      )}
+                    </div>
+                  );
+                  return (
+                    <div className="mt-1 flex flex-col gap-0.5 pl-4">
+                      {recent.length === 0 && <p className="px-2 py-1 text-[11px] text-muted-foreground">还没有会话，点“新会话”开始</p>}
+                      {recent.map(row)}
+                      {completed.length > 0 && (
+                        <details className="mt-1" open={showArchived} onToggle={(e) => setShowArchived(e.currentTarget.open)}>
+                          <summary className="cursor-pointer rounded-md px-2 py-1.5 text-[11px] text-muted-foreground hover:bg-sidebar-accent/60">已完成会话（{completed.length}）</summary>
+                          <div className="mt-0.5 flex flex-col gap-0.5">{completed.map(row)}</div>
+                        </details>
+                      )}
+                      <button
+                        className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-sidebar-accent/60"
+                        onClick={() => { create(); nav("/app/agent"); }}
+                      >
+                        <Plus className="size-3" /> 新会话
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
             ) : (
               <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => navItem(isActive)}>

@@ -20,6 +20,7 @@ function sources(value: unknown): { url: string; host: string }[] {
 }
 
 export function TaskWorkspace({ session, sending = false, onSelect, onTask, onRefresh, onContinue, loadError }: { session: ChatSession; sending?: boolean; onSelect: (id: string) => void; onTask: (task: AgentTask) => void; onRefresh: () => void; onContinue: (title: string) => void; loadError?: string }) {
+  const [tab, setTab] = useState<"steps" | "artifacts" | "context">("steps");
   const views = Object.values(session.taskViews ?? {}).sort((a, b) => (b.task.turnSeq ?? 0) - (a.task.turnSeq ?? 0) || (b.task.createdAt ?? 0) - (a.task.createdAt ?? 0));
   const view = views.find((v) => v.task.id === session.currentTaskId) ?? views[0];
   const submitting = sending && Boolean(session.pendingTurn && !session.pendingTurn.taskId);
@@ -28,16 +29,49 @@ export function TaskWorkspace({ session, sending = false, onSelect, onTask, onRe
   return <aside aria-label="任务执行面板" className="border-t border-border bg-muted/20 lg:w-80 lg:shrink-0 lg:border-l lg:border-t-0">
     <details open={expanded} onToggle={(e) => setExpanded(e.currentTarget.open)} className="h-full">
       <summary className="cursor-pointer px-4 py-3 text-sm font-semibold">执行进度 <span className="ml-2 text-xs font-normal text-muted-foreground">{submitting ? "正在提交新任务" : unfinished ? tools[String(unfinished.payload.name)] ?? "执行工具中" : view ? statuses[view.task.status] : "等待新任务"}</span></summary>
+      <div role="tablist" aria-label="执行面板分区" className="mb-2 flex gap-1 border-b border-border/60 px-3 pb-2">
+        {([["steps", "工作步骤"], ["artifacts", "产物"], ["context", "上下文"]] as const).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={tab === id} className={`rounded-md px-2.5 py-1 text-xs transition-colors ${tab === id ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted"}`} onClick={() => setTab(id)}>{label}</button>)}
+      </div>
       <div className="max-h-80 space-y-4 overflow-y-auto px-4 pb-5 lg:max-h-[calc(100dvh-18rem)]">
         {submitting && <p role="status" className="text-xs leading-5 text-primary">正在提交，尚未收到后端确认；以下为已有任务记录。</p>}
         {loadError && <div role="alert" className="text-xs text-destructive">任务状态加载失败：{loadError}<Button size="sm" variant="ghost" onClick={onRefresh}>重试加载</Button></div>}
         {views.length > 1 && <select aria-label="查看任务记录" className="h-9 w-full rounded-md border bg-background px-2 text-xs" value={view?.task.id ?? ""} onChange={(e) => onSelect(e.target.value)}>{views.map(({ task }) => <option key={task.id} value={task.id}>{statuses[task.status]} · {task.title}</option>)}</select>}
-        {view ? <TaskDetails key={view.task.id} view={view} resumeBlocked={view.task.status === "failed" && views.some(v => v.task.id !== view.task.id && ((v.task.turnSeq ?? 0) > (view.task.turnSeq ?? 0) || !(v.task.turnSeq && view.task.turnSeq) && (v.task.createdAt ?? 0) > (view.task.createdAt ?? 0)))} onTask={onTask} onRefresh={onRefresh} onContinue={onContinue} /> : <p className="text-xs leading-6 text-muted-foreground">发送消息后，这里会显示排队、资料检索、工具结果和产物检查。</p>}
+        {view ? (tab === "context" ? <ContextTab session={session} task={view.task} events={view.events} /> : <div className={tab === "steps" ? "" : "hidden"}><TaskDetails key={view.task.id} view={view} resumeBlocked={view.task.status === "failed" && views.some(v => v.task.id !== view.task.id && ((v.task.turnSeq ?? 0) > (view.task.turnSeq ?? 0) || !(v.task.turnSeq && view.task.turnSeq) && (v.task.createdAt ?? 0) > (view.task.createdAt ?? 0)))} onTask={onTask} onRefresh={onRefresh} onContinue={onContinue} /></div>) : <p className="text-xs leading-6 text-muted-foreground">发送消息后，这里会显示排队、资料检索、工具结果和产物检查。</p>}
+        {view && tab === "artifacts" && (view.task.result?.artifactIds.length ? <DocumentArtifacts ids={view.task.result.artifactIds} owner={view.task.userId} partial={view.task.result.completion?.state !== "complete"} /> : <p className="text-xs leading-6 text-muted-foreground">本轮还没有生成文档产物。生成后可在这里预览与下载。</p>)}
       </div>
     </details>
   </aside>;
 }
 
+function ContextTab({ session, task, events }: { session: ChatSession; task: AgentTask; events: Array<{ type: string; payload: Record<string, unknown> }> }) {
+  const last = task.modelRuntime?.lastRequest;
+  const turns = events.filter((e) => e.type === "llm.request").length;
+  const steps = events.filter((e) => e.type === "tool.called").length;
+  const usage = last?.usage;
+  const cacheHit = usage?.cacheRead != null && usage?.inputTotal ? Math.round((usage.cacheRead / usage.inputTotal) * 100) : null;
+  const cap = task.promptUsage?.contextLimit ?? session.contextCap ?? null;
+  const used = task.promptUsage?.inputTokens ?? session.contextUsed ?? null;
+  const rows: Array<[string, string]> = [
+    ["上下文占用", used == null || cap == null ? "未知" : `${Math.round((used / cap) * 100)}% · ${used.toLocaleString()} / ${cap.toLocaleString()} tok`],
+    ["模型", task.modelRuntime?.actualModel ?? "未知"],
+    ["轮次 / 工具步数", `${turns} 轮 · ${steps} 步`],
+    ["首 token 延迟", last?.ttftMs == null ? "未知" : `${(last.ttftMs / 1000).toFixed(2)} 秒`],
+    ["最近请求耗时", last == null ? "未知" : `${(last.totalMs / 1000).toFixed(1)} 秒`],
+    ["累计 token", (task.usage?.tokens ?? 0).toLocaleString()],
+    ["缓存命中", cacheHit == null ? "暂无" : `${cacheHit}%`],
+    ["最近请求输入/输出", usage ? `${usage.inputTotal ?? "?"} / ${usage.output ?? "?"} tok` : "未知"],
+    ["最近思考 token", usage?.reasoning == null ? "未知" : String(usage.reasoning)],
+    ["思考强度", last?.reasoning ? `${last.reasoning.effective ?? "不可调"}（${last.reasoning.reason}）` : "未知"],
+    ["费用", usage?.costUsd == null ? "未知" : `$${usage.costUsd.toFixed(6)}`],
+    ["压缩 / 截断", `${session.compressed ? "已压缩" : "未压缩"} · ${session.pruned ? "已截断旧工具结果" : "未截断"}`],
+  ];
+  return <div className="space-y-2" aria-label="上下文与用量">
+    <p className="text-xs text-muted-foreground">这里的数值来自后端上报与最近请求；未知项不做估算占位。</p>
+    <dl className="divide-y divide-border/60 rounded-xl border border-border/70 bg-background">
+      {rows.map(([label, value]) => <div key={label} className="flex items-baseline justify-between gap-3 px-3 py-2 text-xs"><dt className="text-muted-foreground">{label}</dt><dd className="break-all text-right font-medium tabular-nums">{value}</dd></div>)}
+    </dl>
+  </div>;
+}
 function TaskDetails({ view, resumeBlocked, onTask, onRefresh, onContinue }: { view: NonNullable<ChatSession["taskViews"]>[string]; resumeBlocked: boolean; onTask: (task: AgentTask) => void; onRefresh: () => void; onContinue: (title: string) => void }) {
   const { task, events } = view;
   const local = task.id.startsWith("local:");
@@ -69,7 +103,7 @@ function TaskDetails({ view, resumeBlocked, onTask, onRefresh, onContinue }: { v
       const recovered = events.some(e => e.type === 'tool.recovered' && e.payload.callInstanceId === start.payload.callInstanceId);
       const warning = Boolean(result?.payload.warning);
       const Icon = !result ? Circle : recovered || warning || waiting ? Clock3 : ok ? CheckCircle2 : XCircle;
-      return <li key={start.seq} className="text-xs"><div className="flex items-start gap-2"><Icon className={`mt-0.5 size-3.5 shrink-0 ${recovered || warning ? 'text-amber-600' : ok ? "text-emerald-600" : result && !waiting ? "text-destructive" : "text-primary"}`} /><div className="min-w-0"><p>{tools[String(start.payload.name)] ?? String(start.payload.name)}{Boolean(start.payload.resumed) && <span className="ml-1 text-muted-foreground">继续</span>}</p><p className="mt-1 leading-5 text-muted-foreground">{recovered ? '首次失败，后续同一操作已重试成功；原始记录保留' : result ? String(result.payload.summary ?? (ok ? "完成" : "未完成")) : active ? "正在执行" : "已停止"}{typeof result?.payload.durationMs === "number" ? ` · ${duration(result.payload.durationMs)}` : ""}</p>{sources(result?.payload.sourceUrls).map(({ url, host }) => <a key={url} href={url} target="_blank" rel="noreferrer" className="mt-1 block truncate text-primary underline underline-offset-2">来源 · {host}</a>)}</div></div></li>;
+      return <li key={start.seq} className="rounded-lg border border-border/60 bg-background p-2 text-xs shadow-sm"><div className="flex items-start gap-2"><Icon className={`mt-0.5 size-3.5 shrink-0 ${recovered || warning ? 'text-amber-600' : ok ? "text-emerald-600" : result && !waiting ? "text-destructive" : "text-primary"}`} /><div className="min-w-0"><p>{tools[String(start.payload.name)] ?? String(start.payload.name)}{Boolean(start.payload.resumed) && <span className="ml-1 text-muted-foreground">继续</span>}</p><p className="mt-1 leading-5 text-muted-foreground">{recovered ? '首次失败，后续同一操作已重试成功；原始记录保留' : result ? String(result.payload.summary ?? (ok ? "完成" : "未完成")) : active ? "正在执行" : "已停止"}{typeof result?.payload.durationMs === "number" ? ` · ${duration(result.payload.durationMs)}` : ""}</p>{sources(result?.payload.sourceUrls).map(({ url, host }) => <a key={url} href={url} target="_blank" rel="noreferrer" className="mt-1 block truncate text-primary underline underline-offset-2">来源 · {host}</a>)}</div></div></li>;
     })}</ol>}
     {view.draft && active && !/^\s*(\{|```json)/i.test(view.draft) && <div className="rounded-xl bg-primary/5 p-3"><p className="mb-2 text-xs font-medium text-primary">正在生成 · 尚未完成</p><p className="max-h-36 overflow-auto whitespace-pre-wrap text-xs leading-6">{view.draft}</p></div>}
     {lastRequest && <details className="text-xs"><summary className="cursor-pointer text-muted-foreground">请求与用量</summary><div className="mt-2 space-y-1 leading-5 text-muted-foreground"><p>尝试 {lastRequest.attempts} 次 · 首字 {lastRequest.ttftMs === null ? "未知" : duration(lastRequest.ttftMs)} · 最近请求耗时 {duration(lastRequest.totalMs)}</p>{["succeeded", "failed", "cancelled"].includes(task.status) && task.createdAt !== undefined && task.updatedAt !== undefined && <p>任务从提交到结束：{duration(Math.max(0, task.updatedAt - task.createdAt))}</p>}<p>输入 {lastRequest.usage.inputTotal ?? "未知"} · 输出 {lastRequest.usage.output ?? "未知"} · 缓存读取 {lastRequest.usage.cacheRead ?? "未知"}</p><p>思考 {lastRequest.reasoning.effective ?? "不可调节"} · {lastRequest.reasoning.reason}</p><p>费用 {lastRequest.usage.costUsd === null ? "未知" : `$${lastRequest.usage.costUsd}`}</p></div></details>}
@@ -89,3 +123,4 @@ function TaskDetails({ view, resumeBlocked, onTask, onRefresh, onContinue }: { v
     {error && <p role="alert" className="whitespace-pre-wrap text-xs leading-5 text-destructive">{error}</p>}
   </>;
 }
+
