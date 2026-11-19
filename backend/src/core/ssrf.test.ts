@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { guardUrl, isPrivateIp, assertPublicHost, safeFetch, htmlToText, webPageText } from "./ssrf.ts";
+import { guardUrl, isPrivateIp, assertPublicHost, safeFetch, safeFetchWithRetry, htmlToText, webPageText } from "./ssrf.ts";
 
 const publicResolve = async () => [{ address: "93.184.216.34" }];
 const privateResolve = async () => [{ address: "127.0.0.1" }];
@@ -83,4 +83,23 @@ test("safeFetch 字节上限截断", async () => {
 test("safeFetch 重定向超跳数 → 拦截", async () => {
   const fetchImpl = (async () => res(302, "", { location: "https://example.com/loop" })) as unknown as typeof fetch;
   await assert.rejects(() => safeFetch("https://example.com", { fetchImpl, resolve: publicResolve }), /重定向超过/);
+});
+test("safeFetchWithRetry 对 5xx/网络错误重试一次，4xx 不重试", async () => {
+  let calls = 0;
+  const flaky = (async () => { calls += 1; return calls === 1 ? res(503, "busy") : res(200, "<p>ok</p>"); }) as unknown as typeof fetch;
+  const r = await safeFetchWithRetry("https://example.com", { fetchImpl: flaky, resolve: publicResolve, retryDelayMs: 0 });
+  assert.equal(r.status, 200);
+  assert.equal(calls, 2);
+
+  let notFound = 0;
+  const missing = (async () => { notFound += 1; return res(404, "gone"); }) as unknown as typeof fetch;
+  const r2 = await safeFetchWithRetry("https://example.com", { fetchImpl: missing, resolve: publicResolve, retryDelayMs: 0 });
+  assert.equal(r2.status, 404);
+  assert.equal(notFound, 1);
+
+  let netCalls = 0;
+  const net = (async () => { netCalls += 1; if (netCalls === 1) throw new TypeError("fetch failed"); return res(200, "<p>ok</p>"); }) as unknown as typeof fetch;
+  const r3 = await safeFetchWithRetry("https://example.com", { fetchImpl: net, resolve: publicResolve, retryDelayMs: 0 });
+  assert.equal(r3.status, 200);
+  assert.equal(netCalls, 2);
 });

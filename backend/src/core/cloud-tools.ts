@@ -2,7 +2,7 @@
 // web_search 用固定搜索引擎 URL（无 SSRF 面）；本机能力（terminal/fs/QQ/微信）不在此（仅 Local Companion）。
 import type { ToolDef } from "./types.ts";
 import { errorMessage } from "./errors.ts";
-import { safeFetch, webPageText } from "./ssrf.ts";
+import { safeFetchWithRetry, webPageText } from "./ssrf.ts";
 import type { EvidenceStore } from "./evidence.ts";
 import type { OpportunityStore } from "./opportunity-store.ts";
 import { sanitizeProposedStatus, type VerificationStatus } from "./verification.ts";
@@ -175,7 +175,7 @@ export async function executeCloudTool(name: string, args: Record<string, unknow
   }
   if (name === "web_fetch") {
     try {
-      const r = await safeFetch(String(args.url ?? ""));
+      const r = await safeFetchWithRetry(String(args.url ?? ""));
       const text = webPageText(r.text, r.status).slice(0, 12000);
       if (!text.trim()) return JSON.stringify({ url: r.url, status: r.status, readable: false, class: "source_unavailable", error: r.status < 200 || r.status >= 300 ? `网页返回HTTP ${r.status}，未取得可用于核实的正文。` : "未取得可读网页正文；页面可能只有标题或依赖JavaScript渲染，不能据此核实事实。" });
       const sourceId = ctx?.artifactStore && r.status >= 200 && r.status < 300 ? await saveFetchedSource(ctx.artifactStore, ctx.userId, ctx.taskId, { url: r.url, text }) : undefined;
@@ -235,3 +235,5 @@ export async function executeCloudTool(name: string, args: Record<string, unknow
   }
   return JSON.stringify({ error: `unknown cloud tool ${name}（本机能力需 Local Companion，云端默认禁用）` });
 }
+
+

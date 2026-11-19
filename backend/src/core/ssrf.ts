@@ -129,3 +129,27 @@ export function webPageText(html: string, status = 200): string {
   // remain supported, including short but substantive official notices.
   return /<(?:html|head)\b/i.test(html) ? "" : htmlToText(html);
 }
+
+// web_fetch 专用：对瞬时网络错误与 429/5xx 做一次有界重试；4xx 与 SSRF 拒绝不重试。
+// 依据：GDPval-0005 单题出现 27 次未恢复的网页读取失败，重试能吸收大部分瞬时抖动。
+export async function safeFetchWithRetry(rawUrl: string, opts: SafeFetchOpts & { attempts?: number; retryDelayMs?: number } = {}): Promise<SafeFetchResult> {
+  const attempts = Math.max(1, Math.min(3, opts.attempts ?? 2));
+  const baseDelay = Math.max(0, Math.min(2000, opts.retryDelayMs ?? 250));
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const result = await safeFetch(rawUrl, opts);
+      if ((result.status === 429 || result.status >= 500) && attempt < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, baseDelay * attempt));
+        continue;
+      }
+      return result;
+    } catch (error) {
+      lastError = error;
+      const ssrfRejected = error instanceof Error && /SSRF 拦截/.test(error.message);
+      if (ssrfRejected || attempt >= attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, baseDelay * attempt));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("网页读取失败");
+}

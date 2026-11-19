@@ -316,7 +316,7 @@ async function runAgentLoopInternal(opts: {
       ...(stepResponseInstruction(opts.user) ? [{ role: "system" as const, content: stepResponseInstruction(opts.user)! }] : []),
       ...(deliveryPlan ? [{ role: "system" as const, content: deliveryPlan }] : []),
       ...(effectiveStage === "write" ? [{ role: "system" as const, content: "用户列出章节或小节标题时，原样保留用户指定的标题文字和顺序，使用清晰的 Markdown 标题层级。标题下可增加用户未指定的子节。" }] : []),
-      ...(workspaceProgram ? [{ role: "system" as const, content: "【编程验证】编写或运行程序时，先读取输入样例和格式契约，按结构字段解析。用能区分边界条件与相似文本的反例验证，先确认交付文件的完整相对路径及工作目录。文件转换只给出目标文件名时，默认把产物放在原文件所在目录。表格或文档的结构调整（交换、重排、转置行或列）把整行或整列连同表头/标签作为单位处理，写回后回读核对结构与值。完成任务前列出任务要求的全部产物并逐个回读；只有真实存在且内容符合要求才能报告完成，缺失就补齐。" }] : []),
+      ...(workspaceProgram ? [{ role: "system" as const, content: "【编程验证】编写或运行程序时，先读取输入样例和格式契约，按结构字段解析。用能区分边界条件与相似文本的反例验证，先确认交付文件的完整相对路径及工作目录。文件转换只给出目标文件名时，默认把产物放在原文件所在目录。表格或文档的结构调整（交换、重排、转置行或列）把整行或整列连同表头/标签作为单位处理，写回后回读核对结构与值。表格类修改写回后打印表头与首行（或读回目标单元格）确认变换方向与要求一致。完成任务前列出任务要求的全部产物并逐个回读；只有真实存在且内容符合要求才能报告完成，缺失就补齐。" }] : []),
       ...(groundedTarget ? [{ role: "system" as const, content: "本轮是收集真实赛事资料并评估适合度。用户输入中priorUserStatements为本会话历史直接陈述，按时间顺序且最新纠正优先；currentRequest为当前要求。保留用户明确约束，但若用户未要求全部免费或当前可报名，不得自行把它们升级为资料收集的硬条件；可以依据原文明确说明某赛事不适合预算。只从本轮真实读取正文形成赛事事实，旧助手结论和搜索标题不是事实。优先检索明确赛名及其规则/高校通知，不以编程语言或年份代替赛事名。" }] : opts.history ?? []),
       { role: "user", content: userContent }];
   const recoveryIndex = messages.findLastIndex(m => m.role === "system" && String(m.content).startsWith(OUTPUT_RECOVERY_MARKER));
