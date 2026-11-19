@@ -58,16 +58,21 @@ export function toolsTokens(tools?: ToolDef[]): number {
 }
 
 // 工具结果裁剪（spill）：保留 head+tail + 取回提示。仅裁剪 tool 消息内容，不丢消息。
+// JSON 结果裁剪后仍是合法 JSON（包一层 truncated metadata），避免下游把截断的半截 JSON 当结构解析；
+// 提示里不再宣传不存在的工具，只建议缩小查询范围或分页重读。
 export function truncateTool(m: ChatMessage, cap = TOOL_RESULT_CAP): ChatMessage {
   const content = typeof m.content === "string" ? m.content : contentText(m.content);
-  if (m.role === "tool" && content.length > cap) {
-    const head = Math.min(SPILL_HEAD_CHARS, Math.floor(cap * 0.75));
-    const tail = Math.min(SPILL_TAIL_CHARS, Math.floor(cap * 0.2));
-    const omitted = content.length - head - tail;
-    const notice = `\n[... 省略 ${omitted} 字符；完整输出可用 rag_search / read_file 取回 ...]\n`;
-    return { ...m, content: content.slice(0, head) + notice + content.slice(-tail) };
+  if (m.role !== "tool" || content.length <= cap) return m;
+  const head = Math.min(SPILL_HEAD_CHARS, Math.floor(cap * 0.75));
+  const tail = Math.min(SPILL_TAIL_CHARS, Math.floor(cap * 0.2));
+  const omitted = content.length - head - tail;
+  const notice = `[... 省略 ${omitted} 字符；完整输出可缩小查询范围或分页重新读取 ...]`;
+  let parsed: unknown;
+  try { parsed = JSON.parse(content); } catch { parsed = undefined; }
+  if (parsed !== undefined) {
+    return { ...m, content: JSON.stringify({ truncated: true, chars: content.length, omitted, notice, head: content.slice(0, head), tail: content.slice(-tail) }) };
   }
-  return m;
+  return { ...m, content: content.slice(0, head) + "\n" + notice + "\n" + content.slice(-tail) };
 }
 
 // 轮次组：一个 assistant(tool_calls) + 其后所有 tool 结果 = 一组；其余消息各自成组。
@@ -264,3 +269,4 @@ export function composeContext(opts: { system: string; dynamic?: string; history
     : [...prefix, ...keptFlat, userMsg];
   return { messages, usedTokens: messagesTokens(messages) + tTools, compressed: dropped > 0, droppedTurns: dropped, cap: opts.cap };
 }
+

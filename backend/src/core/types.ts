@@ -112,7 +112,7 @@ export interface TaskResult {
 export type EventType =
   | "goal.created" | "task.queued" | "task.claimed" | "step.started" | "step.finished"
   | "llm.request" | "llm.response" | "tool.called" | "tool.result" | "tool.recovered" | "tool.approval_requested"
-  | "llm.delta" | "tool.parallel_batch"
+  | "llm.delta" | "tool.parallel_batch" | "run.summary"
   | "checkpoint.written" | "budget.exceeded" | "eval.passed" | "eval.failed" | "eval.repair" | "eval.repair_failed"
   | "task.needs_input" | "task.cancelled" | "task.failed" | "task.succeeded" | "lease.renewed";
 
@@ -209,5 +209,6 @@ export interface ToolError { ok: false; error: string; class: ErrorClass; retrya
 
 export const DEFAULT_BUDGET: Budget = { tokens: 200_000, toolCalls: 40, wallMs: 600_000, costUsd: 0.5 };
 export const EMPTY_USAGE: Usage = { tokens: 0, toolCalls: 0, wallMs: 0, costUsd: 0 };
+
 
 

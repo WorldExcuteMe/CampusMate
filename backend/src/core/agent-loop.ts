@@ -138,6 +138,13 @@ export function requestedDeliverable(instruction: string): string | null {
 
 export async function runAgentLoop(opts: Parameters<typeof runAgentLoopInternal>[0]): Promise<AgentLoopResult> {
   const result = await runAgentLoopInternal(opts);
+  await opts.deps.hooks?.onEvent?.("run.summary", {
+    rounds: result.rounds, toolCalls: result.usage.toolCalls, tokens: result.usage.tokens,
+    input: result.telemetry?.usage.inputTotal ?? null, output: result.telemetry?.usage.output ?? null,
+    reasoning: result.telemetry?.usage.reasoning ?? 0, cacheRead: result.telemetry?.usage.cacheRead ?? 0,
+    costUsd: result.telemetry?.usage.costUsd ?? null, actions: result.actions.length,
+    toolErrors: result.toolErrors ?? 0, stopReason: result.stopReason ?? (result.error ? "error" : "completed"),
+  });
   const rawErrors = (messages: ChatMessage[]) => messages.filter((m) => m.role === "tool" ? toolResultFailed(String(m.content)) : m.role === "user" && typeof m.content === "string" && m.content.startsWith("[工具观测：") && toolResultFailed(m.content.replace(/^\[工具观测：[^\]]+\]\s*/, ""))).length;
   const requiredText = [opts.user, ...(opts.history ?? []).filter(m => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[工具观测")).map(m => String(m.content))].join("\n");
   const outcomes = assessToolOutcomes(result.transcript);
@@ -887,6 +894,7 @@ async function runAgentLoopInternal(opts: {
     return { reply: `${done}处理过程中出现异常（${reason}），这不是模型连接问题。`, actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, error: reason };
   }
 }
+
 
 
 

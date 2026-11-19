@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupTurns, validatePairing, trimToBudget, composeContext, estimateTokens, messagesTokens, COMPACTION_SUMMARY_MARKER } from "./context.ts";
+import { groupTurns, validatePairing, trimToBudget, composeContext, estimateTokens, messagesTokens, COMPACTION_SUMMARY_MARKER, truncateTool, TOOL_RESULT_CAP } from "./context.ts";
 import { InMemoryMemoryStore } from "./memory.ts";
 import { buildContext, retrieveRelevantMemory, taskContextSummary } from "./context-builder.ts";
 import type { ChatMessage } from "./types.ts";
@@ -162,3 +162,19 @@ test("压缩摘要结构化保留目标/计划/产物/证据/未完成", () => {
   assert.match(text, /【未完成\/错误】/);
   assert.equal(validatePairing(out.messages).ok, true);
 });
+test("工具结果裁剪对 JSON 保持合法 JSON，且提示不引用不存在的工具", () => {
+  const big = JSON.stringify({ entries: Array.from({ length: 400 }, (_, i) => ({ id: i, title: `条目${i}-${"x".repeat(20)}` })) });
+  assert.ok(big.length > TOOL_RESULT_CAP);
+  const jsonTrimmed = truncateTool({ role: "tool", content: big, tool_call_id: "j1" }, TOOL_RESULT_CAP);
+  const parsed = JSON.parse(String(jsonTrimmed.content)) as { truncated: boolean; head: string; tail: string; notice: string };
+  assert.equal(parsed.truncated, true);
+  assert.ok(parsed.head.length > 0);
+  assert.ok(parsed.tail.length > 0);
+  assert.ok(!parsed.notice.includes("rag_search"));
+  assert.match(parsed.notice, /分页|缩小/);
+  const plain = "x".repeat(TOOL_RESULT_CAP + 200);
+  const plainTrimmed = truncateTool({ role: "tool", content: plain, tool_call_id: "p1" }, TOOL_RESULT_CAP);
+  assert.match(String(plainTrimmed.content), /省略/);
+  assert.ok(!String(plainTrimmed.content).includes("rag_search"));
+});
+
