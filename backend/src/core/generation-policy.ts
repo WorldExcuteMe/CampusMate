@@ -1,5 +1,9 @@
-export type ReasoningPreference = "auto" | "low" | "medium" | "high";
+export type ReasoningPreference = "auto" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type GenerationStage = "plan" | "verify" | "write" | "simple" | "summary" | "extract";
+// 推理档位：与 AMD Radeon Cloud（reasoning_effort）实测枚举一致；none/关闭档通过能力声明的 reasoning="none"
+// 表达（即不发送思考参数），不在此列表里伪造一个会被服务端拒绝的档位。
+const EXPLICIT_REASONING_TIERS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const HIGH_TIERS = new Set(["high", "xhigh", "max"]);
 export function stageForIntent(intent: string): GenerationStage {
   const action = intent.replace(/“[^”]*”|《[^》]*》|【[^】]*】/g, "");
   const writing = /正文|格式|排版|导出|分工表|进度表/.test(action);
@@ -18,16 +22,18 @@ export function stepResponseInstruction(intent: string): string | undefined {
   return "【本轮步骤范围】只完成用户这轮提出的小步骤，总计不超过300字；提纲用简短条目，表格只填关键字段，不重述此前全文，不抢跑后续阶段。方案标建议，预算标估算。没有权威材料且不联网时只能提取声明、列出核实路径和未知，名称/命名模式、域名外观、水印及时间自洽不能确认真实性；拟建白名单或工具不得说成已存在。";
 }
 export function generationPolicy(caps: Record<string, unknown>, preference: string | undefined, stage: GenerationStage, outputTokens: number) {
-  const requested = ["auto", "low", "medium", "high"].includes(preference ?? "") ? preference! : "auto";
+  const explicit = (EXPLICIT_REASONING_TIERS as readonly string[]).includes(preference ?? "");
+  const requested = preference === "auto" || explicit ? preference! : "auto";
   let tier = stage === "summary" || stage === "extract" ? "low" : requested === "auto" ? (stage === "plan" || stage === "verify" ? "high" : "low") : requested;
-  const constrained = outputTokens < 1024 && tier === "high";
+  const constrained = outputTokens < 1024 && HIGH_TIERS.has(tier);
   if (constrained) tier = "medium";
   const family = String(caps.reasoning ?? "unknown");
-  const deepseekTier = tier === "low" ? "low" : tier === "medium" ? "high" : "max";
+  const deepseekTier = tier === "low" || tier === "minimal" ? "low" : tier === "medium" ? "high" : "max";
+  const off = tier === "low" || tier === "minimal";
   const toggle = family === "enable_thinking" || family === "chat_template_kwargs";
-  const params: Record<string, unknown> = family === "deepseek_thinking" ? { thinking: { type: "enabled" }, reasoning_effort: deepseekTier } : family === "reasoning_effort" ? { reasoning_effort: tier } : family === "chat_template_kwargs" ? { chat_template_kwargs: { enable_thinking: tier !== "low" } } : family === "enable_thinking" ? { enable_thinking: tier !== "low" } : {};
-  const effective = family === "deepseek_thinking" ? deepseekTier : family === "reasoning_effort" ? tier : toggle ? (tier === "low" ? "off" : "on") : null;
-  const reason = effective === null ? "端点未确认可调参数，未发送思考控制" : family === "deepseek_thinking" ? "DeepSeek低/中/高对应low/high/max，阶段与输出预算约束保持" : stage === "extract" ? "图片声明提取采用轻量输出，后续核验保留用户思考偏好" : stage === "summary" ? "材料摘要阶段使用轻量输出；研究、规划和复杂写作保留用户思考偏好" : constrained ? "输出预算不足，限制思考档位" : toggle ? "接口仅支持思考开关" : requested === "auto" ? `按${stage}阶段选择` : "采用用户偏好";
+  const params: Record<string, unknown> = family === "deepseek_thinking" ? { thinking: { type: "enabled" }, reasoning_effort: deepseekTier } : family === "reasoning_effort" ? { reasoning_effort: tier } : family === "chat_template_kwargs" ? { chat_template_kwargs: { enable_thinking: !off } } : family === "enable_thinking" ? { enable_thinking: !off } : {};
+  const effective = family === "deepseek_thinking" ? deepseekTier : family === "reasoning_effort" ? tier : toggle ? (off ? "off" : "on") : null;
+  const reason = effective === null ? "端点未确认可调参数，未发送思考控制" : family === "deepseek_thinking" ? "DeepSeek低/中/高档位映射为low/high/max；minimal与low等效，阶段与输出预算约束保持" : family === "reasoning_effort" ? "按端点 reasoning_effort 枚举发送所选档位（含 xhigh/max），阶段与输出预算约束保持" : stage === "extract" ? "图片声明提取采用轻量输出，后续核验保留用户思考偏好" : stage === "summary" ? "材料摘要阶段使用轻量输出；研究、规划和复杂写作保留用户思考偏好" : constrained ? "输出预算不足，限制思考档位" : toggle ? "接口仅支持思考开关" : requested === "auto" ? `按${stage}阶段选择` : "采用用户偏好";
   return { requested, effective, family, stage, reason, params };
 }
 

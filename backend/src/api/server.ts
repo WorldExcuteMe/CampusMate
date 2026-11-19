@@ -197,7 +197,7 @@ export function createApiServer(deps: ApiDeps): http.Server {
         const sameSelection = prior && (!requestedProvider || prior.modelConfig?.providerId === requestedProvider);
         const selectedConfig = sameSelection ? prior.modelConfig : deps.providers && (requestedProvider !== undefined || (await deps.providers.list(uid)).length > 0) ? await deps.providers.snapshot(uid, requestedProvider) : undefined;
         const modelConfig = selectedConfig ? structuredClone(selectedConfig) : undefined;
-        if (body.reasoning !== undefined && !["auto", "low", "medium", "high"].includes(body.reasoning)) return json(res, 400, { error: "reasoning must be auto|low|medium|high" });
+        if (body.reasoning !== undefined && !["auto", "minimal", "low", "medium", "high", "xhigh", "max"].includes(body.reasoning)) return json(res, 400, { error: "reasoning must be auto|minimal|low|medium|high|xhigh|max" });
         if (modelConfig && (!sameSelection || body.reasoning !== undefined)) modelConfig.reasoningPreference = body.reasoning ?? "auto";
         const input = {
           userId: uid, title: body.title, intent: body.intent, sessionId: body.sessionId,

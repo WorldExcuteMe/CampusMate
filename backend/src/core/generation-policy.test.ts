@@ -21,3 +21,16 @@ test("incremental steps stay brief while explicitly requested long body and docu
   assert.equal(stepResponseInstruction("第9步写700–1100字完整正文"), undefined);
   assert.equal(stepResponseInstruction("第10步生成文档并导出Word和PDF"), undefined);
 });
+
+test("reasoning_effort 支持 minimal..max 枚举，小输出预算自动降档", () => {
+  const caps = { reasoning: "reasoning_effort" };
+  assert.deepEqual(generationPolicy(caps, "max", "plan", 32768).params, { reasoning_effort: "max" });
+  assert.equal(generationPolicy(caps, "max", "plan", 32768).effective, "max");
+  assert.equal(generationPolicy(caps, "xhigh", "simple", 32768).effective, "xhigh");
+  assert.equal(generationPolicy(caps, "minimal", "simple", 32768).effective, "minimal");
+  assert.equal(generationPolicy(caps, "max", "simple", 512).effective, "medium");
+  assert.equal(generationPolicy(caps, "auto", "verify", 32768).effective, "high");
+  assert.equal(generationPolicy({ reasoning: "deepseek_thinking" }, "max", "plan", 32768).effective, "max");
+  assert.deepEqual(generationPolicy({ reasoning: "chat_template_kwargs" }, "max", "simple", 32768).params, { chat_template_kwargs: { enable_thinking: true } });
+  assert.equal(generationPolicy(caps, "bogus", "simple", 32768).requested, "auto");
+});

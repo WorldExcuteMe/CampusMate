@@ -43,7 +43,7 @@ export interface Lease { owner: string | null; expiresAt: number | null; heartbe
 export interface ProviderSnapshot {
   providerId: string; displayName: string; protocol: string; baseUrl: string; modelId: string;
   capabilities: Record<string, unknown>; contextLimit: number | null; metadataSource: string; configVersion: string;
-  reasoningPreference?: "auto" | "low" | "medium" | "high";
+  reasoningPreference?: "auto" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 }
 
 export interface Task {
