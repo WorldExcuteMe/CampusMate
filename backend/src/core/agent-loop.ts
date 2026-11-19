@@ -88,6 +88,7 @@ const NETWORK_RETRY_MARKER = "【网络中断续跑】";
 const READ_PARALLEL = /^(?:workspace_(?:list|read|search)|web_(?:search|fetch)|document_inspect|read_artifact|list_artifact|appworld_(?:apps|docs))$/;
 const PROGRESS_NUDGE_MARKER = "【执行阶段提醒】";
 const ARTIFACT_CHECK_MARKER = "【产物核对】";
+const WEB_FAILURE_CIRCUIT_MARKER = "【检索失败熔断】";
 // 只读观测工具：连续只读过多时提醒开始执行（实测存在“读完不写/反复读”的失败）。
 const OBSERVATION_TOOL = /^(?:workspace_(?:list|read|search)|web_(?:search|fetch)|document_inspect|read_artifact|list_artifact|appworld_(?:apps|docs)|(?:list|show|search|read|get|describe)_)/;
 const WRITE_TOOL = /^(?:workspace_write|document_create|document_export|save_|update_|merge_|create_|delete_|remove_)/;
@@ -377,6 +378,8 @@ async function runAgentLoopInternal(opts: {
   const deliverableNames = requestedDeliverable(opts.user);
   const deliverableList = requestedDeliverableList(opts.user);
   let planNudges = 0;
+  let webFailureCount = 0;
+  let webCircuitNudges = 0;
   let latestPlan: PlanItem[] = structuredClone(opts.resumePlan ?? []);
   if (latestPlan.length && !transcript.some((m) => m.role === "system" && String(m.content).startsWith("【当前计划】"))) {
     const planLines = latestPlan.map((item, index) => `${index + 1}. ${item.status === "completed" ? "✓" : item.status === "in_progress" ? "▶" : "…"} ${item.content}`).join("\n");
@@ -776,6 +779,11 @@ async function runAgentLoopInternal(opts: {
           if (nudge) toolNudges.push(nudge);
           const progress = trackProgress(call.function.name);
           if (progress) toolNudges.push(progress);
+          if (/^(?:web_fetch|web_search)$/.test(call.function.name) && toolResultFailed(out)) webFailureCount += 1;
+          if (webFailureCount >= 8 && webCircuitNudges < 1) {
+            webCircuitNudges += 1;
+            toolNudges.push(WEB_FAILURE_CIRCUIT_MARKER + " 已多次网页读取/检索失败（≥8 次）。停止继续抓取新的不可读页面：改用已取得的可读来源完成写作或回答，明确标注未核实内容与缺口；若用户必须全部核实，说明环境限制后结束。");
+          }
           try { const parsed = JSON.parse(out); if (parsed && typeof parsed === "object" && !parsed.error) actions.push(call.function.name); } catch { /* non-json */ }
           if (out.includes(APPROVAL_PAUSE)) { await checkpoint(); return { reply: "等待人工审批", actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: true, messages, transcript }; }
         }
@@ -811,6 +819,12 @@ async function runAgentLoopInternal(opts: {
         if (jsonNudge) { messages.push({ role: "system", content: jsonNudge }); transcript.push({ role: "system", content: jsonNudge }); }
         const jsonProgress = trackProgress(jt.name);
         if (jsonProgress) { messages.push({ role: "system", content: jsonProgress }); transcript.push({ role: "system", content: jsonProgress }); }
+        if (/^(?:web_fetch|web_search)$/.test(jt.name) && toolResultFailed(out)) webFailureCount += 1;
+        if (webFailureCount >= 8 && webCircuitNudges < 1) {
+          webCircuitNudges += 1;
+          const circuit = WEB_FAILURE_CIRCUIT_MARKER + " 已多次网页读取/检索失败（≥8 次）。停止继续抓取新的不可读页面：改用已取得的可读来源完成写作或回答，明确标注未核实内容与缺口；若用户必须全部核实，说明环境限制后结束。";
+          messages.push({ role: "system", content: circuit }); transcript.push({ role: "system", content: circuit });
+        }
         try { const parsed = JSON.parse(out); if (parsed && typeof parsed === "object" && !parsed.error) actions.push(jt.name); } catch { /* non-json */ }
         const trimmedJt = trimToBudget(messages, cap, tTools, reserve, undefined, { role: "user", content: userContent });
         messages = trimmedJt.messages;
@@ -927,6 +941,7 @@ async function runAgentLoopInternal(opts: {
     return { reply: `${done}处理过程中出现异常（${reason}），这不是模型连接问题。`, actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, error: reason };
   }
 }
+
 
 
 

@@ -138,3 +138,5 @@ JS 渲染、登录态、分页、反爬、非结构化页面解析、批量校�
 - **L2 golden 的 mock 用例只用于确定性机制回归**，结论以 canary + L3 真实体验流（真实后端 API + 真实模型）为准；
 - **记录**：`CANARY-REPORT.md`、各阶段日志、`run.summary`/事件日志中的 token/cost/缓存/计划/修复轮指标；
 - **对照口径**：架构改动前跑一次基线，改动后同配置重跑；只看"相对基线是否改善 + 失败类型是否减少"。
+
+- **真实 canary 基线（2026-11-19 20:12–21:09，freeze-9，DeepSeek V4 Flash）**：GDPval 1/3、HORIZON-001 探索性通过、AppWorld 325d6ec 失败（1195.6s 撞 1200s 墙）、**OfficeBench 1-14/1 首次通过（196s/5 工具）**。证据：`external-benchmarks/CANARY-REPORT.md`。

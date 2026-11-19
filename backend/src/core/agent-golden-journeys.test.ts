@@ -101,5 +101,12 @@ test("golden J4 计划中断恢复：resumePlan 回注后继续完成剩余步�
   assert.match(resumedMessages, /data\/summary\.md/);
   assert.match(r.reply, /summary\.md/);
 });
-
-
+test("golden J5 检索失败熔断：连续 8 次抓取失败后停止无效抓取、基于已有来源收口", async () => {
+  const rounds: Array<Record<string, unknown>> = Array.from({ length: 9 }, (_, i) => ({ content: "", toolCalls: [tc(`e${i}`, "web_fetch", { url: `https://blocked.example/p${i}` })] }));
+  rounds.push({ content: "已停止继续抓取不可读页面；基于已取得的可读来源给出结论，并标注未核实内容。" });
+  const f = journey(rounds, async () => JSON.stringify({ status: 403, readable: false, error: "网页返回HTTP 403，未取得正文" }));
+  f.deps.tools = [tool("web_fetch", { url: { type: "string" } })];
+  await runAgentLoop({ system: "s", user: "汇总某高校官网的全部通知", deps: f.deps });
+  const circuit = f.requests.some((request) => request.messages.some((m) => typeof m.content === "string" && m.content.startsWith("【检索失败熔断】")));
+  assert.ok(circuit, "8+ failed fetches should trip the circuit breaker notice");
+});
