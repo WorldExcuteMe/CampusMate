@@ -36,7 +36,7 @@ it.each(['reasoning_effort', 'deepseek_thinking'])("用户选择high后提交真
   expect(bodies[0]).toEqual(expect.objectContaining({ providerId: "custom", reasoning: "high", intent: "帮我制定竞赛策划书" }));
   expect(bodies[0].sessionId).toMatch(/^[a-f0-9-]{36}$/);
   expect(bodies[0]).not.toHaveProperty("history");
-  await waitFor(() => expect(screen.getByText(/最近返回：actual-gemma/)).toBeVisible());
+  await waitFor(() => expect(screen.getByLabelText("上下文占用")).toBeTruthy());
   expect(screen.getByText(/窗口输入 100 \/ 64,000/)).toBeVisible();
   expect(screen.getByText(/窗口输入 100 \/ 64,000/).getAttribute("title")).toContain("actual-gemma 上限 64,000");
 });

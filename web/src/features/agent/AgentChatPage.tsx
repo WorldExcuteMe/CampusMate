@@ -396,7 +396,8 @@ export function AgentChatPage() {
             onPaste={(e) => { if (e.clipboardData.files.length) { e.preventDefault(); handleFiles(e.clipboardData.files); } }}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }}
           />
-          <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="mt-2 space-y-2">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
             {local && (
               <div className="flex items-center gap-2 rounded-md bg-muted px-2 py-1 text-xs">
                 <FolderOpen className="size-3.5 shrink-0 text-primary" />
@@ -454,7 +455,8 @@ export function AgentChatPage() {
             </label>
             {provider?.capabilities?.reasoning === 'deepseek_thinking' ? <span className="text-xs text-muted-foreground" title="当前模型已接入思考与工具调用；低/中/高分别对应官方low/high/max，内部思考不作为聊天正文展示。">DeepSeek 思考已接入</span> : !["reasoning_effort", "enable_thinking", "chat_template_kwargs"].includes(String(provider?.capabilities?.reasoning)) && <span className="text-xs text-muted-foreground">尚未确认该接口的思考控制能力</span>}
             {providerError && <span className="text-xs text-destructive">模型目录加载失败：{errorMessage(providerError)}</span>}
-            {active.actualModel && <span className="text-xs text-muted-foreground" title={`最近任务配置：${active.configuredModel ?? "未知"}`}>最近返回：{active.actualModel}</span>}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
             <ContextUsage
               used={active?.contextUsed}
               cap={contextCap}
@@ -468,6 +470,7 @@ export function AgentChatPage() {
               {busyUI ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
               {busyUI ? "处理中" : "发送"}
             </Button>
+            </div>
           </div>
         </div>
       </div>

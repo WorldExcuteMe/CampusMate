@@ -21,84 +21,85 @@
   --site-space: 1;
   --site-type: 1;
   --site-motion: 1;
-  --radius: 0.75rem;
-  --background: #faf9f6;
-  --foreground: #14162e;
+  --radius: 0.5rem;
+  /* 石墨工具风 v2：中性灰阶 + 系统蓝（VS Code 式纯色，无渐变/无 glow）。 */
+  --background: #ffffff;
+  --foreground: #1f1f1f;
   --card: #ffffff;
-  --card-foreground: #14162e;
+  --card-foreground: #1f1f1f;
   --popover: #ffffff;
-  --popover-foreground: #14162e;
-  --primary: #5b5bd6;
+  --popover-foreground: #1f1f1f;
+  --primary: #007acc;
   --primary-foreground: #ffffff;
-  --secondary: #eceafd;
-  --secondary-foreground: #3b34a0;
-  --muted: #edeff6;
-  --muted-foreground: #5c6175;
-  --accent: #e2f4f0;
-  --accent-foreground: #0e6b5c;
-  --destructive: #d64545;
+  --secondary: #f3f3f3;
+  --secondary-foreground: #1f1f1f;
+  --muted: #f3f3f3;
+  --muted-foreground: #616161;
+  --accent: #e5f1f9;
+  --accent-foreground: #0b5c8f;
+  --destructive: #c42b1c;
   --destructive-foreground: #ffffff;
-  --success: #0e9f8a;
-  --warning: #b45309;
-  --info: #2563eb;
-  --border: #e8e6ee;
-  --input: #d7dbea;
-  --ring: #7a7af0;
-  --chart-1: #5b5bd6;
-  --chart-2: #0ea5a0;
-  --chart-3: #f59e0b;
-  --chart-4: #e4577b;
-  --chart-5: #3b82f6;
-  --chart-6: #8b5cf6;
-  --sidebar: #f5f3fa;
-  --sidebar-foreground: #14162e;
-  --sidebar-primary: #5b5bd6;
+  --success: #107c10;
+  --warning: #9a6700;
+  --info: #007acc;
+  --border: #e0e0e0;
+  --input: #c8c8c8;
+  --ring: #007acc;
+  --chart-1: #007acc;
+  --chart-2: #4b8bbe;
+  --chart-3: #8a8a8a;
+  --chart-4: #5f6a72;
+  --chart-5: #a0a0a0;
+  --chart-6: #2f6f9f;
+  --sidebar: #f8f8f8;
+  --sidebar-foreground: #1f1f1f;
+  --sidebar-primary: #007acc;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #e6e8f6;
-  --sidebar-accent-foreground: #14162e;
-  --sidebar-border: #e2e5f0;
-  --sidebar-ring: #7a7af0;
-  --glow: 91 91 214;
+  --sidebar-accent: #e8e8e8;
+  --sidebar-accent-foreground: #1f1f1f;
+  --sidebar-border: #e5e5e5;
+  --sidebar-ring: #007acc;
+  --glow: 0 122 204;
 }
 
 [data-theme="dark"] {
-  --background: #0b0e1a;
-  --foreground: #e8eaf6;
-  --card: #12162a;
-  --card-foreground: #e8eaf6;
-  --popover: #151a33;
-  --popover-foreground: #e8eaf6;
-  --primary: #8b8bf4;
-  --primary-foreground: #0b0e1a;
-  --secondary: #1c2140;
-  --secondary-foreground: #c9c9f7;
-  --muted: #171c33;
-  --muted-foreground: #8f96b3;
-  --accent: #12332e;
-  --accent-foreground: #5eead4;
-  --destructive: #ff6b6b;
-  --destructive-foreground: #0b0e1a;
-  --success: #2dd4bf;
-  --warning: #fbbf24;
-  --info: #60a5fa;
-  --border: #232a4d;
-  --input: #2a3157;
-  --ring: #8b8bf4;
-  --chart-1: #8b8bf4;
-  --chart-2: #2dd4bf;
-  --chart-3: #fbbf24;
-  --chart-4: #f472b6;
-  --chart-5: #60a5fa;
-  --chart-6: #a78bfa;
-  --sidebar: #0e1226;
-  --sidebar-foreground: #e8eaf6;
-  --sidebar-primary: #8b8bf4;
-  --sidebar-primary-foreground: #0b0e1a;
-  --sidebar-accent: #1c2140;
-  --sidebar-accent-foreground: #e8eaf6;
-  --sidebar-border: #232a4d;
-  --sidebar-ring: #8b8bf4;
-  --glow: 139 139 244;
+  --background: #1e1e1e;
+  --foreground: #e6e6e6;
+  --card: #252526;
+  --card-foreground: #e6e6e6;
+  --popover: #2a2a2b;
+  --popover-foreground: #e6e6e6;
+  --primary: #3794ff;
+  --primary-foreground: #0b0b0b;
+  --secondary: #2d2d30;
+  --secondary-foreground: #d6d6d6;
+  --muted: #2a2a2b;
+  --muted-foreground: #a3a3a3;
+  --accent: #04395e;
+  --accent-foreground: #9cdcfe;
+  --destructive: #f85149;
+  --destructive-foreground: #1e1e1e;
+  --success: #3fb950;
+  --warning: #d29922;
+  --info: #3794ff;
+  --border: #333333;
+  --input: #474747;
+  --ring: #3794ff;
+  --chart-1: #3794ff;
+  --chart-2: #4b8bbe;
+  --chart-3: #8a8a8a;
+  --chart-4: #6a737d;
+  --chart-5: #9d9d9d;
+  --chart-6: #2f6f9f;
+  --sidebar: #252526;
+  --sidebar-foreground: #d6d6d6;
+  --sidebar-primary: #3794ff;
+  --sidebar-primary-foreground: #0b0b0b;
+  --sidebar-accent: #2d2d30;
+  --sidebar-accent-foreground: #e6e6e6;
+  --sidebar-border: #333333;
+  --sidebar-ring: #3794ff;
+  --glow: 55 148 255;
 }
 
 @theme inline {
@@ -180,22 +181,16 @@ body {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 8px 24px -12px rgb(var(--glow) / 0.18);
+  box-shadow: none;
 }
 @utility cm-glow {
-  box-shadow: 0 0 0 1px rgb(var(--glow) / 0.35), 0 8px 32px -8px rgb(var(--glow) / 0.35);
+  box-shadow: 0 0 0 1px var(--border);
 }
 @utility cm-gradient-text {
-  background: linear-gradient(100deg, var(--primary), var(--chart-2));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--foreground);
 }
 @utility cm-aurora {
-  background:
-    radial-gradient(60rem 30rem at 85% -10%, rgb(var(--glow) / 0.065), transparent 60%),
-    radial-gradient(40rem 24rem at -10% 110%, rgb(45 212 191 / 0.035), transparent 60%),
-    var(--background);
+  background: var(--background);
 }
 
 @layer base {
