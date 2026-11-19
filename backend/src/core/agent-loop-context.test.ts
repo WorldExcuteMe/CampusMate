@@ -15,7 +15,7 @@ class ManyToolTransport implements LlmTransport {
   async chat(opts: { messages: ChatMessage[] }): Promise<ChatResult> {
     const toolResults = opts.messages.filter((m) => m.role === "tool").length;
     if (toolResults >= this.rounds) return { content: "完成", toolCalls: [], usage: { input: 1, output: 1 }, model: "deepseek-chat" };
-    return { content: "", toolCalls: [{ id: `c${toolResults}`, type: "function", function: { name: "big_tool", arguments: "{}" } }], usage: { input: 1, output: 1 }, model: "deepseek-chat" };
+    return { content: "", toolCalls: [{ id: `c${toolResults}`, type: "function", function: { name: "big_tool", arguments: JSON.stringify({ round: toolResults }) } }], usage: { input: 1, output: 1 }, model: "deepseek-chat" };
   }
 }
 

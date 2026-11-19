@@ -185,4 +185,11 @@ test("todo 计划持久化进 checkpoint，并在 resume 时回注【当前计�
   assert.ok(resumed.requests[0].messages.some((m) => typeof m.content === "string" && m.content.startsWith("【当前计划】")));
   assert.match(String(resumed.requests[0].messages.find((m) => typeof m.content === "string" && m.content.startsWith("【当前计划】"))?.content), /生成 report\.docx/);
 });
-
+test("相同工具+参数重复 15 次触发硬停，避免长任务空转耗尽预算", async () => {
+  const round = { content: "", toolCalls: [{ id: "loop", type: "function", function: { name: "workspace_read", arguments: JSON.stringify({ path: "same.txt" }) } }] };
+  const f = fixture(Array.from({ length: 20 }, () => round));
+  const r = await runAgentLoop({ system: "s", user: "读取 same.txt", deps: f.deps });
+  assert.equal(r.error, "repeated_tool_call_loop");
+  assert.ok(f.requests.length <= 16, `should stop early, got ${f.requests.length} requests`);
+  assert.match(r.reply, /执行已停止/);
+});

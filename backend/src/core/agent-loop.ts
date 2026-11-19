@@ -115,10 +115,12 @@ function canonicalKey(name: string, args: Record<string, unknown>): string {
   return name + ":" + JSON.stringify(sort(args));
 }
 
+let repeatedLoopStop: string | null = null;
 function noteRepeat(repeat: Map<string, number>, name: string, args: Record<string, unknown>, messages: ChatMessage[]): void {
   const key = canonicalKey(name, args);
   const n = (repeat.get(key) ?? 0) + 1;
   repeat.set(key, n);
+  if (n >= 15 && !repeatedLoopStop) repeatedLoopStop = name;
   if (n === 3 || n === 5 || n === 8) {
     messages.push({ role: "user", content: `[系统提醒] 工具 ${name} 已用相同参数调用 ${n} 次。若结果未变请停止重复重试：改用不同参数/来源，或基于已有结果直接总结；查不到不等于不存在，如实说明。` });
   }
@@ -788,6 +790,11 @@ async function runAgentLoopInternal(opts: {
           if (out.includes(APPROVAL_PAUSE)) { await checkpoint(); return { reply: "等待人工审批", actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: true, messages, transcript }; }
         }
         for (const nudge of toolNudges) { messages.push({ role: "system", content: nudge }); transcript.push({ role: "system", content: nudge }); }
+        if (repeatedLoopStop) {
+          const reply = `执行已停止：工具 ${repeatedLoopStop} 以相同参数被重复调用 15 次且没有进展。请检查目标是否已达成、参数是否变化，或说明当前限制。`;
+          transcript.push({ role: "assistant", content: reply });
+          return { reply, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: "error", error: "repeated_tool_call_loop" };
+        }
         const trimmed = trimToBudget(messages, cap, tTools, reserve, undefined, { role: "user", content: userContent });
         messages = trimmed.messages;
         await checkpoint();
@@ -817,6 +824,11 @@ async function runAgentLoopInternal(opts: {
         noteRepeat(repeat, jt.name, jt.args, messages);
         const jsonNudge = trackToolOutcome(out);
         if (jsonNudge) { messages.push({ role: "system", content: jsonNudge }); transcript.push({ role: "system", content: jsonNudge }); }
+        if (repeatedLoopStop) {
+          const reply = `执行已停止：工具 ${repeatedLoopStop} 以相同参数被重复调用 15 次且没有进展。请检查目标是否已达成、参数是否变化，或说明当前限制。`;
+          transcript.push({ role: "assistant", content: reply });
+          return { reply, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: "error", error: "repeated_tool_call_loop" };
+        }
         const jsonProgress = trackProgress(jt.name);
         if (jsonProgress) { messages.push({ role: "system", content: jsonProgress }); transcript.push({ role: "system", content: jsonProgress }); }
         if (/^(?:web_fetch|web_search)$/.test(jt.name) && toolResultFailed(out)) webFailureCount += 1;
@@ -941,6 +953,7 @@ async function runAgentLoopInternal(opts: {
     return { reply: `${done}处理过程中出现异常（${reason}），这不是模型连接问题。`, actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, error: reason };
   }
 }
+
 
 
 
