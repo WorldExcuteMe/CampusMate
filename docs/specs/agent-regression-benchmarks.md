@@ -298,3 +298,17 @@ R2 同契约 + 墙钟 780s/单请求 240s 后 0 超时，终止原因变为 toke
   ③标准臂单请求超时 240s→360s（AppWorld 325d6ec 两次 240s 长尾超时）；
   ④AppWorld 驱动在任务指令前加"【任务指令】"标记（max 臂曾把系统块误判为任务缺失）。
   Terminal 驱动的 env 覆盖修复（LLM_TIMEOUT_MS 未生效）待当前批次结束后应用，避免污染正在跑的臂。
+
+### 2026-11-19 晚：Agent 架构对比与一次大优化构建
+
+- **架构对比**：本地 DSH 源码（deepseek-ai/deepseek-harness）+ Codex CLI、Gemini CLI、OpenHands、SWE-agent、Aider
+  逐维度分析，结合自身 16 维审计，产出 `docs/specs/agent-architecture-comparison.md` 与四份参考分析
+  （`docs/specs/architecture-references/`）。核心结论：差距不在循环大小，而在「可回放状态 + 受控工具界面 + 可验证收敛」。
+- **已落地（带测试）**：
+  ①结构化压缩 v2（目标/计划/产物/证据/未完成，替代 160 字符平铺摘要）；
+  ②`todo_write` 计划工具 + 计划规范注入 + 多步任务计划提醒；
+  ③并行只读批处理（opt-in，TOOL_SPECS 门控、预算余量检查、观测顺序保持、`tool.parallel_batch` 事件）；
+  ④验收→修复轮（验收失败时一次有界重入，记录 `eval.repair`）；提交 `aa2e445`、`235b37b`。
+- **验证**：全量后端 670 项 669 通过 1 跳过、tsc 通过；评测快照隔离未受影响。后续用失败集/未跑集做单变量验证
+  （机制级指标 + 通过率同时改善才保留）。
+- **延后**：事件溯源会话日志、完整子代理、MCP 客户端、文件系统 skills 渐进披露、前缀策略默认开启（需 A/B）。
