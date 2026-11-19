@@ -427,7 +427,7 @@ async function runAgentLoopInternal(opts: {
     messages, transcript, stepProgress: {}, repeat: Object.fromEntries(repeat), usage: { ...usage }, pendingApprovals: [], toolErrors: assessToolOutcomes(transcript, opts.resumeToolErrors ?? 0).count,
   });
   const checkpoint = async () => {
-    if (deps.sessionLog) await deps.sessionLog.append({ type: "checkpoint", state: structuredClone({ messages, transcript, usage }) as unknown as Record<string, unknown>, at: now() });
+    if (deps.sessionLog) await deps.sessionLog.append({ type: "checkpoint", state: structuredClone({ usage }) as unknown as Record<string, unknown>, at: now() });
     try { await hooks.onCheckpoint?.(structuredClone(snapshot())); }
     catch (err) { if (err instanceof LeaseLostError) throw err; throw new CheckpointWriteError(err); }
   };
@@ -913,6 +913,7 @@ async function runAgentLoopInternal(opts: {
     return { reply: `${done}处理过程中出现异常（${reason}），这不是模型连接问题。`, actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, error: reason };
   }
 }
+
 
 
 

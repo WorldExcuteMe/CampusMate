@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { InMemorySessionLog, appendEvents, deriveMessages, replay, repairEvents, type SessionEvent } from "./event-log.ts";
+import { InMemorySessionLog, StoreSessionLog, appendEvents, deriveMessages, replay, repairEvents, type SessionEvent } from "./event-log.ts";
 import { validatePairing } from "./context.ts";
 import type { ToolCall } from "./types.ts";
 
@@ -72,5 +72,20 @@ test("appendEvents 批量追加保持顺序", async () => {
   assert.equal(appended, 8);
   assert.equal(log.events()[0].type, "turn/start");
   assert.equal(log.events().at(-1)?.type, "turn/end");
+});
+test("StoreSessionLog 持久化并跨实例重建连续事件流", async () => {
+  const rows: Array<{ taskId: string; userId: string; type: string; payload: Record<string, unknown> }> = [];
+  const store = {
+    async appendEvent(input: { taskId: string; userId: string; type: "session.event"; payload: { event: SessionEvent } }) { rows.push(input as unknown as { taskId: string; userId: string; type: string; payload: Record<string, unknown> }); },
+    async listEvents(taskId: string) { return rows.filter((row) => row.taskId === taskId); },
+  };
+  const log = await StoreSessionLog.load(store, "task1", "u1");
+  await log.append({ type: "turn/start", turnId: "t1", user: "读取文件", at: 1 });
+  await log.append({ type: "user/message", content: "读取文件", at: 2 });
+  const reloaded = await StoreSessionLog.load(store, "task1", "u1");
+  assert.equal(reloaded.events().length, 2);
+  assert.equal(reloaded.events()[0].type, "turn/start");
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].type, "session.event");
 });
 

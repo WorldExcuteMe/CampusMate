@@ -316,3 +316,15 @@ R2 同契约 + 墙钟 780s/单请求 240s 后 0 超时，终止原因变为 toke
 - **低成本高收益补强（2026-11-19 晚）**：文件化技能 + 渐进披露（`skills_list` 只给名称+一句话说明，
   `skills_read` 按需读 `skills/*/SKILL.md`；仅本地工作区暴露，评测驱动不受影响），对应架构差距④的一半；
   并行只读机制保持 opt-in，待当前 Terminal 标准臂批次结束后接入评测驱动并单独标记。
+
+### 2026-11-19 晚：Terminal 批次停止 + Agent 架构 v2 立项与第一阶段落地
+
+- **Terminal 失败集标准臂停止**（用户决定）：3/35 完成，均 reward 0 且 CTRF 真实执行（largest-eigenval 7,018/301 tokens、
+  regex-chess 53,296/4,753、write-compressor 15,880/1,458），证据保留；未跑题不再消耗用量。
+- **架构研究补齐**：2025–2026 agent 范式调研、GitHub 成熟方案调研、DSH 其余子系统深挖，三份报告入库
+  `docs/specs/architecture-references/`；结合此前六架构对比，形成 `docs/specs/agent-architecture-v2.md`
+  （30 维全量 brainstorm + 目标模块图 + P0–P3 分阶段重构计划 + 验收标准）。
+- **P0/P2a 落地**：`core/event-log.ts`（类型化 SessionEvent、deriveMessages 纯投影、replay、repairEvents、appendEvents、
+  StoreSessionLog 持久化与脱敏）；agent-loop 双写事件（turn/user/assistant/tool/checkpoint/turn-end）；worker 按任务
+  持久化 `session.event` 并从事件流重建连续日志；全量后端 679 项 678 通过 1 跳过、tsc 干净。
+- **下一步**：P1（resume 从事件重建消息、计划持久化、golden 回归集、成本账本）→ P2（受限子代理、MCP、记忆闭环、OTel）。

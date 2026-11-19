@@ -6,6 +6,8 @@ import type { AcceptanceCriterion, CompletionCertificate, Task, ToolDef, ToolInv
 import type { LlmTransport } from "../core/llm.ts";
 import { CheckpointWriteError, TaskCancelledError, runAgentLoop, type AgentLoopResult } from "../core/agent-loop.ts";
 import { errorMessage, LlmTransportError, isStorageUnavailable, storageFailureDetails } from "../core/errors.ts";
+import { StoreSessionLog, type SessionEvent, type SessionEventStore } from "../core/event-log.ts";
+import { toolResultView } from "../core/task-events.ts";
 import type { CompanionRegistry } from "../core/companion.ts";
 import { checkFsPath, checkTerminal, checkGroup } from "../core/companion.ts";
 import type { EvidenceStore } from "../core/evidence.ts";
@@ -354,6 +356,7 @@ export class Worker {
         history = composed.messages.filter((m) => m.role !== "system").slice(0, -1);
       }
 
+      const sessionLog = await StoreSessionLog.load(store as unknown as SessionEventStore, task.id, task.userId, sanitizeSessionEvent);
       const taskTransport = this.resolveTransport ? await this.resolveTransport(task) : this.transport;
       await store.appendEvent({ taskId: task.id, userId: task.userId, type: "step.finished", payload: { stepId: "prepare", passed: true } });
       const loopOptions: Parameters<typeof runAgentLoop>[0] = {
@@ -374,6 +377,7 @@ export class Worker {
           reasoning: task.modelConfig?.reasoningPreference,
           stage: stageForIntent(task.intent),
           signal: control.signal,
+          sessionLog,
           budget: task.budget,
           executeTool: wrappedExecuteTool,
           hooks: {
@@ -611,6 +615,20 @@ function withTimeout<T>(p: Promise<T>, ms: number, tool: string): Promise<T> {
     p.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
   });
 }
+function redactSessionText(value: string): string {
+  return value
+    .replace(/https?:\/\/([^\s?#"']+)\?[^\s#"']*/g, "https://$1?…")
+    .replace(/\b(?:sk-|ak-|key-)[A-Za-z0-9_-]{8,}\b/g, "[密钥已隐藏]");
+}
 
-
-
+// 事件日志是审计事实，可能被导出/回放：工具结果按摘要视图脱敏，参数中的 URL 查询串与密钥做遮蔽。
+function sanitizeSessionEvent(event: SessionEvent): SessionEvent {
+  if (event.type === "tool/result") {
+    const view = toolResultView(event.content);
+    return { ...event, content: JSON.stringify({ ok: view.ok, summary: view.summary, sourceUrls: view.sourceUrls, ...(view.warning ? { warning: view.warning } : {}) }) };
+  }
+  if (event.type === "tool/call") {
+    return { ...event, args: Object.fromEntries(Object.entries(event.args).map(([key, value]) => [key, typeof value === "string" ? redactSessionText(value) : value])) };
+  }
+  return event;
+}

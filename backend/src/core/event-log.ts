@@ -95,4 +95,33 @@ export async function appendEvents(log: SessionLog, events: readonly SessionEven
   for (const event of events) await log.append(event);
   return events.length;
 }
+// 持久化适配器（Phase 2a）：把会话事件写入任务事件流（type = "session.event"），
+// 新 turn/resume 时从事件流重建连续日志。存储接口保持最小化，避免 core/event-log 依赖 runtime 实现。
+export interface SessionEventStore {
+  appendEvent(input: { taskId: string; userId: string; type: "session.event"; payload: { event: SessionEvent } }): Promise<unknown>;
+  listEvents(taskId: string): Promise<Array<{ type: string; payload: Record<string, unknown> }>>;
+}
+
+export class StoreSessionLog implements SessionLog {
+  private readonly buffer: SessionEvent[];
+  private readonly deps: { taskId: string; userId: string; store: SessionEventStore; sanitize?: (event: SessionEvent) => SessionEvent };
+  constructor(deps: { taskId: string; userId: string; store: SessionEventStore; initial?: SessionEvent[]; sanitize?: (event: SessionEvent) => SessionEvent }) {
+    this.deps = { taskId: deps.taskId, userId: deps.userId, store: deps.store, sanitize: deps.sanitize };
+    this.buffer = [...(deps.initial ?? [])];
+  }
+  static async load(store: SessionEventStore, taskId: string, userId: string, sanitize?: (event: SessionEvent) => SessionEvent): Promise<StoreSessionLog> {
+    const rows = await store.listEvents(taskId);
+    const initial = rows
+      .filter((row) => row.type === "session.event")
+      .map((row) => (row.payload as { event?: SessionEvent }).event)
+      .filter((event): event is SessionEvent => Boolean(event && typeof (event as { type?: unknown }).type === "string"));
+    return new StoreSessionLog({ taskId, userId, store, initial, sanitize });
+  }
+  async append(event: SessionEvent): Promise<void> {
+    const persisted = this.deps.sanitize ? this.deps.sanitize(structuredClone(event)) : structuredClone(event);
+    await this.deps.store.appendEvent({ taskId: this.deps.taskId, userId: this.deps.userId, type: "session.event", payload: { event: persisted } });
+    this.buffer.push(structuredClone(event));
+  }
+  events(): readonly SessionEvent[] { return this.buffer; }
+}
 
