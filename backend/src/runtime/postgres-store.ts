@@ -4,6 +4,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentEvent, Checkpoint, EventType, Task, ToolInvocation, Budget } from "../core/types.ts";
 import { DEFAULT_BUDGET, EMPTY_USAGE } from "../core/types.ts";
+import { recommendedBudget } from "../core/budget.ts";
 import type { CreateTaskInput, TaskStore } from "./store.ts";
 import type { SqlClient, SqlPool } from "./sql.ts";
 import { assertTaskTransition } from "./state-machine.ts";
@@ -166,7 +167,7 @@ export class PostgresStore implements TaskStore {
       `insert into agent_tasks (id,user_id,goal_id,session_id,title,intent,status,priority,attempt,max_attempts,budget,usage,cancel_requested,created_at,updated_at,turn_id,turn_seq,input_hash,images,model_config)
        values ($1,$2,$3,$4,$5,$6,'queued',$7,0,$8,$9::jsonb,$10::jsonb,false,$11::timestamptz,$11::timestamptz,$12,$13,$14,$15::jsonb,$16::jsonb) returning ${TASK_STATE_COLUMNS}`,
       [id, input.userId, input.goalId ?? null, input.sessionId ?? null, input.title, input.intent ?? input.title,
-       input.priority ?? 50, input.maxAttempts ?? 3, j(input.budget ?? DEFAULT_BUDGET), j(EMPTY_USAGE), iso(now), input.turnId ?? null, input.turnSeq ?? null, input.inputHash ?? null, j(input.images ?? null), j(input.modelConfig ?? null)],
+       input.priority ?? 50, input.maxAttempts ?? 3, j(input.budget ?? recommendedBudget(input.intent ?? input.title)), j(EMPTY_USAGE), iso(now), input.turnId ?? null, input.turnSeq ?? null, input.inputHash ?? null, j(input.images ?? null), j(input.modelConfig ?? null)],
     );
     const task = { ...rowToTask(r.rows[0]), images: input.images };
     this.cacheImages(input.userId, task.id, input.images ?? []);
@@ -384,3 +385,4 @@ export class PostgresStore implements TaskStore {
     if (result.rowCount !== 1) throw new Error("调用状态未确认");
   }
 }
+

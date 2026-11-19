@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentEvent, Checkpoint, EventType, Task, TaskStatus, ToolInvocation, Budget, Usage } from "../core/types.ts";
 import { DEFAULT_BUDGET, EMPTY_USAGE } from "../core/types.ts";
+import { recommendedBudget } from "../core/budget.ts";
 import { assertTaskTransition } from "./state-machine.ts";
 import type { SessionStore } from "../core/storage-contracts.ts";
 import type { MemorySessionStore } from "./memory-storage.ts";
@@ -154,7 +155,7 @@ export class InMemoryStore implements TaskStore {
       lease: { owner: null, expiresAt: null, heartbeatAt: null },
       attempt: 0,
       maxAttempts: input.maxAttempts ?? 3,
-      budget: input.budget ?? { ...DEFAULT_BUDGET },
+      budget: input.budget ?? recommendedBudget(input.intent ?? input.title),
       usage: { ...EMPTY_USAGE },
       cancelRequested: false,
       createdAt: now,
@@ -311,3 +312,4 @@ export class InMemoryStore implements TaskStore {
     this.invocations.set(key, inv);
   }
 }
+

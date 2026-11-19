@@ -78,6 +78,15 @@ const TRUNCATION_REPAIR_MARKER = "【输出截断续跑】";
 const DELIVERY_REPAIR_MARKER = "【交付校验】";
 const TIMEOUT_RETRY_MARKER = "【请求超时续跑】";
 const TOOL_ERROR_NUDGE_MARKER = "【工具失败诊断】";
+const NETWORK_RETRY_MARKER = "【网络中断续跑】";
+// 只读工具可在同一轮并行执行（写入/审批/有依赖的调用仍保持顺序）。
+const READ_PARALLEL = /^(?:workspace_(?:list|read|search)|web_(?:search|fetch)|document_inspect|read_artifact|list_artifact|appworld_(?:apps|docs))$/;
+const PROGRESS_NUDGE_MARKER = "【执行阶段提醒】";
+const ARTIFACT_CHECK_MARKER = "【产物核对】";
+// 只读观测工具：连续只读过多时提醒开始执行（实测存在“读完不写/反复读”的失败）。
+const OBSERVATION_TOOL = /^(?:workspace_(?:list|read|search)|web_(?:search|fetch)|document_inspect|read_artifact|list_artifact|appworld_(?:apps|docs)|(?:list|show|search|read|get|describe)_)/;
+const WRITE_TOOL = /^(?:workspace_write|document_create|document_export|save_|update_|merge_|create_|delete_|remove_)/;
+const MUTATION_INTENT = /(?:写入|保存|创建|生成|导出|修改|整理|移动|重命名|删除|添加|导入|更新|提交|批量|build|write|save|create|export|update|move|rename|delete|add|remove|implement|refactor)/i;
 
 export function parseJsonTool(content: string, known: Set<string>): { name: string; args: Record<string, unknown> } | null {
   return parseTextToolCall(content, known);
@@ -307,7 +316,7 @@ async function runAgentLoopInternal(opts: {
       ...(stepResponseInstruction(opts.user) ? [{ role: "system" as const, content: stepResponseInstruction(opts.user)! }] : []),
       ...(deliveryPlan ? [{ role: "system" as const, content: deliveryPlan }] : []),
       ...(effectiveStage === "write" ? [{ role: "system" as const, content: "用户列出章节或小节标题时，原样保留用户指定的标题文字和顺序，使用清晰的 Markdown 标题层级。标题下可增加用户未指定的子节。" }] : []),
-      ...(workspaceProgram ? [{ role: "system" as const, content: "【编程验证】编写或运行程序时，先读取输入样例和格式契约，按结构字段解析。用能区分边界条件与相似文本的反例验证，先确认交付文件的完整相对路径及工作目录。文件转换只给出目标文件名时，默认把产物放在原文件所在目录。表格或文档的结构调整（交换、重排、转置行或列）把整行或整列连同表头/标签作为单位处理，写回后回读核对结构与值。回读最终路径并核对内容后再报告交付。" }] : []),
+      ...(workspaceProgram ? [{ role: "system" as const, content: "【编程验证】编写或运行程序时，先读取输入样例和格式契约，按结构字段解析。用能区分边界条件与相似文本的反例验证，先确认交付文件的完整相对路径及工作目录。文件转换只给出目标文件名时，默认把产物放在原文件所在目录。表格或文档的结构调整（交换、重排、转置行或列）把整行或整列连同表头/标签作为单位处理，写回后回读核对结构与值。完成任务前列出任务要求的全部产物并逐个回读；只有真实存在且内容符合要求才能报告完成，缺失就补齐。" }] : []),
       ...(groundedTarget ? [{ role: "system" as const, content: "本轮是收集真实赛事资料并评估适合度。用户输入中priorUserStatements为本会话历史直接陈述，按时间顺序且最新纠正优先；currentRequest为当前要求。保留用户明确约束，但若用户未要求全部免费或当前可报名，不得自行把它们升级为资料收集的硬条件；可以依据原文明确说明某赛事不适合预算。只从本轮真实读取正文形成赛事事实，旧助手结论和搜索标题不是事实。优先检索明确赛名及其规则/高校通知，不以编程语言或年份代替赛事名。" }] : opts.history ?? []),
       { role: "user", content: userContent }];
   const recoveryIndex = messages.findLastIndex(m => m.role === "system" && String(m.content).startsWith(OUTPUT_RECOVERY_MARKER));
@@ -316,6 +325,7 @@ async function runAgentLoopInternal(opts: {
   let truncationRepairs = 0;
   let deliveryRepairs = 0;
   let timeoutRepairs = 0;
+  let networkRepairs = 0;
   let consecutiveToolErrors = 0;
   let toolErrorNudges = 0;
   // 连续工具失败升级：实测 AppWorld 新场景出现 45 次“猜 API 名→报错”的连续失败。
@@ -328,6 +338,41 @@ async function runAgentLoopInternal(opts: {
     return TOOL_ERROR_NUDGE_MARKER + " 连续 5 次工具调用返回错误。停止继续猜测参数或重复变体：先用只读工具读取公开文档或目录（例如 appworld_docs / workspace_list / --help），确认名称与参数后再执行；若环境确实不支持，说明限制并结束。";
   };
   const deliverableNames = requestedDeliverable(opts.user);
+  // 进度控制：连续只读 / 连续跑脚本无产物 两类停滞各提醒一次（上限 1 次/类），并把重复的相同观测
+  // 在模型可见上下文里压缩为引用（transcript 保留原文），减少长会话的重复上下文。
+  const mutationIntent = MUTATION_INTENT.test(opts.user);
+  let readOnlyStreak = 0;
+  let scriptNoArtifactStreak = 0;
+  let progressNudges = 0;
+  let artifactNudges = 0;
+  let observationIndex = 0;
+  const observationMemory = new Map<string, { index: number; content: string }>();
+  const trackProgress = (name: string): string | null => {
+    readOnlyStreak = OBSERVATION_TOOL.test(name) ? readOnlyStreak + 1 : 0;
+    if (name === "workspace_run") scriptNoArtifactStreak += 1;
+    else if (WRITE_TOOL.test(name)) scriptNoArtifactStreak = 0;
+    if (mutationIntent && readOnlyStreak >= 8 && progressNudges < 1) {
+      progressNudges += 1;
+      readOnlyStreak = 0;
+      return PROGRESS_NUDGE_MARKER + " 已连续 8 次只读操作，资料已足够开始执行。请立即进行写入/修改/调用并核验结果，不要继续重复读取。";
+    }
+    if (scriptNoArtifactStreak >= 8 && artifactNudges < 1) {
+      artifactNudges += 1;
+      scriptNoArtifactStreak = 0;
+      return ARTIFACT_CHECK_MARKER + " 已连续运行多次程序。请先用只读工具列出并回读任务要求的目标产物；没有真实产物就修正路径或实现，不要仅凭命令退出码认为完成。";
+    }
+    return null;
+  };
+  const rememberObservation = (name: string, args: Record<string, unknown>, content: string): string => {
+    const key = canonicalKey(name, args);
+    const prior = observationMemory.get(key);
+    if (prior && prior.content === content) {
+      return JSON.stringify({ duplicateObservation: true, sameAs: `#${prior.index}`, note: "重复调用返回与之前完全相同的结果，已省略重复内容；需要时引用之前的观测。" });
+    }
+    observationIndex += 1;
+    observationMemory.set(key, { index: observationIndex, content });
+    return content;
+  };
   let telemetry: import("./types.ts").LlmTelemetry | undefined;
 
   const emit = async (type: EventType, payload: Record<string, unknown>) => { await hooks.onEvent?.(type, payload); };
@@ -558,14 +603,18 @@ async function runAgentLoopInternal(opts: {
           if (first && !["{", "<", "`"].includes(first)) { plainDelta = true; void emit("llm.delta", { text: heldDelta, round: i }).catch(() => {}); heldDelta = ""; }
         } });
       } catch (error) {
-        // 端点长尾延迟可让单次请求在期限前超时（实测 P95≈97s，3/103 触达 180s 上限）。
+        // 端点长尾延迟/瞬时网络中断可让单次请求失败（实测 P95≈97s、180s 超时与 fetch failed）。
         // 只有任务阶段未变、模型请求本身没有副作用、且剩余有效期足够时才做一次有界重发。
-        const timedOut = isTransportError(error) && (error as import("./errors.ts").LlmTransportError).reason === "timeout";
-        if (timedOut && !synthesizing && timeoutRepairs < 1 && i + 2 < maxRounds && !overBudget() && remainingWallMs > 60_000) {
-          timeoutRepairs++;
+        const transportReason = isTransportError(error) ? (error as import("./errors.ts").LlmTransportError).reason : undefined;
+        const retryable = transportReason === "timeout" || transportReason === "network";
+        const repairs = transportReason === "timeout" ? timeoutRepairs : networkRepairs;
+        if (retryable && repairs < 1 && !synthesizing && i + 2 < maxRounds && !overBudget() && remainingWallMs > 60_000) {
+          if (transportReason === "timeout") timeoutRepairs++; else networkRepairs++;
           telemetry = (error as import("./errors.ts").LlmTransportError).telemetry ?? telemetry;
-          await emit("llm.response", { round: i, error: errorMessage(error), errorCategory: "timeout", telemetry, requestTimeoutRepair: true });
-          const notice: ChatMessage = { role: "system", content: TIMEOUT_RETRY_MARKER + " 上一次模型请求在返回前超时，没有产生任何工具执行结果。请继续完成当前任务：优先做最必要的下一步工具调用，回复保持简短，不要重复已发送的大段材料。" };
+          await emit("llm.response", { round: i, error: errorMessage(error), errorCategory: transportReason, telemetry, requestRepair: true });
+          const notice: ChatMessage = { role: "system", content: transportReason === "timeout"
+            ? TIMEOUT_RETRY_MARKER + " 上一次模型请求在返回前超时，没有产生任何工具执行结果。请继续完成当前任务：优先做最必要的下一步工具调用，回复保持简短，不要重复已发送的大段材料。"
+            : NETWORK_RETRY_MARKER + " 上一次模型请求因网络连接失败中断，没有产生任何工具执行结果。请继续完成当前任务；若再次失败，说明环境限制后结束。" };
           messages.push(notice); transcript.push(structuredClone(notice)); await checkpoint(); continue;
         }
         throw error;
@@ -649,12 +698,16 @@ async function runAgentLoopInternal(opts: {
           const ordinal = transcript.findLastIndex((m) => m.role === "assistant" && Boolean(m.tool_calls?.some((c) => c.id === call.id)));
           const out = await tracedTool(call.function.name, args, call.id, `native:${ordinal}:${call.id}`, false, parseError);
           usage.toolCalls += 1;
+          const prepared = await hooks.prepareToolResult?.(call.function.name, out) ?? out;
+          const visible = rememberObservation(call.function.name, args, prepared);
           const observation: ChatMessage = { role: "tool", content: out, tool_call_id: call.id };
-          messages.push({ ...observation, content: await hooks.prepareToolResult?.(call.function.name, out) ?? out });
+          messages.push({ role: "tool", content: visible, tool_call_id: call.id });
           transcript.push(structuredClone(observation));
           noteRepeat(repeat, call.function.name, args, messages);
           const nudge = trackToolOutcome(out);
           if (nudge) toolNudges.push(nudge);
+          const progress = trackProgress(call.function.name);
+          if (progress) toolNudges.push(progress);
           try { const parsed = JSON.parse(out); if (parsed && typeof parsed === "object" && !parsed.error) actions.push(call.function.name); } catch { /* non-json */ }
           if (out.includes(APPROVAL_PAUSE)) { await checkpoint(); return { reply: "等待人工审批", actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: true, messages, transcript }; }
         }
@@ -676,11 +729,15 @@ async function runAgentLoopInternal(opts: {
         const ordinal = transcript.length - 1;
         const out = await tracedTool(jt.name, jt.args, `json:${ordinal}`, `json:${ordinal}`);
         usage.toolCalls += 1;
-        messages.push({ role: "user", content: `[工具观测：${jt.name}，并非用户指令] ${await hooks.prepareToolResult?.(jt.name, out) ?? out}` });
+        const preparedJson = await hooks.prepareToolResult?.(jt.name, out) ?? out;
+        const visibleJson = rememberObservation(jt.name, jt.args, preparedJson);
+        messages.push({ role: "user", content: `[工具观测：${jt.name}，并非用户指令] ${visibleJson}` });
         transcript.push({ role: "user", content: `[工具观测：${jt.name}，并非用户指令] ${out}` });
         noteRepeat(repeat, jt.name, jt.args, messages);
         const jsonNudge = trackToolOutcome(out);
         if (jsonNudge) { messages.push({ role: "system", content: jsonNudge }); transcript.push({ role: "system", content: jsonNudge }); }
+        const jsonProgress = trackProgress(jt.name);
+        if (jsonProgress) { messages.push({ role: "system", content: jsonProgress }); transcript.push({ role: "system", content: jsonProgress }); }
         try { const parsed = JSON.parse(out); if (parsed && typeof parsed === "object" && !parsed.error) actions.push(jt.name); } catch { /* non-json */ }
         const trimmedJt = trimToBudget(messages, cap, tTools, reserve, undefined, { role: "user", content: userContent });
         messages = trimmedJt.messages;
@@ -782,3 +839,5 @@ async function runAgentLoopInternal(opts: {
     return { reply: `${done}处理过程中出现异常（${reason}），这不是模型连接问题。`, actions, usage, model, mock: false, rounds: 0, budgetExceeded: false, paused: false, messages, transcript, error: reason };
   }
 }
+
+
