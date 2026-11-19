@@ -276,3 +276,18 @@ R2 同契约 + 墙钟 780s/单请求 240s 后 0 超时，终止原因变为 toke
   `0d01c76_1` 的剩余限制是墙钟/预算与逐文件往返，R7 以 1200s/1M token/60 轮做预算归一复测。
 
 - **AppWorld R7 预算归一**：`0d01c76_1` 在 1200s/1M token/120 工具/60 轮下通过官方 6/6（1,072s、41 请求、659,477 输入 token、KV 93.8%）；未参与调优的新场景三轮迭代后 **3/3 全部通过**，确认此前的失败是预算/墙钟受限而非能力不足（证据 `20261119-145658_live_r7-0d01c76-big-budget_00f8cd`）。
+
+### 2026-11-19 下午：评测标准 v2（standard-max 臂）与失败集复测
+
+- **评测标准 v2**：产品现已支持 easoning_effort 全档位（minimal..max），任务级偏好 easoning: "max" 可端到端生效
+  （探针实测 ffective="max"、reasoning tokens>0、供应商请求 ID 与 USD 成本入 telemetry）。标准配置：max 档按任务锁定、
+  maxOutputTokens=32768、单请求 240s；文档见 `docs/specs/evaluation-standard.md`，提交 `4539c47`。
+- **第一轮调优**（提交 `5519895`）：按任务类型的预算自适应（重任务 1M token/120 工具/30min）、完成证据要求
+  （列出并回读全部产物）、连续只读/连续脚本无产物的停滞提醒、重复观测压缩、网络中断有界重试。全量后端 661 项 660 通过。
+- **失败集标准臂结果**（只重跑失败/未评分项，不重跑已通过项）：GDPval **1/3 通过（首次）**，HORIZON-001
+  探索性 **1/1 通过**；OfficeBench 1-14/1、3-5/0 仍失败；AppWorld 325d6ec_1 仍失败 3/5（末请求 240s 超时）。
+  Terminal-Bench 失败集 35 题（21 真实失败 + 14 验证器受阻）标准臂复测中。证据
+  `acceptance-20261118/external-benchmarks/STANDARD-ARM-RESULTS.md`。
+- **两处评测基础设施 bug 修复**：Terminal 监督脚本空数组导致容量等待死循环（重写为 per-arm 可续跑脚本）；
+  eval CLI/类型拒绝 max 档（提交 `86dff74`）。
+- **范围**：GAIA、τ-bench 实时、WebArena 三项未跑基准按用户决定搁置；已通过集合不重跑。
