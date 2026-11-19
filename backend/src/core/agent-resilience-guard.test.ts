@@ -77,3 +77,13 @@ test("剩余期限不足时不重发超时请求，如实返回超时", async ()
   assert.equal(f.requests.length, 1);
   assert.ok(r.error && String(r.error).includes("timeout"));
 });
+
+test("连续 5 次工具失败触发一次诊断提醒，之后继续执行", async () => {
+  const failing = (i: number) => ({ content: "", toolCalls: [{ id: `t${i}`, type: "function", function: { name: "workspace_run", arguments: "{}" } }] });
+  const f = fixture([failing(1), failing(2), failing(3), failing(4), failing(5), { content: "已读取文档并修正参数。" }]);
+  const deps = { ...f.deps, executeTool: async () => JSON.stringify({ error: "bad arguments" }) };
+  const r = await runAgentLoop({ system: "s", user: "完成任务", deps });
+  assert.equal(f.requests.length, 6);
+  assert.ok(f.requests[5].messages.some((m) => typeof m.content === "string" && m.content.startsWith("【工具失败诊断】")));
+  assert.match(r.reply, /已读取文档/);
+});

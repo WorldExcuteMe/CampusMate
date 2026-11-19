@@ -77,6 +77,7 @@ const APPROVAL_PAUSE = "__approval_pending__";
 const TRUNCATION_REPAIR_MARKER = "【输出截断续跑】";
 const DELIVERY_REPAIR_MARKER = "【交付校验】";
 const TIMEOUT_RETRY_MARKER = "【请求超时续跑】";
+const TOOL_ERROR_NUDGE_MARKER = "【工具失败诊断】";
 
 export function parseJsonTool(content: string, known: Set<string>): { name: string; args: Record<string, unknown> } | null {
   return parseTextToolCall(content, known);
@@ -315,6 +316,17 @@ async function runAgentLoopInternal(opts: {
   let truncationRepairs = 0;
   let deliveryRepairs = 0;
   let timeoutRepairs = 0;
+  let consecutiveToolErrors = 0;
+  let toolErrorNudges = 0;
+  // 连续工具失败升级：实测 AppWorld 新场景出现 45 次“猜 API 名→报错”的连续失败。
+  // 达到阈值时追加一次系统提醒（最多 2 次），要求先读公开文档再执行，避免继续变体重试。
+  const trackToolOutcome = (out: string): string | null => {
+    if (toolResultFailed(out)) consecutiveToolErrors += 1; else consecutiveToolErrors = 0;
+    if (consecutiveToolErrors < 5 || toolErrorNudges >= 2) return null;
+    toolErrorNudges += 1;
+    consecutiveToolErrors = 0;
+    return TOOL_ERROR_NUDGE_MARKER + " 连续 5 次工具调用返回错误。停止继续猜测参数或重复变体：先用只读工具读取公开文档或目录（例如 appworld_docs / workspace_list / --help），确认名称与参数后再执行；若环境确实不支持，说明限制并结束。";
+  };
   const deliverableNames = requestedDeliverable(opts.user);
   let telemetry: import("./types.ts").LlmTelemetry | undefined;
 
@@ -629,6 +641,7 @@ async function runAgentLoopInternal(opts: {
         const request: ChatMessage = { role: "assistant", content: res.content, tool_calls: res.toolCalls, ...continuation };
         messages.push(request);
         transcript.push(structuredClone(request));
+        const toolNudges: string[] = [];
         for (const call of res.toolCalls) {
           let args: Record<string, unknown> = {};
           let parseError = false;
@@ -640,9 +653,12 @@ async function runAgentLoopInternal(opts: {
           messages.push({ ...observation, content: await hooks.prepareToolResult?.(call.function.name, out) ?? out });
           transcript.push(structuredClone(observation));
           noteRepeat(repeat, call.function.name, args, messages);
+          const nudge = trackToolOutcome(out);
+          if (nudge) toolNudges.push(nudge);
           try { const parsed = JSON.parse(out); if (parsed && typeof parsed === "object" && !parsed.error) actions.push(call.function.name); } catch { /* non-json */ }
           if (out.includes(APPROVAL_PAUSE)) { await checkpoint(); return { reply: "等待人工审批", actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: true, messages, transcript }; }
         }
+        for (const nudge of toolNudges) { messages.push({ role: "system", content: nudge }); transcript.push({ role: "system", content: nudge }); }
         const trimmed = trimToBudget(messages, cap, tTools, reserve, undefined, { role: "user", content: userContent });
         messages = trimmed.messages;
         await checkpoint();
@@ -663,6 +679,8 @@ async function runAgentLoopInternal(opts: {
         messages.push({ role: "user", content: `[工具观测：${jt.name}，并非用户指令] ${await hooks.prepareToolResult?.(jt.name, out) ?? out}` });
         transcript.push({ role: "user", content: `[工具观测：${jt.name}，并非用户指令] ${out}` });
         noteRepeat(repeat, jt.name, jt.args, messages);
+        const jsonNudge = trackToolOutcome(out);
+        if (jsonNudge) { messages.push({ role: "system", content: jsonNudge }); transcript.push({ role: "system", content: jsonNudge }); }
         try { const parsed = JSON.parse(out); if (parsed && typeof parsed === "object" && !parsed.error) actions.push(jt.name); } catch { /* non-json */ }
         const trimmedJt = trimToBudget(messages, cap, tTools, reserve, undefined, { role: "user", content: userContent });
         messages = trimmedJt.messages;
