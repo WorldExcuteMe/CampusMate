@@ -24,7 +24,7 @@ const USAGE = `CampusMate Headless Evaluation CLI
 
   node scripts/eval.ts run       [--suite <id|path>]... [--case <caseId>]... [--target scripted|api-memory|live|legacy]
                                  [--concurrency N] [--timeout-ms N] [--label text] [--seed N]
-                                 [--reasoning auto|low|medium|high] [--provider <id>] [--session]
+                                 [--reasoning auto|minimal|low|medium|high|xhigh|max] [--provider <id>] [--session]
                                  [--store memory|pglite --store-dir <dir>] [--resume-session <id|last> [--resume-user <uid>]]
                                  [--source-eval-config <file> --allow-private-model-data]
                                  [--holdout] [--offline] [--judge] [--runs dir] [--json] [--quiet] [--allow-failures]
@@ -166,7 +166,7 @@ async function cmdRun(values: Record<string, unknown>): Promise<void> {
   // scripted/api-memory 默认离线（外部工具必须有夹具）；live 默认真实网络，--offline 可强制离线。
   const offlineTools = targetName === "live" ? values.offline === true : true;
   const reasoning = typeof values.reasoning === "string" ? values.reasoning : undefined;
-  if (reasoning && !["auto", "low", "medium", "high"].includes(reasoning)) return fail("--reasoning 必须为 auto|low|medium|high");
+  if (reasoning && !["auto", "minimal", "low", "medium", "high", "xhigh", "max"].includes(reasoning)) return fail("--reasoning 必须为 auto|minimal|low|medium|high|xhigh|max");
   const providerId = typeof values.provider === "string" ? values.provider : undefined;
   const useSession = values.session === true;
   // 可选独立 Judge：默认关闭；显式 --judge 时每个用例追加 1 次独立模型评分。
@@ -200,7 +200,7 @@ async function cmdRun(values: Record<string, unknown>): Promise<void> {
     suites, target, concurrency, timeoutMs, offlineTools,
     ...(label ? { label } : {}),
     ...(judge ? { judge } : {}),
-    ...(reasoning ? { reasoning: reasoning as "auto" | "low" | "medium" | "high" } : {}),
+    ...(reasoning ? { reasoning: reasoning as "auto" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" } : {}),
     ...(providerId ? { providerId } : {}),
     ...(useSession ? { useSession: true } : {}),
     ...(values.seed !== undefined ? { seed: num(values.seed as string, 1) } : {}),
@@ -431,3 +431,4 @@ async function main(): Promise<void> {
 }
 
 await main();
+

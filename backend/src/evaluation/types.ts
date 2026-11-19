@@ -404,7 +404,7 @@ export interface TargetOptions {
   env?: Record<string, string | undefined>;
   now?: () => number;
   // 与人类聊天入口对齐：思考强度、指定供应商、单轮是否也使用真实 session。
-  reasoning?: "auto" | "low" | "medium" | "high";
+  reasoning?: "auto" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   providerId?: string;
   useSession?: boolean;
   // 持久化评测库（PGlite 目录）：跨进程保留 session/checkpoint；仅 api-memory/live 通道。
@@ -449,7 +449,7 @@ export interface RunOptions {
   runsRoot?: string;
   offlineTools: boolean;
   // 与人类聊天入口对齐（透传给 Target.setup）。
-  reasoning?: "auto" | "low" | "medium" | "high";
+  reasoning?: "auto" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   providerId?: string;
   useSession?: boolean;
   // 留出集用例标记（用于 manifest/报告；Gate 要求单独运行）
@@ -512,3 +512,4 @@ export const DEFAULT_GATE_THRESHOLDS: GateThresholds = {
   requireHoldout: true,
   hardCategories: ["security", "evidence"],
 };
+
