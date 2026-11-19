@@ -17,7 +17,7 @@
 | 模型 | `self-dploy/DeepSeek-V4-Flash` | AMD Radeon Cloud |
 | 能力声明 | `{"tools":"native","vision":false,"streaming":false,"temperature":true,"reasoning":"reasoning_effort","outputParameter":"max_tokens","maxOutputTokens":32768}` | 输出预算 32768，容纳推理 token |
 | 推理偏好 | **`max`**，按**任务**锁定，不在任务内切换 | 切换档位会改变端点注入的思考前缀，导致整段 KV 缓存失效 |
-| 单请求超时 | 240s（原 180s） | max 推理解码更长，需留余量 |
+| 单请求超时 | 360s（原 240s） | max 推理解码更长；AppWorld 标准臂实测两次 240s 长尾超时 |
 | 上下文上限 | 262144 | 与端点配置一致 |
 | 并发 | 对照臂 1；吞吐臂 2（账本注明，不与对照臂混用） | 端点时延波动是已知混杂因素 |
 
@@ -53,3 +53,4 @@
 
 2026-11-18 夜至 11-19 上午的所有结果均为 **baseline-none arm（非思考）**，保留为基线，不重算；
 标准臂（standard-max）将作为后续正式评测的主口径，重跑关键基准时单独出表。
+

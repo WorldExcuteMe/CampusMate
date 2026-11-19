@@ -116,10 +116,13 @@ function noteRepeat(repeat: Map<string, number>, name: string, args: Record<stri
 const DELIVERABLE_EXTENSIONS = /[\w./-]+\.(?:md|docx|pdf|xlsx|csv|txt|ics|pptx)\b/gi;
 const DELIVERABLE_VERB = /(?:create|write|generate|save|export|convert|put\b|place\b|store\b|deliver|produce|生成|保存|写入|导出|输出|制作|转成|转换成|放到|放进|交付)/i;
 const DELIVERABLE_NEGATION = /(?:不要|不必|无需|勿)(?:写入|保存|创建|导出|生成)|(?:do not|don't|dont)\s+(?:write|save|create|export|generate)/i;
+export function requestedDeliverableList(instruction: string): string[] {
+  if (DELIVERABLE_NEGATION.test(instruction)) return [];
+  if (!DELIVERABLE_VERB.test(instruction)) return [];
+  return [...new Set((instruction.match(DELIVERABLE_EXTENSIONS) ?? []).map((item) => item.replace(/^[.。]+/, "")))];
+}
 export function requestedDeliverable(instruction: string): string | null {
-  if (DELIVERABLE_NEGATION.test(instruction)) return null;
-  if (!DELIVERABLE_VERB.test(instruction)) return null;
-  const names = [...new Set((instruction.match(DELIVERABLE_EXTENSIONS) ?? []).map((item) => item.replace(/^[.。]+/, "")))];
+  const names = requestedDeliverableList(instruction);
   return names.length ? names.join("、") : null;
 }
 
@@ -257,7 +260,7 @@ async function runAgentLoopInternal(opts: {
   const hooks = { ...deps.hooks, beforeRequest: async () => { if (await deps.isCancelled?.()) throw new TaskCancelledError(); await deps.hooks?.beforeRequest?.(); } };
   const now = hooks.now ?? Date.now;
   const price = hooks.pricePerToken;
-  const maxRounds = deps.maxRounds ?? MAX_TOOL_ROUNDS;
+  const maxRounds = deps.maxRounds ?? (deps.budget.toolCalls >= 80 ? 60 : MAX_TOOL_ROUNDS);
   const known = new Set(deps.tools.map((t) => t.function.name));
   const referencedDraft = draftReference(opts.user, opts.history);
   const availableTools = referencedDraft ? draftReferenceTools(deps.tools) : deps.tools;
@@ -338,6 +341,7 @@ async function runAgentLoopInternal(opts: {
     return TOOL_ERROR_NUDGE_MARKER + " 连续 5 次工具调用返回错误。停止继续猜测参数或重复变体：先用只读工具读取公开文档或目录（例如 appworld_docs / workspace_list / --help），确认名称与参数后再执行；若环境确实不支持，说明限制并结束。";
   };
   const deliverableNames = requestedDeliverable(opts.user);
+  const deliverableList = requestedDeliverableList(opts.user);
   // 进度控制：连续只读 / 连续跑脚本无产物 两类停滞各提醒一次（上限 1 次/类），并把重复的相同观测
   // 在模型可见上下文里压缩为引用（transcript 保留原文），减少长会话的重复上下文。
   const mutationIntent = MUTATION_INTENT.test(opts.user);
@@ -774,13 +778,22 @@ async function runAgentLoopInternal(opts: {
         transcript.push({ role: "assistant", content: reply });
         return { reply, actions, usage, model, mock: false, rounds: i + 1, budgetExceeded: false, paused: false, messages, transcript, telemetry, stopReason: "error", error: "source_unavailable" };
       }
-      // 交付校验：点名了交付文件、但整轮没有任何显式写文件/文档导出动作时，给一次有界核验提醒。
-      // 仅执行过只读脚本也算“未交付”，因此提醒措辞是先核验文件是否存在，不存在再创建——不假设题目答案。
-      if (deliverableNames && !synthesizing && deliveryRepairs < 1 && i + 2 < maxRounds && !overBudget()
-          && !actions.some(name => /^workspace_write$/.test(name) || /^document_(create|export)$/.test(name))) {
-        deliveryRepairs++;
-        const notice: ChatMessage = { role: "system", content: DELIVERY_REPAIR_MARKER + ` 用户的交付要求点名了文件（${deliverableNames}），但本轮没有显式的文件写入或文档导出动作。请先用只读工具确认这些文件确实已生成且内容符合要求；若不存在，请实际创建并回读核对，不要把正文直接当作交付。若确认用户只要聊天答复，说明原因后结束。` };
-        messages.push(notice); transcript.push(structuredClone(notice)); await checkpoint(); continue;
+      // 交付校验：点名了交付文件时，要求每个文件名都至少在某次工具观测中被看到；否则给一次有界核验提醒。
+      // 覆盖两类真实失败：完全没写（2-21/0），以及写了部分产物却漏掉点名文件（3-5/0 只生成 xlsx、漏 report.docx）。
+      if (deliverableList.length && !synthesizing && deliveryRepairs < 1 && i + 2 < maxRounds && !overBudget()) {
+        const observed = transcript
+          .filter((m) => m.role === "tool" || (m.role === "user" && typeof m.content === "string" && m.content.startsWith("[工具观测：")))
+          .map((m) => (typeof m.content === "string" ? m.content : ""))
+          .join("\n");
+        const missing = deliverableList.filter((name) => {
+          const base = name.split("/").pop() ?? name;
+          return !observed.includes(name) && !observed.includes(base);
+        });
+        if (missing.length) {
+          deliveryRepairs++;
+          const notice: ChatMessage = { role: "system", content: DELIVERY_REPAIR_MARKER + ` 用户的交付要求点名了文件（${missing.join("、")}），但本次任务中还没有工具观测确认这些文件存在。请先用只读工具列出/回读确认；不存在就实际创建并核对内容，不要把正文直接当作交付。若确认用户只要聊天答复，说明原因后结束。` };
+          messages.push(notice); transcript.push(structuredClone(notice)); await checkpoint(); continue;
+        }
       }
       const warning = uncertainEffects ? "存在操作结果未确认，请核对后用新消息继续。\n\n" : "";
       let finalReply = warning + (res.content.trim() ? res.content : (actions.length ? `已完成 ${actions.length} 步操作：${actions.join("；")}。` : "（模型未返回内容，请重试或换一种问法）"));
