@@ -646,3 +646,9 @@ node scripts/build-sites.mjs
 - 长任务防虚假完成：检测交付类意图（文档/PPT/报告/万字等），若未实际生成产物先自动续跑一次；仍无产物则 failed=deliverable_missing，不再宣称完成。万字目标未达 80% 时在总结前置真实进度并标记 partial。
 - LOGO：应用工作区 `b788d6a8...png` 为 favicon 与侧边栏品牌图。
 - 测试：496 项通过；视觉 7/7。发布 action `3c1b813b-bdf1-41a9-97a4-23fec91fe421`。
+## 32. 侧边栏产物内嵌预览（2026-11-20，第二十轮）
+
+- 侧边栏「产物」标签改为列表 + 内嵌预览：MD/HTML/SVG/CSV/JSON/Mermaid 直接渲染；HTML 用 sandbox iframe，SVG 用图片，文本类用可滚动 pre。
+- 产物格式切换、下载成品（PPTX 走客户端 pptxgenjs，其他走服务端导出）；DOCX/XLSX/PPTX 标注不支持内嵌预览并引导下载。
+- 测试：496 项（session-cloud 单文件复跑通过，全量偶发时序波动）；视觉 7/7。
+- 发布：action `f1a58162-a518-4162-a87b-3d60597b0f77`，`publication_completed`。

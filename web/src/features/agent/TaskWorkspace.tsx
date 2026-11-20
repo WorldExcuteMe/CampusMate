@@ -9,6 +9,7 @@ import type { ChatSession } from "@/lib/agent/sessions";
 import { taskReason } from "@/lib/agent/task-state";
 import { errorMessage } from "@/lib/llm/errors";
 import { DocumentArtifacts } from "./DocumentArtifacts";
+import { ArtifactsPanel } from "./ArtifactPreview";
 
 const statuses: Record<string, string> = { queued: "排队中", running: "正在执行", paused: "已暂停", needs_input: "等待处理", succeeded: "已完成", failed: "未完成", cancelled: "已取消" };
 const tools: Record<string, string> = { web_search: "检索公开资料", web_fetch: "核对网页来源", read_artifact: "读取完整材料", save_opportunity: "保存机会", save_to_inbox: "保存通知到信息中心", propose_verification: "提交核验提案", document_create: "生成文档", document_export: "导出文件", document_inspect: "检查文档" };
@@ -48,7 +49,7 @@ export function TaskWorkspace({ session, sending = false, onSelect, onTask, onRe
         {loadError && <div role="alert" className="text-xs text-destructive">任务状态加载失败：{loadError}<Button size="sm" variant="ghost" onClick={onRefresh}>重试加载</Button></div>}
         {views.length > 1 && <TurnPicker views={views} current={view?.task.id} onSelect={onSelect} />}
         {view ? (tab === "context" ? <ContextTab session={session} task={view.task} events={view.events} /> : <div className={tab === "steps" ? "" : "hidden"}><TaskDetails key={view.task.id} view={view} resumeBlocked={view.task.status === "failed" && views.some(v => v.task.id !== view.task.id && ((v.task.turnSeq ?? 0) > (view.task.turnSeq ?? 0) || !(v.task.turnSeq && view.task.turnSeq) && (v.task.createdAt ?? 0) > (view.task.createdAt ?? 0)))} onTask={onTask} onRefresh={onRefresh} onContinue={onContinue} /></div>) : <p className="text-xs leading-6 text-muted-foreground">发送消息后，这里会显示排队、资料检索、工具结果和产物检查。</p>}
-        {view && tab === "artifacts" && (view.task.result?.artifactIds.length ? <DocumentArtifacts ids={view.task.result.artifactIds} owner={view.task.userId} partial={view.task.result.completion?.state !== "complete"} /> : <p className="text-xs leading-6 text-muted-foreground">本轮还没有生成文档产物。生成后可在这里预览与下载。</p>)}
+        {view && tab === "artifacts" && (view.task.result?.artifactIds.length ? <ArtifactsPanel ids={view.task.result.artifactIds} owner={view.task.userId} /> : <p className="text-xs leading-6 text-muted-foreground">本轮还没有生成文档产物。生成后可在这里预览与下载。</p>)}
       </div>
     </details>
   </aside>;
