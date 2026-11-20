@@ -605,5 +605,6 @@ node scripts/build-sites.mjs
 - 账号：新增昵称/头像编辑（本机按 Qoder 用户保存）；优先读取 `/__qoder_auth/me` 的昵称/头像，缺失时用邮箱前缀/首字母。UserChip 同步展示学校。
 - 多模态：图片继续以原始 data URL 作为 vision 输入；文档不再把全文塞进提示词，改为服务端 `read_attachment` 工具按需读取（checkpoint 保存文件名与正文），任务请求体上限 8MB。
 - Provider 卡片精简为模型、密钥状态、上下文窗口和图片输入，不再展示接口/能力来源等冗余信息。
+- 首屏：`index.html` 预置 `data-theme="dark"` 与 `font-size:16px`，避免刷新时先闪浅色。
 - 测试：495 项通过；视觉基线 7/7。
-- 发布：action `54d8e023-3c3e-4f85-ae8c-afccad29cbe7`，`publication_completed`。
+- 最终发布：action `63423848-2e01-4f93-847e-b4cdf31f95d7`，`publication_completed`。
