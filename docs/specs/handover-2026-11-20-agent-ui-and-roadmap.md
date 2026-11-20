@@ -696,3 +696,9 @@ node scripts/build-sites.mjs
 - Agent：新增 `list_timetable` 与 `import_timetable`；支持默认 12 节作息、用户自定义 periods、分段/单双周；缺开学日期时返回 start_date_required 并用 ask_user 询问；导入后回报课程数。
 - XLSX 附件由服务端解析为 TSV，agent 解析后写入。
 - 测试：496 项通过；视觉 7/7。发布 action `3198270e-25f4-45f9-ae7e-b019d95c2f45`。
+## 39. 入口页重构（2026-11-21，第二十七轮）
+
+- 参考 DeepSeek Harness / Claude Code 的极简深色风格，重做 `/` 入口页：终端窗口（红黄绿圆点）、LOGO 白底牌、单色排版、细分隔线、克制 CTA。
+- 结构：Hero（价值主张 + 终端演示）→ 数据条 → 工作流 01/02/03 → 六大能力 → 成品格式 → CTA → 极简页脚。
+- 强制深色视觉，不受用户浅色主题影响；移动端响应式。
+- 测试：496 项通过；视觉 7/7。发布 action `fdd2a402-9d64-4d93-bfb3-4490d37449f7`。
