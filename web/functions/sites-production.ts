@@ -109,7 +109,8 @@ export function createProductionSites<Context = unknown>(deps: ProductionDepende
         throw new CloudAgentsError("ai_response_invalid", 503, "rejected");
       }
       if ((item as { id: string }).id === config.model) {
-        if ((item as { is_enabled?: unknown }).is_enabled !== true) throw new CloudAgentsError("ai_model_not_enabled", 503, "not_sent");
+        // 平台旧响应可能没有 is_enabled 字段；只有显式 false 才判定为未启用。
+        if ((item as { is_enabled?: unknown }).is_enabled === false) throw new CloudAgentsError("ai_model_not_enabled", 503, "not_sent");
         return config.model;
       }
     }

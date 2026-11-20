@@ -578,3 +578,10 @@ node scripts/build-sites.mjs
 - Cloud Agents thinking 事件同时映射 `thinking.delta` 与 `thinking.summary`。
 - Cloud Agents 失败定位：历史任务错误为 `sites_dependency_unavailable`（通用 503）。`resolveBinding` 现在解析 initialize 返回的安全错误码并抛出 `CloudAgentError`，`/v1` 保留 `ai_*` 错误码；新增登录态诊断端点 `GET /functions/v1/app/v1/cloud-status`，返回 `tokenPresent`、初始化错误码与平台启用模型列表（不含密钥）。
 - 测试：`492` 项通过；视觉 7/7；发布 action `21c410f3-0d42-4698-9880-26891b862f9a`。
+## 24. 会话上下文连续性与 Cloud 模型诊断（2026-11-20，第十二轮）
+
+- 根因：server-model 每个任务的 checkpoint 只含当前输入，未读取同一会话的历史消息，导致同会话多轮像“四个新会话”。
+- 修复：创建 server-model 任务时读取 `campusmate_messages` 最近 20 条 user/assistant 消息（按 ord 排序），与当前输入一起写入 checkpoint；图片改挂到最近一条 user 消息；contextLimit 裁剪仍保留首条与最近消息。Cloud Agents 继续复用平台 Session，本身保留上下文。
+- Cloud Agents：`/v1/cloud-status` 返回 `ai_model_not_enabled`、`tokenPresent=true`、`models=[]`。已将模型校验改为“仅显式 is_enabled=false 才拒绝”，并让诊断端点返回 `modelsRaw` 与 `modelsError`，便于确认平台模型列表响应结构/权限。
+- 测试：`493` 项通过（新增同会话历史注入用例）。
+- 发布：action `361de372-b629-46bf-aded-80a5f23a5340`，`publication_completed`。

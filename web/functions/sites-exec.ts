@@ -1356,12 +1356,16 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
   let model = provider.model;
   let history = checkpoint.messages.length ? checkpoint.messages : [{ role: "user", content: taskPrompt(task) } as LlmMessage];
   const parts = await imageParts(provider, checkpoint.images, deps, owner, taskId);
-  const requestMessages = (): LlmMessage[] => [
-    { role: "system", content: `${beijingTimeContext(now())}\n\n${SERVER_SYSTEM_PROMPT}` },
-    ...history.map((message, index) => index === 0 && message.role === "user" && parts.length
-      ? { ...message, content: [{ type: "text", text: typeof message.content === "string" ? message.content : "" }, ...parts] }
-      : message),
-  ];
+  const requestMessages = (): LlmMessage[] => {
+    // 图片附加到最近一条 user 消息，而不是历史里的第一条。
+    const lastUserIndex = history.reduce((last, message, index) => message.role === "user" ? index : last, -1);
+    return [
+      { role: "system", content: `${beijingTimeContext(now())}\n\n${SERVER_SYSTEM_PROMPT}` },
+      ...history.map((message, index) => index === lastUserIndex && parts.length
+        ? { ...message, content: [{ type: "text", text: typeof message.content === "string" ? message.content : "" }, ...parts] }
+        : message),
+    ];
+  };
 
   const saveRunning = async (leaseUntil: number, attempts = 0): Promise<void> => {
     usage.wallMs = priorWallMs + Math.max(0, now() - startedAt);

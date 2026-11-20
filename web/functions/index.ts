@@ -102,12 +102,21 @@ Deno.serve(async request => {
         const status = error && typeof error === "object" && "status" in error ? Number((error as { status: unknown }).status) : 503;
         console.error("[campusmate] cloud-status failed", { code, status });
         let models: string[] = [];
+        let modelsRaw: unknown[] = [];
+        let modelsError = "";
         try {
           const client = createCloudAgentsClient({ accessToken: getToken() ?? "", baseUrl: CAMPUSMATE_SITES.cloudAgentsApiOrigin, fetch });
-          const list = await client.request("/api/v1/cloud/models") as { data?: Array<{ id?: unknown; is_enabled?: unknown }> };
-          models = (list.data ?? []).filter(item => item && item.is_enabled === true && typeof item.id === "string").map(item => String(item.id)).slice(0, 20);
-        } catch { /* 模型列表失败不阻断诊断 */ }
-        return Response.json({ ok: false, tokenPresent, code, status, models }, { status: 200 });
+          const list = await client.request("/api/v1/cloud/models") as { data?: unknown[] };
+          modelsRaw = Array.isArray(list.data) ? list.data.slice(0, 10) : [];
+          models = (Array.isArray(list.data) ? list.data : []).flatMap(item => {
+            if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+            const row = item as { id?: unknown; is_enabled?: unknown };
+            return row.is_enabled === true && typeof row.id === "string" ? [row.id] : [];
+          }).slice(0, 20);
+        } catch (error) {
+          modelsError = error && typeof error === "object" && "message" in error ? String((error as { message: unknown }).message) : "unknown";
+        }
+        return Response.json({ ok: false, tokenPresent, code, status, models, modelsRaw, modelsError }, { status: 200 });
       }
     }
     if (/(?:^|\/)v1(?:\/|$)/.test(pathname)) return await v1(context);

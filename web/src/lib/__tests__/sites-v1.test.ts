@@ -392,3 +392,31 @@ describe("思考摘要与参数摘要映射", () => {
     expect(JSON.stringify(body.events)).not.toContain("长正文".repeat(20));
   });
 });
+
+describe("同会话上下文连续性", () => {
+  it("server-model 新任务带上前几轮 user/assistant 消息，而不是从零开始", async () => {
+    const db = fakeDb(), cloud = fakeCloud();
+    const advance = vi.fn(async () => ({ status: "running" }));
+    const handler = createSitesV1({
+      db: db.db, cloud: cloud as unknown as SitesV1Cloud, config, exec: { advance }, ownerOf: () => "owner-a",
+    });
+    const call = (method: string, path: string, body?: unknown) => handler({
+      request: new Request(`https://campus.example${path}`, {
+        method, headers: body === undefined ? {} : { "Content-Type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      }),
+    });
+    expect((await call("POST", "/v1/sessions", { id: "sess_1", title: "会话", mode: "auto" })).status).toBe(201);
+    db.seed("campusmate_messages", { id: "m1", owner_id: "owner-a", session_id: "sess_1", turn_id: "turn_0", task_id: "t0", role: "user", content: "上一轮问题", ord: 1, created_at: 1, updated_at: 1 });
+    db.seed("campusmate_messages", { id: "m2", owner_id: "owner-a", session_id: "sess_1", turn_id: "turn_0", task_id: "t0", role: "assistant", content: "上一轮回答", ord: 2, created_at: 2, updated_at: 2 });
+    const created = await call("POST", "/v1/tasks", { title: "新问题", intent: "新问题", sessionId: "sess_1", turnId: "turn_2", providerId: "srv-qwen38" });
+    expect(created.status).toBe(201);
+    const task = (db.tables.get("campusmate_tasks") ?? []).find(row => row.turn_id === "turn_2")!;
+    const history = ((task.checkpoint as Row).messages ?? []) as Row[];
+    expect(history.map(message => message.role)).toEqual(["user", "assistant", "user"]);
+    expect(history[0].content).toBe("上一轮问题");
+    expect(history[1].content).toBe("上一轮回答");
+    expect(history[2].content).toBe("新问题");
+    expect(advance).toHaveBeenCalledTimes(1);
+  });
+});
