@@ -675,3 +675,10 @@ node scripts/build-sites.mjs
 - 附件：支持 XLSX，客户端保留原始字节、服务端解析 sharedStrings/sheet XML。
 - 识图：分辨率 1600→2048、JPEG 0.85→0.92、请求 detail=high。
 - 测试：496 项通过；视觉 7/7。发布 action `6796c78e-91e9-4253-ae90-1f9dc1fe5852`。
+## 36. 长任务 Workflow：跨轮文档 + 阶段结论 + ask_user（2026-11-21，第二十四轮）
+
+- 跨轮文档：创建 server-model 任务时若本轮无附件，自动从同会话最近 8 个任务的 checkpoint 合并 documents（按文件名去重），用户不必每轮重发。
+- 阶段结论：输出达到上限时把本轮 finalText 作为「阶段结论」写入 campusmate_messages，并写 run.partial 事件与 checkpoint.lastPartial；下一轮 conversationHistory 直接带摘要，无需重读文档。
+- 空正文：不再只报 server_model_empty_response；先写入「本轮已完成 N 次工具调用」的阶段说明到会话，再失败，保留记忆。
+- ask_user（grill me）：新增工具，信息不明确/需选方案或验收标准时暂停为 needs_input，给出 2-4 个选项；写 ask.user 事件、assistant 问题消息；侧边栏显示选项按钮，点击填入输入框。系统提示要求不猜测、先澄清。
+- 测试：496 项通过；视觉 7/7。发布 action `51ed8786-b590-495a-afa2-b47cc4932ffb`。

@@ -559,7 +559,7 @@ export function AgentChatPage() {
         </div>
       </div>
       </div>
-      {hasWorkbench && <TaskWorkspace key={active.id} session={active} sending={busy} loadError={monitor.error} width={sidebarWidth} collapsed={sidebarCollapsed} onWidth={(w) => { setSidebarWidth(w); localStorage.setItem("campusmate.sidebarWidth", String(w)); }} onToggle={toggleSidebar} onSelect={(id) => update(active.id, (s) => ({ ...s, currentTaskId: id }))} onTask={(task) => update(active.id, (s) => mergeTask(s, task))} onRefresh={monitor.refresh} onContinue={(title) => setInput(`请基于已有记录继续：${title}`)} />}
+      {hasWorkbench && <TaskWorkspace key={active.id} session={active} sending={busy} loadError={monitor.error} width={sidebarWidth} collapsed={sidebarCollapsed} onWidth={(w) => { setSidebarWidth(w); localStorage.setItem("campusmate.sidebarWidth", String(w)); }} onToggle={toggleSidebar} onSelect={(id) => update(active.id, (s) => ({ ...s, currentTaskId: id }))} onTask={(task) => update(active.id, (s) => mergeTask(s, task))} onRefresh={monitor.refresh} onContinue={(title) => setInput(`请基于已有记录继续：${title}`)} onAnswer={(text) => setInput(text)} />}
       </div>
       <SetupWizard open={showSetup} onClose={() => setShowSetup(false)} />
     </div>

@@ -973,6 +973,26 @@ export function createSitesV1(deps: SitesV1Deps) {
     return [...history, { role: "user", content: currentPrompt }];
   }
 
+  // 同一会话最近任务的文档跨轮保留：用户不必每轮重发附件。
+  async function sessionDocuments(owner: string, sessionId: string): Promise<Array<{ name: string; text: string }>> {
+    const rows = await selectRows(tasks, [["owner_id", owner], ["session_id", sessionId]], "checkpoint,updated_at");
+    rows.sort((a, b) => integerOr(b.updated_at) - integerOr(a.updated_at));
+    const merged = new Map<string, { name: string; text: string }>();
+    for (const row of rows.slice(0, 8)) {
+      const checkpoint = jsonObject(row.checkpoint);
+      const docs = Array.isArray(checkpoint.documents) ? checkpoint.documents : [];
+      for (const raw of docs) {
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+        const item = raw as Row;
+        const name = clampText(item.name, 200);
+        const body = clampText(item.text, 100_000);
+        if (name && body && !merged.has(name)) merged.set(name, { name, text: body });
+      }
+      if (merged.size >= 8) break;
+    }
+    return [...merged.values()].slice(0, 8);
+  }
+
   async function createTaskRoute(owner: string, request: Request): Promise<Response> {
     const data = await readJson(request, maxTaskBody);
     onlyFields(data, ["title", "intent", "sessionId", "turnId", "images", "documents", "providerId", "reasoning", "contextLimit"]);
@@ -1014,6 +1034,7 @@ export function createSitesV1(deps: SitesV1Deps) {
         if (text) documents.push({ name, text });
       }
     }
+    if (runtime === "server-model" && !documents.length) documents.push(...await sessionDocuments(owner, sessionId));
     const at = historyTick();
     const history = runtime === "server-model" ? await conversationHistory(owner, sessionId, prompt) : [];
     const task: Row = {
