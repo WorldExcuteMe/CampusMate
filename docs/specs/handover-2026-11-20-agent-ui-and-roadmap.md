@@ -665,3 +665,13 @@ node scripts/build-sites.mjs
 - LOGO：边缘洪水填充去除白底并裁切（保留图标内部白色），透明 PNG；BrandMark 改为整张 LOGO（h-11）并移除顶部“校园机会管家·云端 Agent”与底部“CampusMate·信息本位·机会雷达”文案。
 - 预览空间：侧边栏产物 iframe/图片/文本高度提升到 60–65dvh，侧栏滚动区上限放宽，充分利用空白。
 - 测试：496 项通过；视觉 7/7。发布 action `e38ee72f-5fd7-4c21-bc1b-8e9cdc2b4f60`。
+## 35. 舒适度与全模块工具（2026-11-21，第二十三轮）
+
+- LOGO 深色适配：透明 LOGO 加白色圆角底板，深色下清晰。
+- 思考链：服务端按 20k 分段继续流式（thinking.delta 带 segment），不再丢弃后续；前端每段一个思考面板，最后一段实时展开。
+- 超时/上游错误：模型超时 25s→40s；upstream/stream/rate-limit/unavailable 归为瞬态自动重试（最多 3 次），错误文案改为“已保留进度并自动重试”；聊天徽标改为“本轮未完成 · 可重试或继续”。
+- 草稿提示：移除“草稿正在保存…”的逐字符闪烁。
+- 全模块工具：新增 `list_domain` / `update_domain`（inbox/daily/opportunities），配合已有 save/create；系统提示要求修改前先读取、仅明确指令才写入；日历用 create_daily_task 写入。
+- 附件：支持 XLSX，客户端保留原始字节、服务端解析 sharedStrings/sheet XML。
+- 识图：分辨率 1600→2048、JPEG 0.85→0.92、请求 detail=high。
+- 测试：496 项通过；视觉 7/7。发布 action `6796c78e-91e9-4253-ae90-1f9dc1fe5852`。

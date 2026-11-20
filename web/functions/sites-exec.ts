@@ -174,7 +174,7 @@ const STAGE_MAX_TOKENS: Record<GenerationStage, number> = {
 
 const MAX_TOOL_ROUNDS_PER_ADVANCE = 4;
 const MAX_TOOL_CALLS_PER_ROUND = 8;
-const MODEL_TIMEOUT_MS = 25_000;
+const MODEL_TIMEOUT_MS = 40_000;
 const CHECKPOINT_LEASE_MS = 60_000;
 const TASKS = "campusmate_tasks";
 const EVENTS = "campusmate_events";
@@ -198,6 +198,7 @@ const SERVER_SYSTEM_PROMPT = [
   "【规划】用户要求设计/计划/方案时，输出全面结构化方案：目标、背景、分阶段步骤、时间线、资源、风险与应对、验收指标；并用 create_document 附 mermaid 流程图/结构图与 table 时间线，按用户要求选择 format 直接交付成品。",
   "【成品】用户要 PPT/Word/Excel/PDF/HTML/CSV 时，create_document 必须带 format 及对应 slides/table/chart/mermaid，直接生成成品供下载，不要只给 Markdown 让用户自行转换。",
   "【长文】用户要求万字/长篇/完整计划时，先 create_plan 列章节，再按章节多次调用 create_document（带 section/totalSections），每轮推进 1-2 节；严禁未生成正文就宣称完成；达到上限时说明已交付章节与下一节计划。",
+  "【模块权限】你可以读取与修改信息中心(inbox)、任务与目标(daily)、机会中心(opportunities)、个人画像(profile)。修改前先 list_domain 确认目标，只有用户明确要求才 save/update；没有明确指令不得擅自改动用户数据。日历安排用 create_daily_task（含 dueAt）写入，不要声称没有接口。",
   "【收尾】任务完成或信息不足时，用中文给出简洁、可执行的总结；不要输出工具调用格式的文本。",
 ].join("\n");
 
@@ -230,6 +231,31 @@ const TOOL_DEFS = [
           source: { type: "string", description: "来源说明" },
         },
         required: ["title"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_domain",
+      description: "读取当前用户的 Inbox/日常任务/机会数据，用于修改前确认。",
+      parameters: { type: "object", properties: { kind: { type: "string", enum: ["inbox", "daily", "opportunities"] } }, required: ["kind"], additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_domain",
+      description: "修改当前用户的 Inbox/日常任务/机会条目；只有用户明确要求时使用。",
+      parameters: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: ["inbox", "daily", "opportunities"] },
+          id: { type: "string", description: "条目 id，来自 list_domain" },
+          patch: { type: "object", description: "要修改的字段：title/content/dueAt/notes/url/deadline/status/priority" },
+        },
+        required: ["kind", "id", "patch"],
         additionalProperties: false,
       },
     },
@@ -993,6 +1019,30 @@ async function saveDomain(ctx: ToolContext, kind: "inbox" | "daily" | "opportuni
   return { ok: true, summary, id, output: data };
 }
 
+async function listDomain(ctx: ToolContext, args: Row): Promise<Row> {
+  const kind = asString(args.kind, 30) as "inbox" | "daily" | "opportunities";
+  const tables = { inbox: INBOX, daily: DAILY, opportunities: OPPORTUNITIES };
+  if (!tables[kind]) return { ok: false, error: "unsupported_kind" };
+  const rows = resultRows(await ctx.db.from(tables[kind]).select("id,data").eq("owner_id", ctx.owner).limit(100));
+  return { ok: true, kind, count: rows.length, items: rows.slice(0, 50).map(row => ({ id: text(row.id), ...(row.data && typeof row.data === "object" && !Array.isArray(row.data) ? row.data as Row : {}) })) };
+}
+async function updateDomain(ctx: ToolContext, args: Row): Promise<Row> {
+  const kind = asString(args.kind, 30) as "inbox" | "daily" | "opportunities";
+  const tables = { inbox: INBOX, daily: DAILY, opportunities: OPPORTUNITIES };
+  if (!tables[kind]) return { ok: false, error: "unsupported_kind" };
+  const id = asString(args.id, 200);
+  if (!id) return { ok: false, error: "id_required" };
+  const rows = resultRows(await ctx.db.from(tables[kind]).select("id,data").eq("id", id).eq("owner_id", ctx.owner).limit(1));
+  if (!rows.length) return { ok: false, error: "not_found" };
+  const current = rows[0].data && typeof rows[0].data === "object" && !Array.isArray(rows[0].data) ? rows[0].data as Row : {};
+  const patch = args.patch && typeof args.patch === "object" && !Array.isArray(args.patch) ? args.patch as Row : {};
+  const allowed = ["title", "content", "dueAt", "notes", "url", "deadline", "status", "priority", "estimateHours", "kind"];
+  const next: Row = { ...current };
+  for (const key of allowed) if (key in patch) next[key] = patch[key];
+  next.id = id; next.updatedAt = ctx.now();
+  await ctx.db.from(tables[kind]).update({ data: next, updated_at: ctx.now() }).eq("id", id).eq("owner_id", ctx.owner);
+  return { ok: true, summary: `已更新 ${kind} 条目`, id, output: next };
+}
 async function setGrowthGoal(ctx: ToolContext, args: Row): Promise<Row> {
   const goal = asString(args.goal, 500);
   if (!goal) return { ok: false, error: "goal_required" };
@@ -1255,6 +1305,8 @@ async function executeTool(ctx: ToolContext, name: string, args: Row): Promise<R
   switch (name) {
     case "save_to_inbox": return await saveDomain(ctx, "inbox", args, "已保存到 Inbox");
     case "create_daily_task": return await saveDomain(ctx, "daily", args, "已创建日常任务");
+    case "list_domain": return await listDomain(ctx, args);
+    case "update_domain": return await updateDomain(ctx, args);
     case "save_opportunity":
     case "create_opportunity": return await saveDomain(ctx, "opportunities", args, "已保存到机会雷达");
     case "set_growth_goal": return await setGrowthGoal(ctx, args);
@@ -1347,14 +1399,14 @@ async function imageParts(provider: ServerProvider, images: string[], deps: Serv
   if (provider.vision === "data-uri") {
     return images.map((image) => {
       if (!/^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=\s]+$/i.test(image)) throw new ExecError("vision_data_uri_required", 400);
-      return { type: "image_url", image_url: { url: image } };
+      return { type: "image_url", image_url: { url: image, detail: "high" } };
     });
   }
   const storage = deps.storage;
   const parts: Row[] = [];
   for (const [index, image] of images.entries()) {
     if (isPublicHttpUrl(image)) {
-      parts.push({ type: "image_url", image_url: { url: image } });
+      parts.push({ type: "image_url", image_url: { url: image, detail: "high" } });
       continue;
     }
     // moss 不接受 data URI；没有 storage 客户端时明确报错，绝不静默丢图。
@@ -1367,7 +1419,7 @@ async function imageParts(provider: ServerProvider, images: string[], deps: Serv
     await storage.put(key, bytes, match[1]);
     const url = await storage.publicUrl(key);
     if (!isPublicHttpUrl(url)) throw new ExecError("vision_public_url_required", 400);
-    parts.push({ type: "image_url", image_url: { url } });
+    parts.push({ type: "image_url", image_url: { url, detail: "high" } });
   }
   return parts;
 }
@@ -1517,6 +1569,7 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
     let reasoningText = "";
     let pendingThinking = "";
     let thinkingEmitted = 0;
+    let thinkingSegment = 0;
     let flushChain: Promise<unknown> = Promise.resolve();
     let flushThinkingChain: Promise<unknown> = Promise.resolve();
     let lastFlush = now();
@@ -1527,11 +1580,12 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
       if (!pendingThinking) return flushThinkingChain;
       if (!force && now() - lastThinkingFlush < 120 && pendingThinking.length < 120) return flushThinkingChain;
       const text = pendingThinking;
+      const segment = thinkingSegment;
       pendingThinking = "";
       lastThinkingFlush = now();
       thinkingEmitted += text.length;
       flushThinkingChain = flushThinkingChain.then(async () => {
-        try { await appendEvent(db, owner, task, "thinking.delta", { text }); } catch { /* 流式事件非关键 */ }
+        try { await appendEvent(db, owner, task, "thinking.delta", { text, segment }); } catch { /* 流式事件非关键 */ }
       });
       return flushThinkingChain;
     };
@@ -1551,7 +1605,24 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
       (chunk) => { pendingContent += chunk; void flushContent(); },
       (chunk) => {
         reasoningText += chunk;
-        if (thinkingEmitted + pendingThinking.length < MAX_THINKING_EVENT_CHARS) pendingThinking += chunk;
+        // 达到单段上限时切到下一段继续流式输出；不再丢弃后续思考。
+        let remaining = chunk;
+        while (remaining) {
+          const space = MAX_THINKING_EVENT_CHARS - (thinkingEmitted + pendingThinking.length);
+          if (space <= 0) {
+            void flushThinking(true);
+            thinkingEmitted = 0;
+            thinkingSegment += 1;
+            continue;
+          }
+          pendingThinking += remaining.slice(0, space);
+          remaining = remaining.slice(space);
+          if (pendingThinking.length >= MAX_THINKING_EVENT_CHARS) {
+            void flushThinking(true);
+            thinkingEmitted = 0;
+            thinkingSegment += 1;
+          }
+        }
         void flushThinking();
       },
     );
@@ -1761,7 +1832,7 @@ export async function advance(taskId: string, owner: string, deps: ServerExecDep
     if (!task) throw error;
     const checkpoint = parseCheckpoint(task.checkpoint);
     const attempts = checkpoint.attempts + 1;
-    const transient = code === "server_model_timeout" || code === "server_model_network";
+    const transient = ["server_model_timeout", "server_model_network", "server_model_upstream_error", "server_model_stream_failed", "server_model_rate_limited", "server_model_unavailable"].includes(code);
     const failed = !transient || attempts >= 3;
     const at = (deps.now ?? Date.now)();
     const nextCheckpoint = { ...checkpoint, attempts, leaseUntil: 0 };

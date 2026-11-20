@@ -42,7 +42,7 @@ export function ChatMessageRow({ message, ordinal, busy, onResend, taskView }: {
           {message.editedFrom && <p title={`编辑时位于当时已加载记录的第 ${message.editedFrom} 条`} className="mt-2 text-xs text-muted-foreground">由历史消息编辑后重发</p>}
           {message.imported && <p className="mt-2 text-xs text-muted-foreground">历史导入记录 · 未重放操作</p>}
           {message.mock && <div className="mt-2"><MockBadge /></div>}
-          {message.failed && <div className="mt-2"><span className="inline-flex items-center rounded-md border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600">执行失败 · 可重发重试</span></div>}
+          {message.failed && <div className="mt-2"><span className="inline-flex items-center rounded-md border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600">本轮未完成 · 可重试或继续</span></div>}
         </div>
         {!user && taskView && <MessageWorkSteps events={taskView.events} status={taskView.task.status} />}
         <div role="group" aria-label={`第 ${ordinal} 条消息操作`} className={cn('mt-1 flex min-h-7 items-center gap-1 transition-opacity md:opacity-0 md:group-hover/message:opacity-100 md:group-focus-within/message:opacity-100', user && 'justify-end', copyState !== 'idle' && 'md:opacity-100')}>

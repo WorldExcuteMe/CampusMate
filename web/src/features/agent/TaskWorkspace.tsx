@@ -13,6 +13,7 @@ import { ArtifactsPanel } from "./ArtifactPreview";
 
 const statuses: Record<string, string> = { queued: "排队中", running: "正在执行", paused: "已暂停", needs_input: "等待处理", succeeded: "已完成", failed: "未完成", cancelled: "已取消" };
 const tools: Record<string, string> = { web_search: "检索公开资料", web_fetch: "核对网页来源", read_artifact: "读取完整材料", save_opportunity: "保存机会", save_to_inbox: "保存通知到信息中心", propose_verification: "提交核验提案", document_create: "生成文档", document_export: "导出文件", document_inspect: "检查文档" };
+const errorLabels: Record<string, string> = { server_model_timeout: "模型响应超时，已保留进度并自动重试", server_model_upstream_error: "模型服务暂时不可用，已保留进度并自动重试", server_model_network: "网络波动，正在自动重试", server_model_rate_limited: "模型限流，正在自动重试", deliverable_missing: "未实际生成产物，已停止并保留进度" };
 const reasons: Record<string, string> = { approval_pending: "需要你的审批", budget_exceeded: "需要调整预算", output_incomplete: "输出未完成，草稿已保留", persistence_failed: "记录保存失败，可恢复重试", execution_interrupted: "执行中断，可恢复或取消", missing_information: "需要补充材料" };
 const duration = (ms: number) => ms < 1000 ? `${Math.round(ms)}毫秒` : ms < 60000 ? `${(ms / 1000).toFixed(1)}秒` : `${Math.floor(ms / 60000)}分${Math.round(ms / 1000) % 60}秒`;
 function sources(value: unknown): { url: string; host: string }[] {
@@ -120,7 +121,7 @@ function TaskDetails({ view, resumeBlocked, onTask, onRefresh, onContinue }: { v
       <p className="mt-2 text-xs text-muted-foreground">{local ? active ? "浏览器正在执行" : "本地记录已更新" : connection[view.connection ?? "connecting"]}{task.createdAt && active ? ` · 已提交${duration(Math.max(0, clock - task.createdAt))}` : ""}</p>
       {task.status === "queued" && <p className="mt-2 text-xs text-muted-foreground">等待Worker处理；同会话前轮未结束时会保持顺序。</p>}
       {active && lastLlm?.type === "llm.request" && <p className="mt-2 text-xs text-primary">模型正在生成或判断下一步…</p>}
-      {task.status !== "succeeded" && (reasons[reason] || task.error) && <p className="mt-2 text-xs leading-5">{reasons[reason] ?? task.error}</p>}
+      {task.status !== "succeeded" && (reasons[reason] || task.error) && <p className="mt-2 text-xs leading-5">{reasons[reason] ?? (task.error ? errorLabels[task.error] ?? task.error : "")}</p>}
     </div>
     {starts.length > 0 && <ol aria-label="工具执行记录" className="space-y-3 border-l border-primary/20 pl-3">{starts.map((start) => {
       const result = events.find((e) => e.seq > start.seq && e.type === "tool.result" && e.payload.callInstanceId === start.payload.callInstanceId);

@@ -150,7 +150,11 @@ export function AgentChatPage() {
   const currentEvents = liveView?.events ?? [];
   const lastResponseInput = [...currentEvents].reverse().find((event) => event.type === "llm.response")?.payload?.usage as { input?: unknown } | undefined;
   const contextUsed = active.contextUsed ?? (typeof lastResponseInput?.input === "number" ? lastResponseInput.input : null);
-  const liveThinking = currentEvents.filter((event) => event.type === "thinking.delta").map((event) => String(event.payload.text ?? "")).join("").slice(-12_000);
+  const thinkingSegments = currentEvents.filter((event) => event.type === "thinking.delta").reduce<string[]>((segments, event) => {
+    const index = Number.isSafeInteger(event.payload.segment) ? Number(event.payload.segment) : 0;
+    segments[index] = (segments[index] ?? "") + String(event.payload.text ?? "");
+    return segments;
+  }, []);
   const runTurns = currentEvents.filter((e) => e.type === "llm.request").length;
   const runSteps = currentEvents.filter((e) => e.type === "tool.called").length;
   const runTtft = currentTask?.modelRuntime?.lastRequest?.ttftMs ?? null;
@@ -417,7 +421,7 @@ export function AgentChatPage() {
           {busyUI && currentTask && !active.messages.some((message) => message.taskId === currentTask.id && message.role === "assistant") && (
             <div className="rounded-lg border border-border/70 bg-background p-3" aria-label="实时执行进度">
               <p className="flex items-center gap-2 text-xs font-medium text-primary"><Loader2 className="size-3.5 animate-spin" /> 正在执行 · 实时进度</p>
-              <ThinkingStream text={liveThinking} active={busyUI} />
+              {thinkingSegments.map((text, index) => <ThinkingStream key={index} text={text} active={busyUI && index === thinkingSegments.length - 1} defaultOpen={index === thinkingSegments.length - 1} />)}
               {liveDraft && <p className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">{liveDraft}</p>}
               <MessageWorkSteps events={currentEvents} status={currentTask.status} />
             </div>
@@ -439,7 +443,6 @@ export function AgentChatPage() {
             <div className="flex gap-3"><button type="button" className="underline" disabled={composer.saving || composer.resolving || composer.conflict.deleted} onClick={() => void composer.resolve('local')}>保留本页草稿</button><button type="button" className="underline" disabled={composer.saving || composer.resolving || composer.conflict.deleted} onClick={() => void composer.resolve('remote')}>使用本机最新草稿</button></div>
           </section>}
           {!composer.ready && <p role="status" className="mb-2 text-xs text-muted-foreground">正在恢复本地草稿…</p>}
-          {composer.saving && !composer.error && <p role="status" className="mb-1 text-[10px] text-muted-foreground">草稿正在保存…</p>}
           {attachments.length > 0 && (
             <section aria-label="附件工作流" className="mb-2 rounded-lg border border-border/70 bg-muted/30 p-2.5">
               <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">附件工作流 · {attachments.length} 个 · 随消息附加，文档由 Agent 按需读取</p>

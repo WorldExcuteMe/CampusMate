@@ -80,6 +80,26 @@ function docxText(xml: string): string {
     .trim();
 }
 
+function decodeXml(value: string): string {
+  return value.replace(/<[^>]+>/g, "").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&apos;/gi, "'").replace(/&#(\d+);/g, (_, v: string) => String.fromCodePoint(Number(v))).replace(/&#x([0-9a-f]+);/gi, (_, v: string) => String.fromCodePoint(Number.parseInt(v, 16)));
+}
+async function xlsxText(bytes: Uint8Array): Promise<string> {
+  const sharedXml = await zipEntry(bytes, "xl/sharedStrings.xml");
+  const shared = sharedXml ? [...decode(sharedXml).matchAll(/<si[^>]*>([\s\S]*?)<\/si>/g)].map(m => decodeXml(m[1])) : [];
+  let sheetXml = await zipEntry(bytes, "xl/worksheets/sheet1.xml");
+  if (!sheetXml) sheetXml = await zipEntry(bytes, "xl/worksheets/sheet2.xml");
+  if (!sheetXml) throw new Error("document_format_unsupported");
+  const rows = [...decode(sheetXml).matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)].map(row => {
+    const cells = [...row[1].matchAll(/<c([^>]*)>([\s\S]*?)<\/c>/g)].map(cell => {
+      const attrs = cell[1], inner = cell[2];
+      const type = /t="([^"]*)"/.exec(attrs)?.[1] ?? "";
+      const value = /<v>([\s\S]*?)<\/v>/.exec(inner)?.[1] ?? /<t[^>]*>([\s\S]*?)<\/t>/.exec(inner)?.[1] ?? "";
+      return type === "s" ? shared[Number(value)] ?? "" : decodeXml(value);
+    });
+    return cells.join("\t");
+  });
+  return rows.join("\n").slice(0, 100_000);
+}
 async function pdfText(bytes: Uint8Array): Promise<string> {
   // @ts-ignore vendor pdfjs 无类型声明
   const { getDocument } = await import("./vendor/pdf.mjs") as { getDocument: (options: unknown) => { promise: Promise<PdfDocument> } };
@@ -111,6 +131,7 @@ export async function parseDocumentText(dataUrl: string, filename: string): Prom
     if (!xml) throw new Error("document_format_unsupported");
     return docxText(decode(xml));
   }
+  if (lower.endsWith(".xlsx") || dataUrl.includes("spreadsheetml")) return await xlsxText(bytes);
   if (lower.endsWith(".txt") || lower.endsWith(".md") || dataUrl.startsWith("data:text/")) {
     return decode(bytes).slice(0, 100_000);
   }

@@ -2,9 +2,9 @@
 import { Brain } from "lucide-react";
 
 // DeepSeek 式顺滑思考流：以稳定速率逐字揭示增量文本，带光标与自动滚动，降低等待焦虑。
-export function ThinkingStream({ text, active }: { text: string; active: boolean }) {
+export function ThinkingStream({ text, active, defaultOpen = true }: { text: string; active: boolean; defaultOpen?: boolean }) {
   const [shown, setShown] = useState(0);
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(defaultOpen);
   const boxRef = useRef<HTMLDivElement>(null);
   const target = text.length;
   useEffect(() => {

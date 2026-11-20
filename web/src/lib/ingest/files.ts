@@ -20,7 +20,7 @@ async function limited<T>(work: () => Promise<T>, signal?: AbortSignal): Promise
 }
 // 视觉预处理流水线：缩放到 <=1600px 并重编码 JPEG，显著降低视觉 token 与上传体积，
 // 提升识别吞吐与首字速度；失败时回退原图，绝不丢图。
-const VISION_MAX_DIM = 1600;
+const VISION_MAX_DIM = 2048;
 async function compressImageDataUrl(dataUrl: string): Promise<string> {
   if (typeof document === "undefined" || typeof Image === "undefined") return dataUrl;
   try {
@@ -34,11 +34,11 @@ async function compressImageDataUrl(dataUrl: string): Promise<string> {
       el.src = dataUrl;
     });
     const scale = Math.min(1, VISION_MAX_DIM / Math.max(img.naturalWidth, img.naturalHeight));
-    if (scale >= 1 && dataUrl.length < 700_000) return dataUrl;
+    if (scale >= 1 && dataUrl.length < 1_200_000) return dataUrl;
     canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
     canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    const out = canvas.toDataURL("image/jpeg", 0.85);
+    const out = canvas.toDataURL("image/jpeg", 0.92);
     return out.length < dataUrl.length ? out : dataUrl;
   } catch { return dataUrl; }
 }
@@ -70,6 +70,7 @@ export async function parseFile(file: File, signal?: AbortSignal): Promise<Attac
       if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(text)) throw new AttachmentPolicyError('文件包含二进制内容，不是可读取的TXT/MD文档。');
       return { ...base, kind: 'doc', text: validateDocumentText(text) };
     }
+    if (format === 'xlsx') return { ...base, kind: 'doc' }; // 原始字节交由服务端 Agent 解析表格
     return { ...base, kind: 'doc', text: validateDocumentText(await parseDocumentWorker(await readBuffer(file), format, signal)) };
   }, signal);
 }

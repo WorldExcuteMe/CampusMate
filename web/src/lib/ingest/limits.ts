@@ -7,22 +7,23 @@ export const ATTACHMENT_LIMITS = {
   zipEntries: 512, zipBytes: 20 * MB, parseMs: 20_000, concurrency: 2,
   requestBytes: 7 * MB, // Margin below the API's 8MB body ceiling.
 } as const;
-export const ATTACHMENT_ACCEPT = '.png,.jpg,.jpeg,.webp,.gif,.avif,.pdf,.docx,.txt,.md';
+export const ATTACHMENT_ACCEPT = '.png,.jpg,.jpeg,.webp,.gif,.avif,.pdf,.docx,.xlsx,.txt,.md';
 export const ATTACHMENT_LIMIT_HINT = '最多8个附件 · 单文件5MB';
-export const ATTACHMENT_LIMIT_DETAILS = '支持 PNG/JPEG/WebP/GIF/AVIF、PDF、DOCX、UTF-8 TXT/MD；每条最多8个附件、合计10MB；图片最多4张且合计4MB；PDF最多50页；文档单份10万字符、合计20万字符。超限整份拒绝，不截断；解析超时20秒会停止。';
+export const ATTACHMENT_LIMIT_DETAILS = '支持 PNG/JPEG/WebP/GIF/AVIF、PDF、DOCX、XLSX、UTF-8 TXT/MD；每条最多8个附件、合计10MB；图片最多4张且合计4MB；PDF最多50页；文档单份10万字符、合计20万字符。超限整份拒绝，不截断；解析超时20秒会停止。';
 export class AttachmentPolicyError extends Error {}
-export type FileFormat = 'image' | 'pdf' | 'docx' | 'text';
+export type FileFormat = 'image' | 'pdf' | 'docx' | 'xlsx' | 'text';
 const formats: Record<string, { format: FileFormat; mimes: string[] }> = {
   png: { format: 'image', mimes: ['image/png'] }, jpg: { format: 'image', mimes: ['image/jpeg'] }, jpeg: { format: 'image', mimes: ['image/jpeg'] },
   webp: { format: 'image', mimes: ['image/webp'] }, gif: { format: 'image', mimes: ['image/gif'] }, avif: { format: 'image', mimes: ['image/avif'] },
   pdf: { format: 'pdf', mimes: ['application/pdf'] }, docx: { format: 'docx', mimes: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'] },
+  xlsx: { format: 'xlsx', mimes: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'] },
   txt: { format: 'text', mimes: ['text/plain'] }, md: { format: 'text', mimes: ['text/plain', 'text/markdown', 'text/x-markdown'] },
 };
 export function validateAttachmentFile(file: Pick<File, 'name' | 'type' | 'size'>): FileFormat {
   const mime = file.type.toLowerCase().split(';')[0].trim();
   const extension = file.name.includes('.') ? file.name.split('.').at(-1)!.toLowerCase() : undefined;
   const info = extension ? (Object.hasOwn(formats, extension) ? formats[extension] : undefined) : Object.values(formats).find(f => f.mimes.includes(mime));
-  if (!info) throw new AttachmentPolicyError(`不支持附件「${file.name}」的文件类型，请使用图片、PDF、DOCX、TXT或MD。`);
+  if (!info) throw new AttachmentPolicyError(`不支持附件「${file.name}」的文件类型，请使用图片、PDF、DOCX、XLSX、TXT或MD。`);
   if (mime && mime !== 'application/octet-stream' && !info.mimes.includes(mime)) throw new AttachmentPolicyError(`附件「${file.name}」的类型与扩展名不一致，请确认文件格式。`);
   if (!Number.isSafeInteger(file.size) || file.size <= 0) throw new AttachmentPolicyError(`附件「${file.name}」为空，未添加。`);
   if (file.size > ATTACHMENT_LIMITS.fileBytes) throw new AttachmentPolicyError(`附件「${file.name}」超过单文件5MB上限，请拆分后添加。`);
