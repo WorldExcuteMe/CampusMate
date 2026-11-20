@@ -141,10 +141,13 @@ export function AgentChatPage() {
   // 上限优先级：本会话手动修改 > 服务端模型元数据 > 模型名推断。
   const modelCap = provider?.contextLimit ?? modelMaxContext(provider?.model);
   const contextCap = active.contextCap ?? modelCap ?? null;
-  const currentTask = active.currentTaskId ? active.taskViews?.[active.currentTaskId]?.task : undefined;
-  const liveView = active.currentTaskId ? active.taskViews?.[active.currentTaskId] : undefined;
+  const selectedView = active.currentTaskId ? active.taskViews?.[active.currentTaskId] : undefined;
+  const runningView = Object.values(active.taskViews ?? {}).find((v) => ["queued", "running"].includes(v.task.status));
+  // 自动聚焦正在执行的轮次：选中轮次若已结束而存在进行中任务，则跳到进行中任务，避免实时进度被已完成轮次遮挡。
+  const liveView = selectedView && ["queued", "running"].includes(selectedView.task.status) ? selectedView : runningView ?? selectedView;
+  const currentTask = liveView?.task;
   const liveDraft = liveView?.draft ?? "";
-  const currentEvents = active.currentTaskId ? active.taskViews?.[active.currentTaskId]?.events ?? [] : [];
+  const currentEvents = liveView?.events ?? [];
   const lastResponseInput = [...currentEvents].reverse().find((event) => event.type === "llm.response")?.payload?.usage as { input?: unknown } | undefined;
   const contextUsed = active.contextUsed ?? (typeof lastResponseInput?.input === "number" ? lastResponseInput.input : null);
   const liveThinking = currentEvents.filter((event) => event.type === "thinking.delta").map((event) => String(event.payload.text ?? "")).join("").slice(-3_500);
@@ -411,7 +414,7 @@ export function AgentChatPage() {
                 : undefined;
             return <ChatMessageRow key={`${active.id}:${message.role}:${message.historyKey ?? message.turnId ?? message.taskId ?? i}`} message={message} ordinal={i + 1} busy={busyUI} taskView={view} onResend={content => void send(false, { content, ordinal: i + 1 })} />;
           })}
-          {busyUI && currentTask && !active.messages.some((message) => message.taskId === active.currentTaskId && message.role === "assistant") && (
+          {busyUI && currentTask && !active.messages.some((message) => message.taskId === currentTask.id && message.role === "assistant") && (
             <div className="rounded-lg border border-border/70 bg-background p-3" aria-label="实时执行进度">
               <p className="flex items-center gap-2 text-xs font-medium text-primary"><Loader2 className="size-3.5 animate-spin" /> 正在执行 · 实时进度</p>
               <ThinkingStream text={liveThinking} active={busyUI} />

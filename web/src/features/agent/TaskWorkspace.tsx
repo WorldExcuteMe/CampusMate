@@ -22,7 +22,9 @@ function sources(value: unknown): { url: string; host: string }[] {
 export function TaskWorkspace({ session, sending = false, onSelect, onTask, onRefresh, onContinue, loadError, width = 320, collapsed = false, onWidth, onToggle }: { session: ChatSession; sending?: boolean; onSelect: (id: string) => void; onTask: (task: AgentTask) => void; onRefresh: () => void; onContinue: (title: string) => void; loadError?: string; width?: number; collapsed?: boolean; onWidth?: (w: number) => void; onToggle?: () => void }) {
   const [tab, setTab] = useState<"steps" | "artifacts" | "context">("steps");
   const views = Object.values(session.taskViews ?? {}).sort((a, b) => (b.task.turnSeq ?? 0) - (a.task.turnSeq ?? 0) || (b.task.createdAt ?? 0) - (a.task.createdAt ?? 0));
-  const view = views.find((v) => v.task.id === session.currentTaskId) ?? views[0];
+  const selected = views.find((v) => v.task.id === session.currentTaskId);
+  // 自动跳转到正在进行的轮次：选中轮次已结束且存在进行中任务时优先展示进行中任务。
+  const view = selected && ["queued", "running"].includes(selected.task.status) ? selected : views.find((v) => ["queued", "running"].includes(v.task.status)) ?? selected ?? views[0];
   const submitting = sending && Boolean(session.pendingTurn && !session.pendingTurn.taskId);
   const [expanded, setExpanded] = useState(() => typeof window === "undefined" || window.innerWidth >= 1024);
   const unfinished = view && ["queued", "running"].includes(view.task.status) ? [...view.events].reverse().find((event) => event.type === "tool.called" && !view.events.some((end) => end.seq > event.seq && end.type === "tool.result" && end.payload.callInstanceId === event.payload.callInstanceId)) : undefined;

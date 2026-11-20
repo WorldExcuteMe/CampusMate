@@ -629,3 +629,12 @@ node scripts/build-sites.mjs
 6. 思考流：服务端增量粒度 300ms/240 → 120ms/120；新增 ThinkingStream 组件以 rAF 稳定逐字揭示+光标+自动滚动+可折叠，DeepSeek 式顺滑体验。
 - 测试：496 项通过；视觉基线 7/7。
 - 发布：action `956fa541-6124-4112-99bc-fc9c23071a0d`，`publication_completed`。
+## 30. 实时进度自动聚焦 + 成品直出 + 规划/检索增强（2026-11-20，第十八轮）
+
+1. 修复实时进度被已完成轮次遮挡：AgentChatPage 与 TaskWorkspace 均改为「选中轮次若已结束且存在 queued/running 任务，则自动聚焦进行中任务」，蓝色实时进度卡与轮次选择器随之跳转。
+2. 成品直出：create_document 新增 format 参数（docx/pptx/xlsx/csv/html/svg/mermaid/json/pdf），artifact 记录 primaryFormat；产物面板把成品格式置顶并以主按钮「成品 PPTX」等展示；系统提示要求用户要成品时必须带 format+slides/table/chart，不再只给 Markdown。
+3. 美化：DOCX 首行标题加粗放大、PPTX 标题 accent 色、HTML 报告现代 CSS + 内嵌 SVG 图表 + Mermaid CDN 渲染结构图（打印即 PDF）。
+4. 规划增强：系统提示新增【规划】全面结构化方案（目标/背景/步骤/时间线/资源/风险/验收）+ mermaid 图 + table 时间线，学习 ChatGPT 的全方位方案与结构图。
+5. 检索加速：web_search 超时 12s→8s，并在返回后 fire-and-forget 并行预热前两条正文缓存，使后续 web_fetch 近乎即时（逼近 DeepSeek 网页端体感）；保留 TTL 缓存+并发限流。
+- 测试：496 项通过；视觉 7/7。
+- 发布：action `52a7556f-f509-4030-896f-ea3b9d4d494c`，`publication_completed`。

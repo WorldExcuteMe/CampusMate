@@ -195,6 +195,8 @@ const SERVER_SYSTEM_PROMPT = [
   "【工具纪律】需要保存、搜索、抓取或生成文档时调用提供的工具；同一参数不要重复调用。工具失败时换参数或换来源，查不到不等于不存在，应如实说明。领域写入只能作用于当前用户。",
   "【附件】图片已作为视觉输入直接提供；文档正文不要凭空猜测，需要时调用 read_attachment 读取用户附带的文档，引用时注明文件名。",
   "【核验】交付前核对工具的真实返回；引用实际读取到的来源 URL；未核实部分明确标注。模型记忆不是证据。",
+  "【规划】用户要求设计/计划/方案时，输出全面结构化方案：目标、背景、分阶段步骤、时间线、资源、风险与应对、验收指标；并用 create_document 附 mermaid 流程图/结构图与 table 时间线，按用户要求选择 format 直接交付成品。",
+  "【成品】用户要 PPT/Word/Excel/PDF/HTML/CSV 时，create_document 必须带 format 及对应 slides/table/chart/mermaid，直接生成成品供下载，不要只给 Markdown 让用户自行转换。",
   "【收尾】任务完成或信息不足时，用中文给出简洁、可执行的总结；不要输出工具调用格式的文本。",
 ].join("\n");
 
@@ -335,6 +337,7 @@ const TOOL_DEFS = [
           chart: { type: "object", description: "可选图表 {type,title,labels,values}，用于 SVG" },
           mermaid: { type: "string", description: "可选 Mermaid 源码" },
           json: { type: "object", description: "可选结构化 JSON 数据" },
+          format: { type: "string", description: "用户要求的成品格式：docx/pptx/xlsx/csv/html/svg/mermaid/json/pdf；pdf 以 HTML 打印交付" },
         },
         required: ["filename", "markdown"],
         additionalProperties: false,
@@ -1037,11 +1040,12 @@ async function createDocument(ctx: ToolContext, args: Row): Promise<Row> {
       cloud_file_id: `local_${digest.slice(0, 32)}`,
       filename, content_type: "text/markdown; charset=utf-8",
       size: bytes.byteLength, sha256: digest,
-      inline: { format: "md", text: content, source: exportSourceFromArgs(args, filename.replace(/\.md$/i, ""), content) },
+      inline: { format: "md", text: content, primaryFormat: typeof args.format === "string" ? args.format.toLowerCase() : undefined, source: exportSourceFromArgs(args, filename.replace(/\.md$/i, ""), content) },
       created_at: ctx.now(),
     }, { onConflict: "id" }).select("id");
   }
-  return { ok: true, summary: `已生成文档 ${filename}`, artifactId: id, filename };
+  const fmt = typeof args.format === "string" ? args.format.toLowerCase() : "";
+  return { ok: true, summary: `已生成文档 ${filename}${fmt ? `（成品格式 ${fmt}，可在产物面板直接下载）` : ""}`, artifactId: id, filename, ...(fmt ? { format: fmt } : {}) };
 }
 
 function decodeEntities(value: string): string {
@@ -1145,7 +1149,7 @@ async function webSearch(ctx: ToolContext, args: Row): Promise<Row> {
       method: "GET",
       redirect: "follow",
       headers: { "User-Agent": "Mozilla/5.0 (compatible; CampusMate/1.0)", Accept: "text/html" },
-      signal: AbortSignal.timeout(12_000),
+      signal: AbortSignal.timeout(8_000),
     }));
   } catch {
     return { ok: false, error: "search_unavailable" };
@@ -1170,6 +1174,8 @@ async function webSearch(ctx: ToolContext, args: Row): Promise<Row> {
   }
   const searchOut = { ok: true, query, results, note: "搜索标题与摘要不是正文证据，需用 web_fetch 读取后核验。" };
   cacheSet(searchKey, searchOut);
+  // 并行预热前两条正文缓存（fire-and-forget），让后续 web_fetch 近乎即时，逼近 DeepSeek 网页端检索体感。
+  void Promise.all(results.slice(0, 2).map(r => webFetch(ctx, { url: r.url }).catch(() => null)));
   return searchOut;
 }
 

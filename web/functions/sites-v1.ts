@@ -815,6 +815,7 @@ export function createSitesV1(deps: SitesV1Deps) {
       sha256: textOf(row.sha256), kind: "markdown", filename: textOf(row.filename), contentType: textOf(row.content_type),
       size: integerOr(row.size),
       inline: source ? { format: "md", text: source.text } : null,
+      primaryFormat: textOf(jsonObject(row.inline).primaryFormat) || undefined,
       availableFormats: availableFormats(artifactSource(row)),
     };
   }
