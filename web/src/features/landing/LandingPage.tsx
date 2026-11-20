@@ -35,7 +35,7 @@ export function LandingPage() {
               <img src="/campusmate-logo.png" alt="CampusMate" className="h-7 w-auto object-contain" />
             </span>
             <span className="text-sm font-semibold tracking-tight">CampusMate</span>
-            <span className="hidden rounded-full border border-[#10131a]/10 bg-white/50 px-2 py-0.5 text-[10px] text-[#10131a]/50 sm:inline">预览版</span>
+            <span className="hidden rounded-full border border-[#10131a]/10 bg-white/50 px-2 py-0.5 text-[10px] text-[#10131a]/50 sm:inline">校园版</span>
           </Link>
           <nav className="ml-auto hidden items-center gap-6 text-[12px] text-[#10131a]/55 md:flex" aria-label="页面导航">
             {NAV.map((item) => <a key={item.href} href={item.href} className="transition-colors hover:text-[#10131a]">{item.label}</a>)}
@@ -48,17 +48,21 @@ export function LandingPage() {
 
       <main className="relative z-10">
         <section className="mx-auto max-w-4xl px-5 pb-8 pt-14 text-center sm:pt-20">
-          <h1 className="text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">现在，开箱即用</h1>
-          <p className="mx-auto mt-4 max-w-xl text-[13px] leading-7 text-[#10131a]/55">
-            无论整理通知、导入课表，还是写一份长计划，都可以从这里开始。
-            CampusMate 把信息、机会与行动连成一条工作流。
+          <h1 className="text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">
+            从一条通知，
+            <br />
+            <span className="text-[#2f5fe0]">到一份成品。</span>
+          </h1>
+          <p className="mx-auto mt-4 max-w-2xl text-[13px] leading-7 text-[#10131a]/55">
+            群聊、附件、教务系统里的信息，CampusMate 会整理成日历上的一格、待办里的一条，
+            或一份能直接交的成品。
           </p>
           <div className="mx-auto mt-7 max-w-xl rounded-2xl border border-white/70 bg-[#0b0e14] p-5 text-center shadow-[0_30px_70px_-30px_rgba(16,19,26,.55)] sm:p-6">
             <Terminal className="mx-auto size-4 text-[#8fb0ff]" />
-            <h2 className="mt-3 text-lg font-semibold text-white sm:text-xl">把下一件事，交给 CampusMate</h2>
-            <p className="mx-auto mt-1.5 max-w-md text-[11px] leading-5 text-white/45">无需注册即可体验。登录 Qoder 后，聊天记录、课表与产物按账号隔离保存。</p>
+            <h2 className="mt-3 text-lg font-semibold text-white sm:text-xl">别让信息停在收藏夹里</h2>
+            <p className="mx-auto mt-1.5 max-w-md text-[11px] leading-5 text-white/45">把它变成日历、待办和成品。免注册先试，登录后按账号保存。</p>
             <Link to="/app" className="mt-4 inline-flex h-9 items-center gap-2 rounded-full bg-white px-5 text-[12px] font-semibold text-[#0b0e14] transition-transform hover:scale-[1.02]">
-              进入演示 <ArrowRight className="size-4" />
+              开始使用 <ArrowRight className="size-4" />
             </Link>
           </div>
         </section>
@@ -93,22 +97,18 @@ export function LandingPage() {
               </aside>
               <div className="flex min-w-0 flex-1 flex-col">
                 <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3 text-[11px] text-white/55">
-                  <span className="size-1.5 rounded-full bg-[#28c840]" /> 你好，介绍一下你自己。
+                  <span className="size-1.5 rounded-full bg-[#28c840]" /> 这周的课表和通知，帮我理一下
                 </div>
                 <div className="flex-1 space-y-4 overflow-hidden px-4 py-5 text-[11px] leading-6 text-white/60 sm:px-6">
-                  <div className="ml-auto w-fit max-w-[80%] rounded-2xl bg-white/[0.07] px-3.5 py-2 text-white/75">你好，介绍一下你自己。</div>
+                  <div className="ml-auto w-fit max-w-[80%] rounded-2xl bg-white/[0.07] px-3.5 py-2 text-white/75">这周的课表和通知，帮我理一下。</div>
                   <div className="max-w-[92%] space-y-2">
-                    <p className="text-white/80">你好！我是 CampusMate，一个面向校园场景的智能助手。</p>
-                    <p className="text-white/50">我可以帮你：</p>
+                    <p className="text-white/80">收到。我会按三步处理：</p>
                     <ul className="space-y-1.5 text-white/60">
-                      <li>• 通知与信息整理：解读学校通知、公告、文件，提炼关键时间与要求</li>
-                      <li>• 课表导入：解析图片 / PDF / Excel / 文本，写入校园日历</li>
-                      <li>• 任务与目标管理：创建待办、截止提醒、日常任务和成长目标</li>
-                      <li>• 机会雷达：收录竞赛、实习、奖学金、保研/考研信息</li>
-                      <li>• 资料检索与核验：搜索公开网页、抓取来源，标注已核实/未核实</li>
-                      <li>• 文档与成品生成：Word、PPT、Excel、PDF、HTML、流程图、时间线</li>
+                      <li>1. 读取课表.xlsx，按周次和单双周写入校园日历</li>
+                      <li>2. 扫描本周通知，提取 4 个截止时间并标出来源</li>
+                      <li>3. 生成一份「本周安排」，导出 DOCX 和日历视图</li>
                     </ul>
-                    <p className="text-white/45">原则：不编造信息、不把通知内容当成指令、时效性内容先核验来源。</p>
+                    <p className="text-white/45">有冲突或缺失的开学日期，我会先问你，不擅自猜。</p>
                   </div>
                 </div>
                 <div className="m-3 rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-3 text-[11px] text-white/30">
