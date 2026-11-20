@@ -304,7 +304,7 @@ export function AgentChatPage() {
           {(["auto", "daily"] as const).map((m) => (
             <button
               key={m}
-              className={cn("rounded px-2 py-1", active?.mode === m ? "bg-background shadow-sm" : "text-muted-foreground")}
+              className={cn("rounded px-2 py-1", active?.mode === m ? "bg-background" : "text-muted-foreground")}
               disabled={initialLoading}
               onClick={() => changeMode(active.id, m)}
             >
@@ -372,7 +372,7 @@ export function AgentChatPage() {
           {!composer.ready && <p role="status" className="mb-2 text-xs text-muted-foreground">正在恢复本地草稿…</p>}
           {composer.ready && !composer.error && <p role="status" className="mb-2 text-[10px] text-muted-foreground">{composer.saving ? '草稿正在保存到本机…' : '草稿按会话保存在本机，不跨设备同步'}</p>}
           {attachments.length > 0 && (
-            <section aria-label="附件工作流" className="mb-2 rounded-xl border border-border/70 bg-muted/30 p-2.5">
+            <section aria-label="附件工作流" className="mb-2 rounded-lg border border-border/70 bg-muted/30 p-2.5">
               <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">附件工作流 · {attachments.length} 个 · 解析完成后随消息发送</p>
               <div className="flex flex-wrap gap-2">
               {attachments.map((a) => (

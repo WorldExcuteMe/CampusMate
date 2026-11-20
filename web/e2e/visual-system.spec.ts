@@ -72,6 +72,16 @@ for (const theme of ["light", "dark"] as const) {
   });
 }
 
+test("视觉基线 · 功能页浅色", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await seed(page, "light");
+  for (const [route, name] of [["/app", "dashboard"], ["/app/inbox", "inbox"], ["/app/calendar", "calendar"]] as const) {
+    await page.goto(route);
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: path.join(OUT, `${name}-light-1440.png`) });
+  }
+});
+
 test("视觉基线 · 对话页移动端", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await seed(page, "light");

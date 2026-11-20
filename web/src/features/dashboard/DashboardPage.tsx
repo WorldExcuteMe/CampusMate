@@ -56,11 +56,11 @@ export function DashboardPage() {
       <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {stats.map((s) => (
           <Link key={s.label} to={s.to}>
-            <Card className="transition-shadow hover:shadow-md">
+            <Card className="transition-colors hover:border-foreground/25">
               <CardContent className="flex items-center gap-3 p-4">
                 <s.icon className="size-5 text-primary" />
                 <div>
-                  <p className="text-2xl font-semibold">{s.value}</p>
+                  <p className="text-xl font-semibold tabular-nums">{s.value}</p>
                   <p className="text-xs text-muted-foreground">{s.label}</p>
                 </div>
               </CardContent>
@@ -70,13 +70,13 @@ export function DashboardPage() {
       </div>
 
       <div className="mb-5 grid gap-4 lg:grid-cols-[1.5fr_1fr]">
-        <section className="rounded-2xl border bg-card p-5"><div className="flex items-center justify-between"><h2 className="flex items-center gap-2 font-semibold"><CalendarDays className="size-4 text-primary" />今日课程</h2><Link to="/app/calendar" className="text-xs text-primary">打开课表 →</Link></div>
-          {knowledge === "ready" ? courses.length ? <div className="mt-3 space-y-2">{courses.map((c) => <div key={c.id} className="flex items-center gap-4 rounded-xl bg-primary/5 px-3 py-2"><span className="text-xs font-semibold text-primary">{c.startTime}<span className="block font-normal text-muted-foreground">{c.endTime}</span></span><div className="min-w-0"><p className="truncate text-sm font-semibold">{c.title}</p><p className="text-xs text-muted-foreground">{[c.classroom, c.campus].filter(Boolean).join(" · ")}</p></div></div>)}</div> : <p className="mt-3 text-sm text-muted-foreground">今天没有已记录的课程</p> : <p className="mt-3 text-sm text-muted-foreground">{knowledge === "loading" ? "正在读取课表…" : knowledge === "error" ? "课表读取失败，请在日历中重试" : "尚无课表记录，可到日历导入"}</p>}
+        <section className="rounded-lg border bg-card p-5"><div className="flex items-center justify-between"><h2 className="flex items-center gap-2 font-semibold"><CalendarDays className="size-4 text-primary" />今日课程</h2><Link to="/app/calendar" className="text-xs text-primary">打开课表 →</Link></div>
+          {knowledge === "ready" ? courses.length ? <div className="mt-3 space-y-2">{courses.map((c) => <div key={c.id} className="flex items-center gap-4 rounded-lg bg-primary/5 px-3 py-2"><span className="text-xs font-semibold text-primary">{c.startTime}<span className="block font-normal text-muted-foreground">{c.endTime}</span></span><div className="min-w-0"><p className="truncate text-sm font-semibold">{c.title}</p><p className="text-xs text-muted-foreground">{[c.classroom, c.campus].filter(Boolean).join(" · ")}</p></div></div>)}</div> : <p className="mt-3 text-sm text-muted-foreground">今天没有已记录的课程</p> : <p className="mt-3 text-sm text-muted-foreground">{knowledge === "loading" ? "正在读取课表…" : knowledge === "error" ? "课表读取失败，请在日历中重试" : "尚无课表记录，可到日历导入"}</p>}
         </section>
-        <section className="rounded-2xl border bg-primary/5 p-5"><h2 className="flex items-center gap-2 font-semibold"><Clock3 className="size-4 text-primary" />接下来</h2><p className="mt-3 text-lg font-semibold">{next?.title ?? "暂无后续已记录安排"}</p>{next && <p className="mt-1 text-sm text-muted-foreground">{next.allDay ? "当天截止" : `${next.startTime}–${next.endTime}`}</p>}<p className="mt-4 text-xs text-muted-foreground">今日待办 {todayTodo.length} · 逾期待处理 {overdue.length}</p></section>
+        <section className="rounded-lg border bg-primary/5 p-5"><h2 className="flex items-center gap-2 font-semibold"><Clock3 className="size-4 text-primary" />接下来</h2><p className="mt-3 text-lg font-semibold">{next?.title ?? "暂无后续已记录安排"}</p>{next && <p className="mt-1 text-sm text-muted-foreground">{next.allDay ? "当天截止" : `${next.startTime}–${next.endTime}`}</p>}<p className="mt-4 text-xs text-muted-foreground">今日待办 {todayTodo.length} · 逾期待处理 {overdue.length}</p></section>
       </div>
 
-      {overdue.length > 0 && <section className="mb-4 rounded-xl border border-amber-300/40 p-4"><h2 className="font-semibold">逾期待办（{overdue.length}）</h2>{overdue.slice(0,3).map(t=><p key={t.id} className="mt-2 text-sm"><span>{t.title}</span> · {t.dueAt}</p>)}</section>}
+      {overdue.length > 0 && <section className="mb-4 rounded-lg border border-warning/30 bg-warning/5 p-4"><h2 className="font-semibold">逾期待办（{overdue.length}）</h2>{overdue.slice(0,3).map(t=><p key={t.id} className="mt-2 text-sm"><span>{t.title}</span> · {t.dueAt}</p>)}</section>}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader className="flex-row items-center justify-between">

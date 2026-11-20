@@ -15,7 +15,7 @@ export function AgentActivityCard({ activity }: { activity: AgentActivity }) {
   return (
     <div className="flex min-w-0 items-start gap-3" data-testid="agent-activity">
       <Bot aria-hidden="true" className="mt-2 size-5 shrink-0 text-primary" />
-      <div className="min-w-0 flex-1 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
+      <div className="min-w-0 flex-1 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <span className="inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
             <Loader2 aria-hidden="true" className="size-3.5 animate-spin motion-reduce:animate-none" />

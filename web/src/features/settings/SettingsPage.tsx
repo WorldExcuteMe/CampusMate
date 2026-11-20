@@ -89,15 +89,15 @@ export function SettingsPage() {
 
   const field = (label: string, key: keyof Profile, placeholder = "") => (
     <div className="flex flex-col gap-1.5">
-      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <Label className="text-[12px] text-muted-foreground">{label}</Label>
       <Input value={(form?.[key] as string) ?? ""} placeholder={placeholder} onChange={(e) => set(key, e.target.value)} />
     </div>
   );
 
   return (
-    <div className="mx-auto max-w-5xl">
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
+    <div className="mx-auto max-w-4xl space-y-5">
+      <div>
+        <h1 className="text-xl font-semibold tracking-tight">设置</h1>
         <p className="mt-1 text-sm text-muted-foreground">个人画像、外观、模型供应商与 Agent 工作方式。</p>
       </div>
       <div className="flex flex-col gap-6 md:flex-row">
@@ -107,7 +107,7 @@ export function SettingsPage() {
               key={t.id}
               onClick={() => setTab(t.id)}
               className={cn(
-                "flex items-center gap-2.5 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition-all",
+                "flex items-center gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-[13px] font-medium transition-colors",
                 tab === t.id ? "bg-secondary text-secondary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground",
               )}
             >
@@ -116,7 +116,7 @@ export function SettingsPage() {
           ))}
         </nav>
 
-        <div className="cm-card min-w-0 flex-1 p-6">
+        <div className="min-w-0 flex-1 rounded-lg border border-border bg-card p-5">
           {tab === "account" && (
             <div className="flex flex-col gap-5">
               <div className="flex items-center gap-4">
@@ -134,23 +134,23 @@ export function SettingsPage() {
                 {field("专业", "major", "如 计算机科学与技术")}
                 {field("年级", "grade", "如 大二")}
                 <div className="flex flex-col gap-1.5">
-                  <Label className="text-xs text-muted-foreground">每周时间预算（小时）</Label>
+                  <Label className="text-[12px] text-muted-foreground">每周时间预算（小时）</Label>
                   <Input type="number" value={form?.timeBudgetHours ?? 0} onChange={(e) => set("timeBudgetHours", Number(e.target.value))} />
                 </div>
                 <div className="flex flex-col gap-1.5 sm:col-span-2">
-                  <Label className="text-xs text-muted-foreground">兴趣（顿号分隔）</Label>
+                  <Label className="text-[12px] text-muted-foreground">兴趣（顿号分隔）</Label>
                   <Input value={list("interests")} onChange={(e) => setList("interests", e.target.value)} />
                 </div>
                 <div className="flex flex-col gap-1.5 sm:col-span-2">
-                  <Label className="text-xs text-muted-foreground">技能（顿号分隔）</Label>
+                  <Label className="text-[12px] text-muted-foreground">技能（顿号分隔）</Label>
                   <Input value={list("skills")} onChange={(e) => setList("skills", e.target.value)} />
                 </div>
                 <div className="flex flex-col gap-1.5 sm:col-span-2">
-                  <Label className="text-xs text-muted-foreground">目标（顿号分隔）</Label>
+                  <Label className="text-[12px] text-muted-foreground">目标（顿号分隔）</Label>
                   <Input value={list("goals")} onChange={(e) => setList("goals", e.target.value)} />
                 </div>
                 <div className="flex flex-col gap-1.5 sm:col-span-2">
-                  <Label className="text-xs text-muted-foreground">简介</Label>
+                  <Label className="text-[12px] text-muted-foreground">简介</Label>
                   <Input value={form?.bio ?? ""} onChange={(e) => set("bio", e.target.value)} />
                 </div>
               </div>
@@ -168,8 +168,8 @@ export function SettingsPage() {
                       key={t.id}
                       onClick={() => setAppearance({ theme: t.id })}
                       className={cn(
-                        "flex flex-col items-center gap-2 rounded-xl border px-4 py-4 text-sm transition-all",
-                        appearance.theme === t.id ? "cm-glow border-primary/50 bg-secondary text-secondary-foreground" : "border-border hover:bg-muted",
+                        "flex flex-col items-center gap-2 rounded-lg border px-4 py-4 text-sm transition-all",
+                        appearance.theme === t.id ? "border-primary bg-accent text-accent-foreground" : "border-border hover:bg-muted",
                       )}
                     >
                       <t.icon className="size-5" /> {t.label}
@@ -179,14 +179,14 @@ export function SettingsPage() {
               </div>
               <div className="grid gap-4 sm:grid-cols-3">
                 <div className="flex flex-col gap-1.5">
-                  <Label className="text-xs text-muted-foreground">字号</Label>
-                  <select className="h-9 rounded-md border border-input bg-background px-2 text-sm" value={appearance.fontSize} onChange={(e) => setAppearance({ fontSize: Number(e.target.value) })}>
+                  <Label className="text-[12px] text-muted-foreground">字号</Label>
+                  <select className="h-8 rounded-md border border-input bg-background px-2 text-[13px]" value={appearance.fontSize} onChange={(e) => setAppearance({ fontSize: Number(e.target.value) })}>
                     {[12, 13, 14, 15, 16].map((n) => <option key={n} value={n}>{n}px</option>)}
                   </select>
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label className="text-xs text-muted-foreground">工作步骤展示</Label>
-                  <select aria-label="工作步骤展示" className="h-9 rounded-md border border-input bg-background px-2 text-sm" value={appearance.stepDensity} onChange={(e) => setAppearance({ stepDensity: e.target.value as StepDensity })}>
+                  <Label className="text-[12px] text-muted-foreground">工作步骤展示</Label>
+                  <select aria-label="工作步骤展示" className="h-8 rounded-md border border-input bg-background px-2 text-[13px]" value={appearance.stepDensity} onChange={(e) => setAppearance({ stepDensity: e.target.value as StepDensity })}>
                     <option value="compact">精简</option>
                     <option value="standard">标准</option>
                     <option value="detailed">详细</option>
@@ -194,8 +194,8 @@ export function SettingsPage() {
                   <p className="text-[11px] text-muted-foreground">选择希望看到多少工具调用细节</p>
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label className="text-xs text-muted-foreground">工作步骤收起时机</Label>
-                  <select aria-label="工作步骤收起时机" className="h-9 rounded-md border border-input bg-background px-2 text-sm" value={appearance.stepCollapseTiming} onChange={(e) => setAppearance({ stepCollapseTiming: e.target.value as StepCollapseTiming })}>
+                  <Label className="text-[12px] text-muted-foreground">工作步骤收起时机</Label>
+                  <select aria-label="工作步骤收起时机" className="h-8 rounded-md border border-input bg-background px-2 text-[13px]" value={appearance.stepCollapseTiming} onChange={(e) => setAppearance({ stepCollapseTiming: e.target.value as StepCollapseTiming })}>
                     <option value="after_answer">回答结束后</option>
                     <option value="immediate">立即收起</option>
                     <option value="manual">手动收起</option>
@@ -203,8 +203,8 @@ export function SettingsPage() {
                   <p className="text-[11px] text-muted-foreground">选择何时自动收起工作步骤</p>
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label className="text-xs text-muted-foreground">收起后显示的回复</Label>
-                  <select aria-label="收起后显示的回复" className="h-9 rounded-md border border-input bg-background px-2 text-sm" value={appearance.stepReplyRetention} onChange={(e) => setAppearance({ stepReplyRetention: e.target.value as StepReplyRetention })}>
+                  <Label className="text-[12px] text-muted-foreground">收起后显示的回复</Label>
+                  <select aria-label="收起后显示的回复" className="h-8 rounded-md border border-input bg-background px-2 text-[13px]" value={appearance.stepReplyRetention} onChange={(e) => setAppearance({ stepReplyRetention: e.target.value as StepReplyRetention })}>
                     <option value="all">全部回复</option>
                     <option value="final">仅最终回复</option>
                     <option value="hidden">不显示</option>
@@ -212,8 +212,8 @@ export function SettingsPage() {
                   <p className="text-[11px] text-muted-foreground">工作步骤收起后，保留哪些助手回复</p>
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label className="text-xs text-muted-foreground">语言</Label>
-                  <select className="h-9 rounded-md border border-input bg-background px-2 text-sm" value={appearance.language} onChange={(e) => setAppearance({ language: e.target.value as "zh" | "en" })}>
+                  <Label className="text-[12px] text-muted-foreground">语言</Label>
+                  <select className="h-8 rounded-md border border-input bg-background px-2 text-[13px]" value={appearance.language} onChange={(e) => setAppearance({ language: e.target.value as "zh" | "en" })}>
                     <option value="zh">中文</option>
                     <option value="en">English</option>
                   </select>
@@ -237,7 +237,7 @@ export function SettingsPage() {
                     key={p.mode}
                     onClick={() => applyPreset(p.mode)}
                     className={cn(
-                      "flex flex-col gap-2 rounded-xl border p-4 text-left transition-all",
+                      "flex flex-col gap-2 rounded-lg border p-4 text-left transition-all",
                       defaultMode === p.mode ? "cm-glow border-primary/50 bg-secondary" : "border-border hover:bg-muted",
                     )}
                   >
