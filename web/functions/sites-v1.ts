@@ -816,6 +816,7 @@ export function createSitesV1(deps: SitesV1Deps) {
       size: integerOr(row.size),
       inline: source ? { format: "md", text: source.text } : null,
       primaryFormat: textOf(jsonObject(row.inline).primaryFormat) || undefined,
+      source: artifactSource(row),
       availableFormats: availableFormats(artifactSource(row)),
     };
   }

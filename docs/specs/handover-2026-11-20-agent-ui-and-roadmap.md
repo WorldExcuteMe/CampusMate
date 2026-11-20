@@ -638,3 +638,11 @@ node scripts/build-sites.mjs
 5. 检索加速：web_search 超时 12s→8s，并在返回后 fire-and-forget 并行预热前两条正文缓存，使后续 web_fetch 近乎即时（逼近 DeepSeek 网页端体感）；保留 TTL 缓存+并发限流。
 - 测试：496 项通过；视觉 7/7。
 - 发布：action `52a7556f-f509-4030-896f-ea3b9d4d494c`，`publication_completed`。
+## 31. PPT 兼容修复 + 记忆/交付校验 + LOGO + 成品主题（2026-11-20，第十九轮）
+
+- PPT：手写 OOXML 被 PowerPoint 判损坏，改用客户端 pptxgenjs 生成（含 slideMaster/layout/clrMap，已验证可解析）；服务端仅列出格式，下载由客户端生成，支持 tech/academic/lively 主题与封面/要点版式。
+- 文档洁净：DOCX 首行标题化、正文去 Markdown 标记；HTML 现代排版 + SVG 图表 + Mermaid 结构图。
+- 记忆与思考：实时思考不再截断到 3500 字符（保留 12k）；每轮思考事件上限 6k→20k；思考摘要 240→800；历史裁剪时把被丢弃消息压缩为「较早上下文摘要」系统消息，避免长任务失忆。
+- 长任务防虚假完成：检测交付类意图（文档/PPT/报告/万字等），若未实际生成产物先自动续跑一次；仍无产物则 failed=deliverable_missing，不再宣称完成。万字目标未达 80% 时在总结前置真实进度并标记 partial。
+- LOGO：应用工作区 `b788d6a8...png` 为 favicon 与侧边栏品牌图。
+- 测试：496 项通过；视觉 7/7。发布 action `3c1b813b-bdf1-41a9-97a4-23fec91fe421`。

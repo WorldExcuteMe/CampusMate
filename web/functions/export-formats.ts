@@ -106,7 +106,7 @@ function htmlReport(source: ExportSource): Uint8Array {
 export function availableFormats(source: ExportSource): ExportFormat[] {
   const formats: ExportFormat[] = ["md", "html", "docx", "csv"];
   if (source.table) formats.push("xlsx");
-  if (source.slides || source.markdown) formats.push("pptx");
+  if (source.slides || source.markdown) formats.push("pptx"); // 列出 pptx；实际下载由客户端 pptxgenjs 生成以保证 PowerPoint 兼容。
   if (source.chart) formats.push("svg");
   if (source.mermaid) formats.push("mermaid");
   if (source.json !== undefined) formats.push("json");

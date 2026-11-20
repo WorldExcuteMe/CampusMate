@@ -150,7 +150,7 @@ export function AgentChatPage() {
   const currentEvents = liveView?.events ?? [];
   const lastResponseInput = [...currentEvents].reverse().find((event) => event.type === "llm.response")?.payload?.usage as { input?: unknown } | undefined;
   const contextUsed = active.contextUsed ?? (typeof lastResponseInput?.input === "number" ? lastResponseInput.input : null);
-  const liveThinking = currentEvents.filter((event) => event.type === "thinking.delta").map((event) => String(event.payload.text ?? "")).join("").slice(-3_500);
+  const liveThinking = currentEvents.filter((event) => event.type === "thinking.delta").map((event) => String(event.payload.text ?? "")).join("").slice(-12_000);
   const runTurns = currentEvents.filter((e) => e.type === "llm.request").length;
   const runSteps = currentEvents.filter((e) => e.type === "tool.called").length;
   const runTtft = currentTask?.modelRuntime?.lastRequest?.ttftMs ?? null;

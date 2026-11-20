@@ -338,6 +338,7 @@ const TOOL_DEFS = [
           mermaid: { type: "string", description: "可选 Mermaid 源码" },
           json: { type: "object", description: "可选结构化 JSON 数据" },
           format: { type: "string", description: "用户要求的成品格式：docx/pptx/xlsx/csv/html/svg/mermaid/json/pdf；pdf 以 HTML 打印交付" },
+          theme: { type: "string", description: "PPT 视觉主题：tech/academic/lively，按用户提示词选择" },
         },
         required: ["filename", "markdown"],
         additionalProperties: false,
@@ -592,6 +593,7 @@ interface ExecCheckpoint {
   usage: ExecUsage;
   stage: GenerationStage;
   attempts: number;
+  deliverableAsked?: boolean;
   leaseUntil: number;
   done: boolean;
 }
@@ -675,6 +677,7 @@ function parseCheckpoint(value: unknown): ExecCheckpoint {
     stage,
     ...(Number.isSafeInteger(item.contextLimit) && Number(item.contextLimit) >= 8_000 ? { contextLimit: Number(item.contextLimit) } : {}),
     attempts: number(item.attempts),
+    ...(item.deliverableAsked === true ? { deliverableAsked: true } : {}),
     leaseUntil: number(item.leaseUntil),
     done: item.done === true,
   };
@@ -1022,6 +1025,7 @@ function exportSourceFromArgs(args: Row, title: string, markdown: string): Row {
   }
   if (typeof args.mermaid === "string") source.mermaid = args.mermaid.slice(0, 20_000);
   if (args.json !== undefined) source.json = args.json;
+  if (typeof args.theme === "string") source.theme = args.theme.slice(0, 20);
   return source;
 }
 async function createDocument(ctx: ToolContext, args: Row): Promise<Row> {
@@ -1293,7 +1297,13 @@ function trimHistoryToCap(history: LlmMessage[], cap: number): LlmMessage[] {
     keep[index] = true;
     total += costs[index];
   }
-  return history.filter((_, index) => keep[index]);
+  const kept = history.filter((_, index) => keep[index]);
+  const dropped = history.filter((_, index) => !keep[index]);
+  if (!dropped.length) return kept;
+  // 记忆连续性：被裁掉的消息压缩成较早上下文摘要，保留事实/已完成事项，避免长任务失忆。
+  const excerpt = dropped.map(message => typeof message.content === "string" ? message.content : "").filter(Boolean).join("\n").slice(0, 2_000);
+  const memory = { role: "system" as const, content: `【较早上下文摘要（自动压缩）】\n${excerpt}` };
+  return [...kept.slice(0, 1), memory, ...kept.slice(1)];
 }
 
 function toolObservation(value: Row): string {
@@ -1506,7 +1516,7 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
     let lastFlush = now();
     let lastThinkingFlush = now();
     // 思考只流式展示有限长度（每轮 6000 字符），避免事件表被无限推理撑爆。
-    const MAX_THINKING_EVENT_CHARS = 6_000;
+    const MAX_THINKING_EVENT_CHARS = 20_000;
     const flushThinking = (force = false) => {
       if (!pendingThinking) return flushThinkingChain;
       if (!force && now() - lastThinkingFlush < 120 && pendingThinking.length < 120) return flushThinkingChain;
@@ -1557,7 +1567,7 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
       // L2：只保留有界摘要，不落原始思考；UI 默认折叠展示。
       await appendEvent(db, owner, task, "thinking.summary", {
         round: toolRounds, chars: thinkingText.length,
-        excerpt: thinkingText.slice(0, 240), truncated: thinkingText.length > 240,
+        excerpt: thinkingText.slice(0, 800), truncated: thinkingText.length > 800,
         durationMs: Math.max(0, now() - roundStarted), source: "model",
       });
     }
@@ -1607,9 +1617,39 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
         }, "running", expectedAt);
         return { status: "failed", error: "server_model_empty_response", toolRounds, usage, providerId: provider.id, model };
       }
-      const summary = (truncated ? `${finalText}\n\n（输出达到长度上限，已截断）` : finalText).slice(0, 12_000);
-      const artifacts = resultRows(await db.from(ARTIFACTS).select("id").eq("task_id", taskId).eq("owner_id", owner));
-      const result = { summary, artifactIds: artifacts.map(row => text(row.id)).filter(Boolean) };
+      // 交付校验：用户要成品但模型没真正调用 create_document 时，不允许宣称完成。
+      const intentText = `${text(task.title)} ${text(task.intent)}`;
+      const deliverable = /(文档|报告|方案|计划|PPT|演示|汇报|论文|简历|Word|Excel|表格|CSV|HTML|PDF|万字|\d+\s*万\s*字)/i.test(intentText);
+      const artifacts = resultRows(await db.from(ARTIFACTS).select("id,inline").eq("task_id", taskId).eq("owner_id", owner));
+      if (deliverable && !artifacts.length) {
+        if (!checkpoint.deliverableAsked) {
+          history.push({ role: "assistant", content: finalText });
+          history.push({ role: "user", content: "你还没有实际生成任何产物文件，不能声称已完成。请立即调用 create_document，带上 format 与 slides/table/chart/mermaid，生成用户要求的成品；生成后再总结。" });
+          checkpoint = { ...checkpoint, messages: history, images: checkpoint.images, toolRounds, usage, stage, attempts: 0, deliverableAsked: true, leaseUntil: 0, done: false };
+          const expectedAt = Number.isSafeInteger(task.updated_at) ? Number(task.updated_at) : undefined;
+          await updateTask(db, owner, taskId, { status: "running", checkpoint, usage: usageView(usage), updated_at: now() }, "running", expectedAt);
+          await appendEvent(db, owner, task, "run.continue", { reason: "deliverable_missing" });
+          return { status: "running", retryable: true, toolRounds, usage, providerId: provider.id, model };
+        }
+        await appendEvent(db, owner, task, "run.summary", { rounds: toolRounds, toolCalls: usage.toolCalls, tokens: usage.tokens, input: usage.inputTokens, output: usage.outputTokens, costUsd: null, providerId: provider.id, model, stopReason: "error", error: "deliverable_missing" });
+        const expectedAt = Number.isSafeInteger(task.updated_at) ? Number(task.updated_at) : undefined;
+        await updateTask(db, owner, taskId, { status: "failed", error: "deliverable_missing", checkpoint: { ...checkpoint, done: true, leaseUntil: 0 }, usage: usageView(usage), updated_at: now() }, "running", expectedAt);
+        return { status: "failed", error: "deliverable_missing", toolRounds, usage, providerId: provider.id, model };
+      }
+      let deliveredChars = 0;
+      for (const row of artifacts) {
+        try {
+          const inline = typeof row.inline === "string" ? JSON.parse(row.inline) as Row : row.inline as Row;
+          if (inline && typeof inline.text === "string") deliveredChars += inline.text.length;
+        } catch { /* 忽略不可解析产物 */ }
+      }
+      const targetMatch = /(\d+)\s*万\s*字|五万/.exec(intentText);
+      const targetChars = targetMatch ? (targetMatch[1] ? Number(targetMatch[1]) * 10_000 : 50_000) : 0;
+      const partialNote = targetChars && deliveredChars < targetChars * 0.8
+        ? `当前已生成 ${artifacts.length} 个产物、正文约 ${deliveredChars.toLocaleString()} 字；目标约 ${targetChars.toLocaleString()} 字，尚未完成。请确认是否继续分节生成。`
+        : "";
+      const summary = (partialNote ? `${partialNote}\n\n` : "") + (truncated ? `${finalText}\n\n（输出达到长度上限，已截断）` : finalText);
+      const result = { summary: summary.slice(0, 12_000), artifactIds: artifacts.map(row => text(row.id)).filter(Boolean), ...(partialNote ? { partial: true, completion: { state: "partial", reason: "length_target_not_met" } } : {}) };
       const finalCheckpoint = {
         ...checkpoint, messages: history, images: checkpoint.images, toolRounds, usage, stage,
         attempts: 0, leaseUntil: 0, done: true,
