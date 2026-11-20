@@ -200,6 +200,7 @@ const SERVER_SYSTEM_PROMPT = [
   "【长文】用户要求万字/长篇/完整计划时，先 create_plan 列章节，再按章节多次调用 create_document（带 section/totalSections），每轮推进 1-2 节；严禁未生成正文就宣称完成；达到上限时说明已交付章节与下一节计划。",
   "【模块权限】你可以读取与修改信息中心(inbox)、任务与目标(daily)、机会中心(opportunities)、个人画像(profile)。修改前先 list_domain 确认目标，只有用户明确要求才 save/update；没有明确指令不得擅自改动用户数据。日历安排用 create_daily_task（含 dueAt）写入，不要声称没有接口。",
   "【澄清】信息不明确、需要用户选择方向、或要确认验收标准/执行步骤时，调用 ask_user 暂停并给出 2-4 个可选项；不要自行猜测后闷头执行。",
+  "【计划门】复杂/长任务先调用 ask_user，带 plan（goal/steps/acceptance）和选项「按此计划执行/调整章节/只输出大纲」，用户批准后再 create_plan 与生成产物。",
   "【收尾】任务完成或信息不足时，用中文给出简洁、可执行的总结；不要输出工具调用格式的文本。",
 ].join("\n");
 
@@ -246,6 +247,7 @@ const TOOL_DEFS = [
         properties: {
           question: { type: "string", description: "要向用户确认的问题" },
           options: { type: "array", items: { type: "string" }, description: "2-4 个可选项" },
+          plan: { type: "object", description: "可选计划 {goal,steps,acceptance}，用于先让用户确认大纲与验收标准" },
         },
         required: ["question"],
         additionalProperties: false,
@@ -1336,7 +1338,15 @@ async function executeTool(ctx: ToolContext, name: string, args: Row): Promise<R
   switch (name) {
     case "save_to_inbox": return await saveDomain(ctx, "inbox", args, "已保存到 Inbox");
     case "create_daily_task": return await saveDomain(ctx, "daily", args, "已创建日常任务");
-    case "ask_user": return { ok: true, askUser: true, question: asString(args.question, 1000) || "需要你的确认", options: Array.isArray(args.options) ? args.options.slice(0, 4).map(v => asString(v, 300)).filter(Boolean) : [] };
+    case "ask_user": {
+      const rawPlan = args.plan && typeof args.plan === "object" && !Array.isArray(args.plan) ? args.plan as Row : null;
+      const plan = rawPlan ? {
+        goal: asString(rawPlan.goal, 1000),
+        steps: Array.isArray(rawPlan.steps) ? rawPlan.steps.slice(0, 20).map(v => asString(v, 500)).filter(Boolean) : [],
+        acceptance: Array.isArray(rawPlan.acceptance) ? rawPlan.acceptance.slice(0, 12).map(v => asString(v, 500)).filter(Boolean) : [],
+      } : undefined;
+      return { ok: true, askUser: true, question: asString(args.question, 1000) || "需要你的确认", options: Array.isArray(args.options) ? args.options.slice(0, 4).map(v => asString(v, 300)).filter(Boolean) : [], ...(plan ? { plan } : {}) };
+    }
     case "list_domain": return await listDomain(ctx, args);
     case "update_domain": return await updateDomain(ctx, args);
     case "save_opportunity":
@@ -1832,11 +1842,13 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
     if (ask) {
       const question = text(ask.output.question) || "需要你的确认";
       const options = Array.isArray(ask.output.options) ? ask.output.options.map(item => text(item)).filter(Boolean).slice(0, 4) : [];
-      await saveAssistantNote(db, owner, task, `【需要你的确认】\n${question}${options.length ? `\n可选：${options.join(" / ")}` : ""}`, "ask");
-      await appendEvent(db, owner, task, "ask.user", { question, options });
+      const plan = ask.output.plan && typeof ask.output.plan === "object" && !Array.isArray(ask.output.plan) ? ask.output.plan as Row : null;
+      const planText = plan ? `\n目标：${text(plan.goal)}\n步骤：${(Array.isArray(plan.steps) ? plan.steps : []).map((v: unknown, i: number) => `${i + 1}. ${text(v)}`).join(" ")}\n验收：${(Array.isArray(plan.acceptance) ? plan.acceptance : []).map((v: unknown) => text(v)).join("；")}` : "";
+      await saveAssistantNote(db, owner, task, `【需要你的确认】\n${question}${planText}${options.length ? `\n可选：${options.join(" / ")}` : ""}`, "ask");
+      await appendEvent(db, owner, task, "ask.user", { question, options, ...(plan ? { plan } : {}) });
       await appendEvent(db, owner, task, "run.summary", { rounds: toolRounds, toolCalls: usage.toolCalls, tokens: usage.tokens, input: usage.inputTokens, output: usage.outputTokens, costUsd: null, providerId: provider.id, model, stopReason: "needs_input" });
       const expectedAt = Number.isSafeInteger(task.updated_at) ? Number(task.updated_at) : undefined;
-      await updateTask(db, owner, taskId, { status: "needs_input", result: { summary: question, artifactIds: [] }, error: null, checkpoint: { ...checkpoint, done: true, leaseUntil: 0 }, usage: usageView(usage), updated_at: now() }, "running", expectedAt);
+      await updateTask(db, owner, taskId, { status: "needs_input", result: { summary: `${question}${planText}`, artifactIds: [] }, error: null, checkpoint: { ...checkpoint, done: true, leaseUntil: 0 }, usage: usageView(usage), updated_at: now() }, "running", expectedAt);
       return { status: "needs_input", summary: question, toolRounds, usage, providerId: provider.id, model };
     }
     await appendEvents(db, owner, task, prepared.map(({ call }, index) => ({
