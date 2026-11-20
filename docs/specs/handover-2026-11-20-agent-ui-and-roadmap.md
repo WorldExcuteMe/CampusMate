@@ -591,3 +591,8 @@ node scripts/build-sites.mjs
 - 改用 `qca-managed` 平台管理客户端读取 `/api/v1/cloud/models`，并返回 `configuredModel`、`modelsRaw`、`modelsError`。
 - server-model 同会话上下文修复：createTask 读取最近 20 条消息写入 checkpoint（见 §24）；Cloud Agents 复用平台 Session。
 - 发布 action `50331d5e-b8fc-4e83-95a9-37d39eb279fa`。
+## 26. Cloud 模型闸门放宽（2026-11-20，第十四轮）
+
+- `/v1/cloud-status` 显示平台模型目录：`auto/ultimate/fast/efficient/smodel/cmodel/qmodel_latest/...` 均存在，但全部 `is_enabled:false`；`ultimate` 支持 1M 上下文、efforts 到 max。
+- 判断 `is_enabled` 是控制台启用状态，不应由我们直接判定不可用；`checkModel` 改为只要目录中存在配置模型即通过，真实可用性以创建 Agent/Session 的响应为准。
+- 发布 action `97507b4b-3613-4268-8eb3-a98853b83bbe`；若平台硬性拒绝，会返回 `ai_access_denied`/`ai_model_not_enabled`，据此再决定是否需在 Qoder 控制台启用模型。
