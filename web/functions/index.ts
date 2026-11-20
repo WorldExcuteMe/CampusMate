@@ -6,6 +6,7 @@ import { createDatabaseClient, createSiteContext, requireUser, errorResponse } f
 import { CAMPUSMATE_SITES } from "./sites-config.ts";
 import { createProductionSites } from "./sites-production.ts";
 import { createCloudAgentsClient } from "./cloud-agents.ts";
+import { createCloudAgentsClient as createManagedCloudClient } from "./qca-managed.mjs";
 import { createSitesV1, type SitesV1Cloud } from "./sites-v1.ts";
 import { createServerModelExecutor, createUserKeyVault, SERVER_PROVIDERS } from "./sites-exec.ts";
 
@@ -96,7 +97,7 @@ Deno.serve(async request => {
       try {
         requireUser(context);
         const binding = await platform.resolveBinding();
-        return Response.json({ ok: true, tokenPresent, agentId: binding.agent.id.slice(0, 12), agentVersion: binding.agent.version, environmentId: binding.environmentId.slice(0, 12) });
+        return Response.json({ ok: true, tokenPresent, configuredModel: CAMPUSMATE_SITES.model, agentId: binding.agent.id.slice(0, 12), agentVersion: binding.agent.version, environmentId: binding.environmentId.slice(0, 12) });
       } catch (error) {
         const code = error && typeof error === "object" && "message" in error ? String((error as { message: unknown }).message) : "unknown";
         const status = error && typeof error === "object" && "status" in error ? Number((error as { status: unknown }).status) : 503;
@@ -105,7 +106,8 @@ Deno.serve(async request => {
         let modelsRaw: unknown[] = [];
         let modelsError = "";
         try {
-          const client = createCloudAgentsClient({ accessToken: getToken() ?? "", baseUrl: CAMPUSMATE_SITES.cloudAgentsApiOrigin, fetch });
+          // 模型列表属于平台管理客户端（带 request 方法），业务 SSE 客户端没有该 API。
+          const client = createManagedCloudClient({ origin: CAMPUSMATE_SITES.cloudAgentsApiOrigin, getToken, fetchImpl: fetch });
           const list = await client.request("/api/v1/cloud/models") as { data?: unknown[] };
           modelsRaw = Array.isArray(list.data) ? list.data.slice(0, 10) : [];
           models = (Array.isArray(list.data) ? list.data : []).flatMap(item => {
@@ -116,7 +118,7 @@ Deno.serve(async request => {
         } catch (error) {
           modelsError = error && typeof error === "object" && "message" in error ? String((error as { message: unknown }).message) : "unknown";
         }
-        return Response.json({ ok: false, tokenPresent, code, status, models, modelsRaw, modelsError }, { status: 200 });
+        return Response.json({ ok: false, tokenPresent, configuredModel: CAMPUSMATE_SITES.model, code, status, models, modelsRaw, modelsError }, { status: 200 });
       }
     }
     if (/(?:^|\/)v1(?:\/|$)/.test(pathname)) return await v1(context);

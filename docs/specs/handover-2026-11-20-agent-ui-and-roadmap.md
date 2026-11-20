@@ -585,3 +585,9 @@ node scripts/build-sites.mjs
 - Cloud Agents：`/v1/cloud-status` 返回 `ai_model_not_enabled`、`tokenPresent=true`、`models=[]`。已将模型校验改为“仅显式 is_enabled=false 才拒绝”，并让诊断端点返回 `modelsRaw` 与 `modelsError`，便于确认平台模型列表响应结构/权限。
 - 测试：`493` 项通过（新增同会话历史注入用例）。
 - 发布：action `361de372-b629-46bf-aded-80a5f23a5340`，`publication_completed`。
+## 25. Cloud 模型诊断修正（2026-11-20，第十三轮）
+
+- 上一轮 `/v1/cloud-status` 的 `modelsError: client.request is not a function` 是诊断代码用错客户端：业务 SSE 客户端没有 `request`。
+- 改用 `qca-managed` 平台管理客户端读取 `/api/v1/cloud/models`，并返回 `configuredModel`、`modelsRaw`、`modelsError`。
+- server-model 同会话上下文修复：createTask 读取最近 20 条消息写入 checkpoint（见 §24）；Cloud Agents 复用平台 Session。
+- 发布 action `50331d5e-b8fc-4e83-95a9-37d39eb279fa`。
