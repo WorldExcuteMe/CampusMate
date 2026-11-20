@@ -75,9 +75,19 @@ for (const theme of ["light", "dark"] as const) {
 test("视觉基线 · 功能页浅色", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await seed(page, "light");
-  for (const [route, name] of [["/app", "dashboard"], ["/app/inbox", "inbox"], ["/app/calendar", "calendar"]] as const) {
+  for (const [route, name] of [["/app", "dashboard"], ["/app/inbox", "inbox"], ["/app/calendar", "calendar"], ["/app/radar", "radar"], ["/app/daily", "daily"], ["/app/trust", "trust"], ["/app/growth", "growth"], ["/app/profile", "profile"]] as const) {
     await page.goto(route);
     await page.waitForTimeout(500);
+    await page.screenshot({ path: path.join(OUT, `${name}-light-1440.png`) });
+  }
+});
+
+test("视觉基线 · 入口页浅色", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await seed(page, "light");
+  for (const [route, name] of [["/", "landing"], ["/login", "login"]] as const) {
+    await page.goto(route);
+    await page.waitForTimeout(400);
     await page.screenshot({ path: path.join(OUT, `${name}-light-1440.png`) });
   }
 });
