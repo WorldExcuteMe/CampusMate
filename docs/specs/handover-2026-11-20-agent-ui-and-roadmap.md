@@ -688,3 +688,11 @@ node scripts/build-sites.mjs
 - 侧边栏 ask 面板渲染目标、步骤、验收项与选项按钮；点击选项填入输入框。
 - 与前序能力串联：跨轮文档保留、阶段结论持久化、分节生成、交付校验，形成完整长任务 workflow。
 - 测试：496 项通过；视觉 7/7。最终发布 action `f9531ed0-0608-4289-aa5b-9c6f6b6229c9`。
+## 38. 通用课表导入（2026-11-21，第二十六轮）
+
+- 调研国内高校/课表工具常见形式：Excel 网格或列表、PDF/图片、教务系统页面；通用字段为课程名、星期、起止节次、起止周、单双周/分段周、教室、校区、教师、学期开始日期与作息时间。
+- 通用模型：term {id,name,startDate,endDate,totalWeeks,timezone,periods[{index,startTime,endTime}]}；schedule {id,termId,courseName,weekday,startTime,endTime,startWeek,endWeek,weekPattern,classroom,campus,teacher}。
+- 数据层：复用 campusmate_settings.timetable（无需迁移），新增 `/v1/terms` GET/POST 与 `/v1/schedules?termId`；CalendarPage 现在能读取云端课表。
+- Agent：新增 `list_timetable` 与 `import_timetable`；支持默认 12 节作息、用户自定义 periods、分段/单双周；缺开学日期时返回 start_date_required 并用 ask_user 询问；导入后回报课程数。
+- XLSX 附件由服务端解析为 TSV，agent 解析后写入。
+- 测试：496 项通过；视觉 7/7。发布 action `3198270e-25f4-45f9-ae7e-b019d95c2f45`。

@@ -993,6 +993,33 @@ export function createSitesV1(deps: SitesV1Deps) {
     return [...merged.values()].slice(0, 8);
   }
 
+  // 课表数据复用 settings JSON，避免额外迁移；terms/schedules 按 owner 隔离。
+  async function readTimetable(owner: string): Promise<{ terms: Row[]; schedules: Row[]; data: Row; revision: number; exists: boolean }> {
+    const rows = await selectRows(settings, [["owner_id", owner]], "data,revision", 1);
+    const data = rows.length ? jsonObject(rows[0].data) : {};
+    const timetable = data.timetable && typeof data.timetable === "object" && !Array.isArray(data.timetable) ? data.timetable as Row : {};
+    return {
+      terms: Array.isArray(timetable.terms) ? timetable.terms as Row[] : [],
+      schedules: Array.isArray(timetable.schedules) ? timetable.schedules as Row[] : [],
+      data, revision: rows.length ? integerOr(rows[0].revision) : 0, exists: rows.length > 0,
+    };
+  }
+  async function writeTimetable(owner: string, terms: Row[], schedules: Row[]): Promise<void> {
+    const current = await readTimetable(owner);
+    const data = { ...current.data, timetable: { terms, schedules } };
+    const at = Date.now();
+    if (!current.exists) {
+      await insertRow(settings, { owner_id: owner, data, revision: 0, updated_at: at }, "owner_id");
+      return;
+    }
+    const changed = await updateRows(settings, { data, revision: current.revision + 1, updated_at: at }, [["owner_id", owner], ["revision", current.revision]]);
+    if (!changed.length) {
+      const latest = await selectRows(settings, [["owner_id", owner]], "revision", 1);
+      const revision = latest.length ? integerOr(latest[0].revision) : 0;
+      await updateRows(settings, { data, revision: revision + 1, updated_at: at }, [["owner_id", owner], ["revision", revision]]);
+    }
+  }
+
   async function createTaskRoute(owner: string, request: Request): Promise<Response> {
     const data = await readJson(request, maxTaskBody);
     onlyFields(data, ["title", "intent", "sessionId", "turnId", "images", "documents", "providerId", "reasoning", "contextLimit"]);
@@ -1601,6 +1628,32 @@ export function createSitesV1(deps: SitesV1Deps) {
           });
         }
         return json(200, { artifact: artifactView(artifact, inline), availableFormats: availableFormats(artifactSource(artifact)) });
+      }
+
+      // 课表：terms 与 schedules（学期、课程规则）
+      if (route === "/terms" && request.method === "GET") {
+        const timetable = await readTimetable(owner);
+        return json(200, { terms: timetable.terms });
+      }
+      if (route === "/terms" && request.method === "POST") {
+        const data = await readJson(request);
+        onlyFields(data, ["name", "startDate", "endDate", "totalWeeks", "timezone", "weekAnchor", "periods"]);
+        const name = clampText(data.name, 120);
+        const startDate = clampText(data.startDate, 10);
+        if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) throw new AppError(400, "invalid_term");
+        const totalWeeks = boundedNumber(data.totalWeeks, 20, 40);
+        const start = Date.parse(startDate + "T00:00:00Z");
+        const endDate = /^\d{4}-\d{2}-\d{2}$/.test(clampText(data.endDate, 10)) ? clampText(data.endDate, 10) : new Date(start + (totalWeeks * 7 - 1) * 86_400_000).toISOString().slice(0, 10);
+        const id = "term_" + (await sha256Text(owner + "\n" + name + "\n" + startDate)).slice(0, 20);
+        const term = { id, name, startDate, endDate, totalWeeks, timezone: clampText(data.timezone, 60) || "Asia/Shanghai", ...(typeof data.weekAnchor === "string" ? { weekAnchor: data.weekAnchor.slice(0, 10) } : {}), ...(Array.isArray(data.periods) ? { periods: data.periods.slice(0, 30) } : {}) };
+        const timetable = await readTimetable(owner);
+        await writeTimetable(owner, [...timetable.terms.filter(item => textOf(item.id) !== id), term], timetable.schedules);
+        return json(201, { term });
+      }
+      if (route === "/schedules" && request.method === "GET") {
+        const termId = url.searchParams.get("termId") ?? "";
+        const timetable = await readTimetable(owner);
+        return json(200, { schedules: termId ? timetable.schedules.filter(item => textOf(item.termId) === termId) : timetable.schedules, exceptions: [], schemes: [] });
       }
 
       // 托管 Provider（只读）+ 用户 BYOK（可写）

@@ -179,6 +179,7 @@ const CHECKPOINT_LEASE_MS = 60_000;
 const TASKS = "campusmate_tasks";
 const EVENTS = "campusmate_events";
 const MESSAGES = "campusmate_messages";
+const SETTINGS = "campusmate_settings";
 const SECRETS = "campusmate_secrets";
 const ARTIFACTS = "campusmate_artifacts";
 const INBOX = "campusmate_inbox";
@@ -201,6 +202,7 @@ const SERVER_SYSTEM_PROMPT = [
   "【模块权限】你可以读取与修改信息中心(inbox)、任务与目标(daily)、机会中心(opportunities)、个人画像(profile)。修改前先 list_domain 确认目标，只有用户明确要求才 save/update；没有明确指令不得擅自改动用户数据。日历安排用 create_daily_task（含 dueAt）写入，不要声称没有接口。",
   "【澄清】信息不明确、需要用户选择方向、或要确认验收标准/执行步骤时，调用 ask_user 暂停并给出 2-4 个可选项；不要自行猜测后闷头执行。",
   "【计划门】复杂/长任务先调用 ask_user，带 plan（goal/steps/acceptance）和选项「按此计划执行/调整章节/只输出大纲」，用户批准后再 create_plan 与生成产物。",
+  "【课表】用户上传课表（XLSX/PDF/图片/文本）时先 read_attachment，解析课程、周次、单双周、节次、教室；缺少开学日期或作息时间先用 ask_user 询问；确认后调用 import_timetable 写入日历，并回报导入数量。",
   "【收尾】任务完成或信息不足时，用中文给出简洁、可执行的总结；不要输出工具调用格式的文本。",
 ].join("\n");
 
@@ -250,6 +252,31 @@ const TOOL_DEFS = [
           plan: { type: "object", description: "可选计划 {goal,steps,acceptance}，用于先让用户确认大纲与验收标准" },
         },
         required: ["question"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_timetable",
+      description: "读取当前用户的学期与课程表规则。",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "import_timetable",
+      description: "把解析后的课程表写入校园日历；需要学期开始日期与节次时间。",
+      parameters: {
+        type: "object",
+        properties: {
+          term: { type: "object", description: "学期 {name,startDate,totalWeeks,timezone?,periods?[{index,startTime,endTime}]}" },
+          courses: { type: "array", description: "课程 [{courseName,weekday,startPeriod,endPeriod,startWeek,endWeek,weekPattern,classroom?,campus?,teacher?}]" },
+          replace: { type: "boolean", description: "是否替换该学期已有课程，默认 true" },
+        },
+        required: ["term", "courses"],
         additionalProperties: false,
       },
     },
@@ -1040,6 +1067,74 @@ async function saveDomain(ctx: ToolContext, kind: "inbox" | "daily" | "opportuni
   return { ok: true, summary, id, output: data };
 }
 
+const DEFAULT_PERIODS = [
+  { index: 1, startTime: "08:00", endTime: "08:45" }, { index: 2, startTime: "08:55", endTime: "09:40" },
+  { index: 3, startTime: "10:00", endTime: "10:45" }, { index: 4, startTime: "10:55", endTime: "11:40" },
+  { index: 5, startTime: "14:00", endTime: "14:45" }, { index: 6, startTime: "14:55", endTime: "15:40" },
+  { index: 7, startTime: "16:00", endTime: "16:45" }, { index: 8, startTime: "16:55", endTime: "17:40" },
+  { index: 9, startTime: "19:00", endTime: "19:45" }, { index: 10, startTime: "19:55", endTime: "20:40" },
+  { index: 11, startTime: "20:50", endTime: "21:35" }, { index: 12, startTime: "21:45", endTime: "22:30" },
+];
+async function readSettingsData(ctx: ToolContext): Promise<{ data: Row; revision: number; exists: boolean }> {
+  const rows = resultRows(await ctx.db.from(SETTINGS).select("data,revision").eq("owner_id", ctx.owner).limit(1));
+  return { data: rows.length && rows[0].data && typeof rows[0].data === "object" && !Array.isArray(rows[0].data) ? rows[0].data as Row : {}, revision: rows.length && Number.isSafeInteger(rows[0].revision) ? Number(rows[0].revision) : 0, exists: rows.length > 0 };
+}
+async function writeSettingsData(ctx: ToolContext, data: Row, revision: number, exists: boolean): Promise<void> {
+  if (!exists) { await ctx.db.from(SETTINGS).insertIfAbsent({ owner_id: ctx.owner, data, revision: 0, updated_at: ctx.now() }, { onConflict: "owner_id" }).select("owner_id"); return; }
+  await ctx.db.from(SETTINGS).update({ data, revision: revision + 1, updated_at: ctx.now() }).eq("owner_id", ctx.owner).eq("revision", revision);
+}
+async function listTimetable(ctx: ToolContext): Promise<Row> {
+  const settings = await readSettingsData(ctx);
+  const timetable = settings.data.timetable && typeof settings.data.timetable === "object" && !Array.isArray(settings.data.timetable) ? settings.data.timetable as Row : {};
+  return { ok: true, terms: Array.isArray(timetable.terms) ? timetable.terms : [], schedules: Array.isArray(timetable.schedules) ? timetable.schedules : [] };
+}
+async function importTimetable(ctx: ToolContext, args: Row): Promise<Row> {
+  const termInput = args.term && typeof args.term === "object" && !Array.isArray(args.term) ? args.term as Row : null;
+  const courses = Array.isArray(args.courses) ? args.courses.slice(0, 200) : [];
+  if (!termInput || !courses.length) return { ok: false, error: "term_and_courses_required" };
+  const startDate = asString(termInput.startDate, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return { ok: false, error: "start_date_required", hint: "请先用 ask_user 询问学期开学日期（YYYY-MM-DD）" };
+  const totalWeeks = Math.min(40, Math.max(1, Math.round(Number(termInput.totalWeeks) || 20)));
+  const start = Date.parse(startDate + "T00:00:00Z");
+  if (!Number.isFinite(start)) return { ok: false, error: "invalid_start_date" };
+  const endDate = new Date(start + (totalWeeks * 7 - 1) * 86_400_000).toISOString().slice(0, 10);
+  const rawPeriods = Array.isArray(termInput.periods) ? termInput.periods : [];
+  const periodMap = new Map<number, { startTime: string; endTime: string }>();
+  for (const period of DEFAULT_PERIODS) periodMap.set(period.index, { startTime: period.startTime, endTime: period.endTime });
+  for (const raw of rawPeriods) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const item = raw as Row; const index = Math.round(Number(item.index) || 0);
+    const startTime = asString(item.startTime, 5), endTime = asString(item.endTime, 5);
+    if (index > 0 && /^\d{2}:\d{2}$/.test(startTime) && /^\d{2}:\d{2}$/.test(endTime)) periodMap.set(index, { startTime, endTime });
+  }
+  const termName = asString(termInput.name, 120) || "当前学期";
+  const termId = "term_" + (await sha256Hex(ctx.owner + "\n" + termName + "\n" + startDate)).slice(0, 20);
+  const term = { id: termId, name: termName, startDate, endDate, totalWeeks, timezone: asString(termInput.timezone, 60) || "Asia/Shanghai", periods: [...periodMap.entries()].sort((a, b) => a[0] - b[0]).map(([index, value]) => ({ index, ...value })) };
+  const normalized = courses.flatMap(raw => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const item = raw as Row;
+    const courseName = asString(item.courseName, 200);
+    const weekday = Math.round(Number(item.weekday) || 0);
+    if (!courseName || weekday < 1 || weekday > 7) return [];
+    const startPeriod = Math.max(1, Math.round(Number(item.startPeriod) || 1));
+    const endPeriod = Math.max(startPeriod, Math.round(Number(item.endPeriod) || startPeriod));
+    const startWeek = Math.max(1, Math.round(Number(item.startWeek) || 1));
+    const endWeek = Math.min(totalWeeks, Math.max(startWeek, Math.round(Number(item.endWeek) || totalWeeks)));
+    const pattern = item.weekPattern === "odd" || item.weekPattern === "even" ? item.weekPattern : "every";
+    const startTime = asString(item.startTime, 5) || periodMap.get(startPeriod)?.startTime || "08:00";
+    const endTime = asString(item.endTime, 5) || periodMap.get(endPeriod)?.endTime || startTime;
+    return [{ id: "course_" + (ctx.taskId + courseName + weekday + startPeriod + startWeek + startTime).slice(-24), termId, courseName, weekday, startTime, endTime, startWeek, endWeek, weekPattern: pattern, ...(item.classroom ? { classroom: asString(item.classroom, 120) } : {}), ...(item.campus ? { campus: asString(item.campus, 120) } : {}), ...(item.teacher ? { teacher: asString(item.teacher, 120) } : {}) }];
+  });
+  if (!normalized.length) return { ok: false, error: "no_valid_courses" };
+  const settings = await readSettingsData(ctx);
+  const timetable = settings.data.timetable && typeof settings.data.timetable === "object" && !Array.isArray(settings.data.timetable) ? settings.data.timetable as Row : {};
+  const replace = args.replace !== false;
+  const existingSchedules = Array.isArray(timetable.schedules) ? timetable.schedules as Row[] : [];
+  const keep = replace ? existingSchedules.filter(item => text(item.termId) !== termId) : existingSchedules;
+  const terms = Array.isArray(timetable.terms) ? (timetable.terms as Row[]).filter(item => text(item.id) !== termId) : [];
+  await writeSettingsData(ctx, { ...settings.data, timetable: { terms: [...terms, term], schedules: [...keep, ...normalized] } }, settings.revision, settings.exists);
+  return { ok: true, summary: `已导入 ${normalized.length} 门课程到「${termName}」`, term, imported: normalized.length };
+}
 async function listDomain(ctx: ToolContext, args: Row): Promise<Row> {
   const kind = asString(args.kind, 30) as "inbox" | "daily" | "opportunities";
   const tables = { inbox: INBOX, daily: DAILY, opportunities: OPPORTUNITIES };
@@ -1347,6 +1442,8 @@ async function executeTool(ctx: ToolContext, name: string, args: Row): Promise<R
       } : undefined;
       return { ok: true, askUser: true, question: asString(args.question, 1000) || "需要你的确认", options: Array.isArray(args.options) ? args.options.slice(0, 4).map(v => asString(v, 300)).filter(Boolean) : [], ...(plan ? { plan } : {}) };
     }
+    case "list_timetable": return await listTimetable(ctx);
+    case "import_timetable": return await importTimetable(ctx, args);
     case "list_domain": return await listDomain(ctx, args);
     case "update_domain": return await updateDomain(ctx, args);
     case "save_opportunity":
