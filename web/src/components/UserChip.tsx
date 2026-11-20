@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import { ChevronUp, GraduationCap, LogIn, LogOut, Settings, UserRound } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
 import { useRepository } from "@/app/auth";
 import { signOut, useAuth } from "@/app/auth";
+import { runtime } from "@/app/config";
 import { cn } from "@/lib/utils";
 
 // 左下角已登录用户芯片：头像+名字，展开显示画像摘要与设置/退出入口（DSH 左下角用户区理念）。
@@ -17,9 +19,26 @@ export function UserChip() {
   const [open, setOpen] = useState(false);
   const go = (path: string) => { setOpen(false); nav(path); };
   const { data: profile } = useQuery({ queryKey: ["profile", session?.user.id ?? "demo"], queryFn: () => repository.getProfile() });
-  const name = session?.user?.email?.split("@")[0] || profile?.name || "演示用户";
+  const name = session?.user?.email?.split("@")[0] || profile?.name || (session ? "Qoder 用户" : "演示用户");
   const initial = (name || "U").slice(0, 1).toUpperCase();
-  const sub = session ? session.user?.email : "Demo · 本地演示数据";
+  const sub = session
+    ? session.user?.email || (runtime === "cloud" ? "Qoder 账号" : "")
+    : "Demo · 本地演示数据";
+
+  async function handleSignOut() {
+    setOpen(false);
+    const result = await signOut();
+    if (result.ok) {
+      if (runtime === "cloud") window.location.assign("/login");
+      return;
+    }
+    toast.error(result.message ?? "退出失败", result.accountUrl ? {
+      action: {
+        label: "Qoder 账户",
+        onClick: () => window.open(result.accountUrl!, "_blank", "noopener,noreferrer"),
+      },
+    } : undefined);
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -79,7 +98,7 @@ export function UserChip() {
           {session ? (
             <button
               className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm text-destructive hover:bg-destructive/10"
-              onClick={() => { setOpen(false); void signOut(); }}
+              onClick={() => void handleSignOut()}
             >
               <LogOut className="size-4" /> 退出登录
             </button>

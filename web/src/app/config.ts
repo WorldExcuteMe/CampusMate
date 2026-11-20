@@ -6,6 +6,9 @@ import { localWorkspaceIdentity } from "@/lib/agent/local-workspace";
 
 const env = import.meta.env as Record<string, string | undefined>;
 
+export const runtime = env.VITE_RUNTIME ?? "local";
+export const isCloudRuntime = runtime === "cloud";
+
 export const appConfig = {
   supabaseUrl: env.VITE_SUPABASE_URL,
   supabaseAnonKey: env.VITE_SUPABASE_ANON_KEY,
@@ -13,7 +16,7 @@ export const appConfig = {
 
 export const isDemo = !appConfig.supabaseUrl || !appConfig.supabaseAnonKey;
 
-export const supabaseClient: SupabaseClient | null = isDemo || localWorkspaceIdentity()
+export const supabaseClient: SupabaseClient | null = isCloudRuntime || isDemo || localWorkspaceIdentity()
   ? null
   : createSupabaseClient(appConfig.supabaseUrl!, appConfig.supabaseAnonKey!);
 

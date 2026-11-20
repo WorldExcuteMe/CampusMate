@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 vi.mock('@/lib/agent/draft-persistence', async original => ({ ...await original<object>(), createDraftPersistence: (await import('@/test-utils/draft-persistence')).uiDraftPersistence }));
 import { resetUIDrafts, uiDraftPersistence } from '@/test-utils/draft-persistence';
 vi.mock("@/app/auth", () => ({ useRepository: () => ({getProfile:async()=>({id:"alice",major:"计算机",grade:"大二",interests:[],skills:[],goals:[]})}), useAuth: () => ({ session: { user: { id: "alice" } } }) }));
-vi.mock("@/app/config", () => ({ repository: { getProfile: async () => ({ id: "alice", major: "计算机", grade: "大二", interests: [], skills: [], goals: [] }) }, supabaseClient: { auth: { getSession: async () => ({ data: { session: { access_token: "fixture-token" } } }) } } }));
+vi.mock("@/app/config", () => ({ runtime: "local", isCloudRuntime: false, repository: { getProfile: async () => ({ id: "alice", major: "计算机", grade: "大二", interests: [], skills: [], goals: [] }) }, supabaseClient: { auth: { getSession: async () => ({ data: { session: { access_token: "fixture-token" } } }) } } }));
 import { SessionsProvider } from "@/lib/agent/sessions-context";
 import { AgentChatPage } from "./AgentChatPage";
 import { newSession, saveSessions, loadSessions } from "@/lib/agent/sessions";

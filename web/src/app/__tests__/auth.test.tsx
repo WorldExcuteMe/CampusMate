@@ -9,7 +9,7 @@ const state = vi.hoisted(() => ({
   listener: null as null | ((event: string, session: Session | null) => void),
   pendingB: null as null | Promise<{ name: string }>,
 }));
-vi.mock("../config", () => ({ supabaseClient: { auth: {
+vi.mock("../config", () => ({ runtime: "local", isCloudRuntime: false, supabaseClient: { auth: {
   getSession: state.getSession,
   onAuthStateChange: (listener: typeof state.listener) => {
     state.listener = listener;

@@ -482,3 +482,56 @@ npx --yes --package @qoder-ai/qodercli@1.1.93 -- qoder login
 - 构建/探针：`web/scripts/build-sites.mjs`、`web/scripts/probe-cloud-agents.mjs`
 - 本轮结果目录：`.local/sites/`（四份只读回执）
 - 视觉输出：`web/test-results/visual/`、`web/test-results/sites-p0/`；`docs/design/visual-baseline/` 仅为历史基线，本轮未归档
+## 17. 发布受阻根因证实与私有部署完成（2026-11-20，第五轮）
+
+- 更正第16节：int32/u64 版本上限假设已被对照实验否定；当时未部署未发布的状态已被本轮改变。
+- 对照实验（CLI 1.1.93，回执存 .local/sites/）：会话凭据作用域内 prepare_site 多次返回 sites_invalid_request（exit 2、无字段细节）；未绑定 cwd 直接调用返回 sites_current_session_required；派生 -p 会话间歇 sites_auth_required。改为本地登录+绑定 projectRoot 的直接 CLI 调用后：none 对照草稿被接受（0869bf59，未发布）；read_write+新读 schemaRef 完整草稿也被接受（ab4ae9c6）。包体/路径/项目/函数打包/数据库依赖均合法，拒绝只与会话作用域执行路径绑定。
+- bundle 只读定位：prepare 将密封 schemaRef 的 version 经 Number() 注入 requiredSchemaVersion（zod 上限 int32），密封读写按 client scope 隔离；与会话/本地作用域错配致校验失败的现象一致，内部映射未对外暴露，不作过度断言。
+- 私有部署完成：verification 01a1f7a0-ed54-790e-955a-a34efdd5ddec 与 publish 01a1f7a2-96de-785d-b786-d5052e3d95e9 均 succeeded；published=true、readiness=publication_completed；hasPublishedContent=true、access_mode=private、functions[app].is_active=true、database_access=read_write。
+- 地址 https://campusmate-agent-d6ec0v7a94m.qoder.website（私有，需 Qoder 登录）。未验证：真实浏览器登录与通知到文档黄金流（浏览器 MCP 不可用）；公开访问未开启，需另行确认。
+- 恢复规则：Sites 写操作优先用绑定 projectRoot 的直接 CLI 本地登录调用；派生会话路径仅作只读调查。诊断草稿 0869bf59 保持未发布；描述符现指向已发布 ab4ae9c6。
+- 证据：.local/sites/block-diagnosis.json、control-none.log、control-rw.log、publish-status-final.json、site-final.json、publish-operation.json。
+
+## 18. 完整应用公开部署与双运行时完成（2026-11-20，第六轮）
+
+### 18.1 交付结果
+
+- 公开地址：https://campusmate-agent-d6ec0v7a94m.qoder.website/（根路径为落地页；应用入口 `/app/`，Qoder 登录入口 `/login/`）。
+- 同一部署双态：匿名 = Demo（预置数据，本地渲染）；Qoder 登录后 = 个人空间（同源 cookie + 网关注入身份，`/v1/*` 按 owner 隔离）。
+- 最后一版发布：action `0e3e2719-ff89-47b5-aa11-9f431afebfa4`，publish operation `01a1f813-...`，`get_publish_status` = `publication_completed`，`published=true`；访问策略已切 `public`（`confirmPublic=true`）。
+- 静态路由回退：平台只对“目录/尾斜杠”回退 `index.html`，`web/scripts/spa-fallbacks.mjs` 在构建后为 12 个已知路由生成 `index.html`；直链请使用 `/app/`、`/app/inbox/` 等带尾斜杠形式，`/app`（无斜杠）会 404。
+
+### 18.2 运行时
+
+- `cloud-agents`：平台托管模型（Qoder Cloud Agents，PAT 由平台注入 `QODER_PAT`），会话懒创建并绑定同一 Agent/Environment；`createProductionSites` 暴露 `resolveBinding()` 供 v1 复用。
+- `server-model`：服务端免费模型 `srv-qwen38`（Qwen3.8-27B，low/medium/xhigh，默认 xhigh）、`srv-mimo`（MiMo-V2.6-Flash，low..max，minimal→low）、`srv-moss`（nex-n2.6，minimal..max）；Edge 分步执行器每请求 ≤4 工具轮，checkpoint + lease CAS 续跑，SSE 有界 12 步/50s。
+- BYOK：`campusmate_providers` 存元数据，密钥 AES-256-GCM 存 `campusmate_secrets`（`user:<owner>:<providerId>`）；`GET/POST/DELETE /v1/providers`、`POST /v1/providers/:id/default|test`；列表只返回 `hasKey`，任何响应不含密钥；BYOK 调用不发送 `reasoning_effort`。
+- Vault：优先 `CAMPUSMATE_VAULT_WRAP_KEY` 包裹 master；平台暂无函数侧 Secret 写入通道，缺省回退为 master 行存原始 key（provider 密钥仍为 AES-GCM）。生产接入 Sites Secrets 后应删除该回退。
+
+### 18.3 数据
+
+- 迁移 v1（11 表）、v2（secrets + tasks 列）、v3（campusmate_providers）均已 applied；目录共 15 张表。
+- `web/scripts/bootstrap-server-keys.mjs --apply` 按真实 `insert_database_rows` 契约（siteId/tableName/requestId/schemaRef/rows[{cells}]、`--input-file`）写入 `__master__`、`radeon`、`moss` 三行；requestId 持久化在 `.local/sites/bootstrap-request.json`，重试复用；`query_database_rows` 已核对三行存在且未输出任何密文。
+
+### 18.4 验收证据（本轮）
+
+- `web` 全量单测：65 文件 / 483 项全部通过（含新增 sites-v1/exec/repository/auth-cloud；修复 config 部分 mock 导致的既有失败）。
+- 视觉基线：`node node_modules/playwright/cli.js test e2e/visual-system.spec.ts` 7/7 通过。
+- 匿名冒烟（curl）：`/` 200、`/app/` 200、`/login/` 200、`/__qoder_auth/start?return_path=%2Flogin%2F` 302、`/functions/v1/app/v1/capabilities` 401 `login_required`。
+- 浏览器匿名验收（Browser 子代理）：落地页、Today、对话、Inbox、日程、机会雷达、可信核验、成长、设置均渲染；已修复“课表读取失败”误报（云端匿名不再请求需登录的 `/v1/terms`）与匿名 `/v1/providers` 401。
+
+### 18.5 仍待人工完成
+
+- Qoder 登录后的个人空间黄金流（登录 → 新建对话 → 选择服务端模型 → 工具写入 → 产物预览/下载）需要真实浏览器登录，本轮未替代用户输入凭据；入口已就绪：https://campusmate-agent-d6ec0v7a94m.qoder.website/login/
+- 登录回跳路径已规范化为带尾斜杠（`/login/`），并在回跳后自动进入 `/app`。
+
+### 18.6 复现
+
+```powershell
+cd C:\Users\Asus\CodeBuddy\campusmate-builds\agent-local-workspaces\web
+$env:VITE_RUNTIME = "cloud"
+node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json
+node scripts/build.mjs
+node scripts/build-sites.mjs
+# prepare/publish 使用 .local/sites/in-prepare-full.json（actionId 每轮新生成）
+```

@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { ruleExtract } from "@/lib/llm/mock";
 const mock = vi.hoisted(() => ({ list: vi.fn() }));
-vi.mock("@/app/config", () => ({ repository: { listInbox: mock.list } }));
+vi.mock("@/app/config", () => ({ runtime: "local", isCloudRuntime: false, supabaseClient: null, repository: { listInbox: mock.list } }));
 import { InboxPage } from "./InboxPage";
 const item = (id: string, title: string, status = "pending_review", cls = "normal") => ({ id, userId: "demo", rawText: title, sourceUrl: "https://school.example/news", sourceType: "text", extracted: ruleExtract(title, null), classification: { class: cls, priorityScore: 50, priorityReason: "按用户相关性排序", riskSignals: [] }, status, createdAt: "2026-11-15T00:00:00Z", demo: true });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });

@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useRepository } from "@/app/auth";
+import { runtime } from "@/app/config";
 import { ClassBadge, DeadlineTag, EmptyState, PageHeader } from "@/components/shared";
 import { useCampusCalendar } from "@/features/calendar/use-campus-calendar";
 import { todayTasks, overdueTasks, upcomingDeadlines } from "@/lib/domain/today";
@@ -129,7 +130,7 @@ export function DashboardPage() {
 
       <p className="mt-6 flex items-center gap-2 text-xs text-muted-foreground">
         <Inbox className="size-3" />
-        演示数据与 Mock 结果均明确标识；配置 Supabase 与模型后启用真实模式。
+        {runtime === "cloud" ? "演示数据与 Mock 结果均明确标识；登录 Qoder 后进入个人空间。" : "演示数据与 Mock 结果均明确标识；配置 Supabase 与模型后启用真实模式。"}
       </p>
       <AlertDialog open={pendingTask !== null} onOpenChange={(open)=>{if(!open && !complete.isPending)setPendingTask(null);}}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>确认完成任务？</AlertDialogTitle><AlertDialogDescription>将「{pendingTask?.title}」标记为已完成？确认后将从待办列表移除，可在成长中心查看。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={complete.isPending}>取消</AlertDialogCancel><AlertDialogAction disabled={complete.isPending} onClick={event=>{event.preventDefault();if(pendingTask&&!complete.isPending)complete.mutate(pendingTask.id);}}>{complete.isPending?"正在保存…":"确认完成"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     </div>

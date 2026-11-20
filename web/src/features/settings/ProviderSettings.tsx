@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { listProviders, saveProvider, removeProvider, testProvider, defaultProvider, type ProviderPublic } from "@/lib/llm/proxy";
 import { backendEnabled } from "@/lib/agent/api-client";
 import { useAuth } from "@/app/auth";
+import { runtime } from "@/app/config";
 import { errorMessage } from "@/lib/llm/errors";
 
 const CONTEXT_PRESETS: number[] = [131072, 200000, 262144, 500000, 1000000];
@@ -18,10 +19,15 @@ const capabilityLabel = (value: unknown) => value === true ? "支持" : value ==
 export function ProviderSettings() {
   const qc = useQueryClient();
   const { session } = useAuth();
+  const cloud = runtime === "cloud";
   const owner = session?.user.id ?? "demo";
   const enabled = backendEnabled() && Boolean(session);
   const queryKey = ["providers", owner];
-  const { data: providers = [], isPending, error } = useQuery({ queryKey, queryFn: listProviders });
+  const { data: providers = [], isPending, error } = useQuery({
+    queryKey,
+    queryFn: listProviders,
+    enabled: !cloud || Boolean(session),
+  });
   const [form, setForm] = useState(blank);
   const [editing, setEditing] = useState(false);
   const [feedback, setFeedback] = useState<Record<string, string>>({});
@@ -51,25 +57,27 @@ export function ProviderSettings() {
     <Card className="mb-4 overflow-hidden">
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base"><KeyRound className="size-4 text-primary" />模型与连接</CardTitle>
-        <p className="text-sm text-muted-foreground">选择你熟悉的模型。聊天会使用这里的配置，并展示上游实际返回的模型名称。</p>
+        <p className="text-sm text-muted-foreground">{cloud ? "服务端提供的模型只读展示；也可添加自定义 BYOK 连接。" : "选择你熟悉的模型。聊天会使用这里的配置，并展示上游实际返回的模型名称。"}</p>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
-        <p className="flex items-start gap-2 rounded-lg bg-primary/5 p-3 text-xs leading-5 text-muted-foreground"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-primary" />自定义密钥通过认证后端加密保存，列表只返回配置状态。编辑时留空可保留原密钥。</p>
-        {!enabled && <p role="status" className="text-sm text-muted-foreground">自定义接入需要配置后端并登录。当前可查看开发环境提供的模型。</p>}
-        {isPending && <p role="status">正在加载模型…</p>}
-        {error && <p role="alert" className="text-sm text-destructive">模型加载失败：{errorMessage(error)}</p>}
-        {!isPending && !error && providers.length === 0 && <p className="text-sm text-muted-foreground">尚未配置模型，可以在下方添加一个连接。</p>}
+        <p className="flex items-start gap-2 rounded-lg bg-primary/5 p-3 text-xs leading-5 text-muted-foreground"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-primary" />{cloud ? "自定义密钥提交到站点后端保存，列表只返回配置状态。服务端托管模型不可在本站修改。" : "自定义密钥通过认证后端加密保存，列表只返回配置状态。编辑时留空可保留原密钥。"}</p>
+        {!enabled && <p role="status" className="text-sm text-muted-foreground">{cloud ? "登录 Qoder 后可添加自定义 BYOK 连接。" : "自定义接入需要配置后端并登录。当前可查看开发环境提供的模型。"}</p>}
+        {enabled && isPending && <p role="status">正在加载模型…</p>}
+        {enabled && error && <p role="alert" className="text-sm text-destructive">模型加载失败：{errorMessage(error)}</p>}
+        {enabled && !isPending && !error && providers.length === 0 && <p className="text-sm text-muted-foreground">{cloud ? "服务端尚未提供模型；可在下方添加自定义连接。" : "尚未配置模型，可以在下方添加一个连接。"}</p>}
         <div className="space-y-3">
-          {providers.map((p) => (
+          {providers.map((p) => {
+            const managed = cloud && (p.builtin || p.managed || p.readonly);
+            return (
             <div key={p.id} className={`rounded-lg border p-4 ${p.isDefault ? "border-primary/25 bg-primary/5" : "border-border"}`}>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="font-medium">{p.name}{p.isDefault && <span className="ml-2 text-xs text-primary">默认</span>}{p.builtin && <span className="ml-2 text-xs text-muted-foreground">服务端提供</span>}</p>
+                  <p className="font-medium">{p.name}{p.isDefault && <span className="ml-2 text-xs text-primary">默认</span>}{managed && <span className="ml-2 text-xs text-muted-foreground">服务端提供 · 只读</span>}</p>
                   <p className="mt-1 break-all text-xs text-muted-foreground">{p.model || "模型未知"} · {p.hasKey ? "密钥已配置" : "缺少密钥"} · 窗口 {p.contextLimit?.toLocaleString() ?? "未知"}</p>
                   <p className="mt-1 text-xs text-muted-foreground">图片：{capabilityLabel(p.capabilities?.vision)} · 工具：{p.capabilities?.tools === "native" ? "原生调用" : p.capabilities?.tools === "none" ? "不支持" : "兼容回退"} · 流式：{capabilityLabel(p.capabilities?.streaming)}</p>
                   <p className="mt-1 text-xs text-muted-foreground">{p.metadataSource?.startsWith("endpoint-profile") ? "按厂商接口规则自动适配；实际可用性以请求为准。" : "接口自动适配；未确认的能力保留未知，不需要手动填写。"}</p>
                 </div>
-                <div className="flex flex-wrap gap-1">
+                {!managed && <div className="flex flex-wrap gap-1">
                   <Button size="sm" variant="ghost" disabled={!enabled || action.isPending} aria-label={`测试连接 ${p.name}`} onClick={() => action.mutate({ p, kind: "test" })}>测试连接</Button>
                   {!p.isDefault && <Button size="sm" variant="ghost" disabled={!enabled || action.isPending} aria-label={`设为默认 ${p.name}`} onClick={() => action.mutate({ p, kind: "default" })}>设为默认</Button>}
                   {!p.builtin && p.id !== "builtin-deepseek" && <>
@@ -77,15 +85,16 @@ export function ProviderSettings() {
                     {p.hasKey && <Button size="sm" variant="ghost" disabled={!enabled || action.isPending} aria-label={`移除凭证 ${p.name}`} onClick={() => action.mutate({ p, kind: "clear" })}>移除凭证</Button>}
                     <Button size="sm" variant="ghost" disabled={!enabled || action.isPending} aria-label={`删除 ${p.name}`} onClick={() => action.mutate({ p, kind: "delete" })}>删除</Button>
                   </>}
-                </div>
+                </div>}
               </div>
               <p className="mt-2 break-all text-xs text-muted-foreground">{p.baseUrl} · OpenAI兼容 · 能力来源：{p.metadataSource ?? "未提供"}</p>
               {feedback[p.id] && <p role="status" className="mt-2 text-xs text-primary">{feedback[p.id]}</p>}
             </div>
-          ))}
+            );
+          })}
         </div>
         <form className="grid gap-3 border-t pt-5 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
-          <p className="font-medium sm:col-span-2">{editing ? "编辑连接" : "添加自定义连接"}</p>
+          <p className="font-medium sm:col-span-2">{editing ? "编辑连接" : cloud ? "添加自定义 BYOK 连接" : "添加自定义连接"}</p>
           <div><Label htmlFor="provider-id">连接 ID</Label><Input id="provider-id" required disabled={editing || !enabled} placeholder="my-provider" value={form.id} onChange={set("id")} /></div>
           <div><Label htmlFor="provider-name">显示名称</Label><Input id="provider-name" disabled={!enabled} placeholder="可选，默认使用模型名称" value={form.name} onChange={set("name")} /></div>
           <div><Label htmlFor="provider-url">API 地址</Label><Input id="provider-url" type="url" required disabled={!enabled} placeholder="https://api.example.com/v1" value={form.baseUrl} onChange={set("baseUrl")} /></div>

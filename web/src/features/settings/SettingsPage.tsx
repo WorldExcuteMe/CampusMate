@@ -14,6 +14,7 @@ import { resetDemo } from "@/lib/data/demo";
 import { useAppearance, type ThemeMode, type StepDensity, type StepCollapseTiming, type StepReplyRetention } from "@/lib/theme";
 import { useSessions } from "@/lib/agent/sessions-context";
 import { useAuth } from "@/app/auth";
+import { runtime } from "@/app/config";
 import { cn } from "@/lib/utils";
 import type { Profile } from "@/lib/data/types";
 import { ProviderSettings } from "./ProviderSettings";
@@ -36,6 +37,7 @@ const THEME_CARDS: { id: ThemeMode; label: string; icon: typeof Sun }[] = [
 export function SettingsPage() {
   const repository = useRepository();
   const isDemo = repository.mode === "demo";
+  const cloud = runtime === "cloud";
   const [tab, setTab] = useState<TabId>("account");
   const { appearance, setAppearance } = useAppearance();
   const { session } = useAuth();
@@ -124,8 +126,12 @@ export function SettingsPage() {
                   {(session?.user?.email?.[0] || form?.name?.[0] || "U").toUpperCase()}
                 </span>
                 <div>
-                  <p className="text-base font-semibold">{session?.user?.email || form?.name || "演示用户"}</p>
-                  <p className="text-xs text-muted-foreground">{session ? "真实用户模式 · RLS 隔离" : "Demo · 本地演示数据"}</p>
+                  <p className="text-base font-semibold">{session?.user?.email || form?.name || (cloud ? "Qoder 用户" : "演示用户")}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {cloud
+                      ? session ? "Qoder 账号 · 云端数据隔离" : "未登录 · 演示数据"
+                      : session ? "真实用户模式 · RLS 隔离" : "Demo · 本地演示数据"}
+                  </p>
                 </div>
               </div>
               <Separator />
@@ -230,7 +236,7 @@ export function SettingsPage() {
               <p className="text-sm text-muted-foreground">选择 Agent 的工具与工作方式；设为默认后新会话沿用，并立即应用到当前会话。</p>
               <div className="grid gap-3 sm:grid-cols-2">
                 {([
-                  { mode: "auto", icon: Bot, title: "自动模式", desc: "全工具 + 群摄取 + 完全访问；适合信息收集、机会发现与跨源核验。" },
+                  { mode: "auto", icon: Bot, title: "自动模式", desc: cloud ? "全工具 + 云端文件 + 网络检索；适合信息收集、机会发现与跨源核验。" : "全工具 + 群摄取 + 完全访问；适合信息收集、机会发现与跨源核验。" },
                   { mode: "daily", icon: CalendarClock, title: "日常模式", desc: "聚焦调课/班会/讲座等日常事务；工具精简，谨慎创建机会。" },
                 ] as const).map((p) => (
                   <button
@@ -250,8 +256,8 @@ export function SettingsPage() {
               </div>
               <Separator />
               <div className="text-xs text-muted-foreground">
-                <p>数据层：{isDemo ? "Demo（本地演示）" : "Supabase（真实用户）"} · AI：自动选择服务端模型 / Mock，结果按实际来源标识</p>
-                <p className="mt-1">Agent 执行记录 {runs.length} 条{runs[0] ? ` · 最近 ${runs[0].taskType}/${runs[0].status}` : ""}</p>
+                <p>数据层：{cloud ? (isDemo ? "Demo（云端演示）" : "Qoder Sites 云端") : isDemo ? "Demo（本地演示）" : "Supabase（真实用户）"} · AI：服务端模型 / BYOK / Mock，结果按实际来源标识</p>
+                {!cloud && <p className="mt-1">Agent 执行记录 {runs.length} 条{runs[0] ? ` · 最近 ${runs[0].taskType}/${runs[0].status}` : ""}</p>}
               </div>
             </div>
           )}
@@ -265,7 +271,11 @@ export function SettingsPage() {
               <Separator />
               <div className="flex gap-3 text-sm text-muted-foreground">
                 <ShieldCheck className="size-5 shrink-0 text-success" />
-                <p>聊天记录与简历属敏感个人材料。真实模式下数据按用户隔离（RLS），聊天记录按账号保存在当前浏览器，当前未实现自助销户或文件私有桶上传。模型密钥仅存服务端，不落前端。</p>
+                <p>
+                  {cloud
+                    ? "聊天记录与简历属敏感个人材料。云端数据按 Qoder 账号隔离并保存于站点后端，当前未实现自助销户。模型密钥仅存服务端，不落前端。"
+                    : "聊天记录与简历属敏感个人材料。真实模式下数据按用户隔离（RLS），聊天记录按账号保存在当前浏览器，当前未实现自助销户或文件私有桶上传。模型密钥仅存服务端，不落前端。"}
+                </p>
               </div>
             </div>
           )}

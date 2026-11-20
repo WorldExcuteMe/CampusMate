@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-vi.mock("@/app/config", () => ({ supabaseClient: { auth: { getSession: async () => ({ data: { session: { access_token: "fixture-token" } } }) } } }));
+vi.mock("@/app/config", () => ({ isCloudRuntime: false, supabaseClient: { auth: { getSession: async () => ({ data: { session: { access_token: "fixture-token" } } }) } } }));
 import { subscribeTask } from "../agent/api-client";
 class FakeSource extends EventTarget {
   static instances: FakeSource[] = [];

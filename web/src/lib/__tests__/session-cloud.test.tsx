@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const auth = vi.hoisted(() => ({ owner: 'alice' }));
 vi.mock('@/app/auth', () => ({ useAuth: () => ({ session: { user: { id: auth.owner } } }) }));
-vi.mock('@/app/config', () => ({ supabaseClient: null }));
+vi.mock('@/app/config', () => ({ isCloudRuntime: false, supabaseClient: null }));
 vi.mock('../agent/session-sync', async original => ({ ...await original<object>(), listRemoteSessions: vi.fn(), getRemoteHistory: vi.fn(), getHistoryPage:vi.fn(), getHistoryChanges:vi.fn(), createRemoteSession: vi.fn(), patchRemoteSession: vi.fn(), removeRemoteSession: vi.fn(), importRemoteHistory: vi.fn() }));
 import * as api from '../agent/session-sync';
 import { SessionsProvider, useSessions } from '../agent/sessions-context';

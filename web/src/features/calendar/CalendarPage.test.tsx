@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 const mocks = vi.hoisted(() => ({ schedules: vi.fn(), terms: vi.fn(), tasks: vi.fn(), opps: vi.fn() }));
-vi.mock("@/app/config", () => ({ repository: { listTasks: mocks.tasks, listOpportunities: mocks.opps } }));
+vi.mock("@/app/config", () => ({ runtime: "local", isCloudRuntime: false, supabaseClient: null, repository: { listTasks: mocks.tasks, listOpportunities: mocks.opps } }));
 vi.mock("@/lib/agent/api-client", () => ({ backendEnabled: () => true, listTerms: mocks.terms, listSchedules: mocks.schedules, importSchedule: vi.fn(), createTerm: vi.fn(), saveTimeScheme: vi.fn() }));
 import { CalendarPage } from "./CalendarPage";
 const term = { id: "term", institutionId: "a", name: "秋季学期", startDate: "2026-09-07", endDate: "2027-01-24", totalWeeks: 20, timezone: "Asia/Shanghai" };

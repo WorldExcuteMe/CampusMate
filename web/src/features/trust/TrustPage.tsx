@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { useRepository } from "@/app/auth";
+import { runtime } from "@/app/config";
 import { EmptyState, PageHeader, VerifyBadge } from "@/components/shared";
 
 export function TrustPage() {
@@ -20,7 +21,10 @@ export function TrustPage() {
     <div className="mx-auto max-w-4xl">
       <PageHeader title="Trust Engine" description="每条核验结论都有证据支持；无法核验 ≠ 诈骗。" />
       {reports.length === 0 ? (
-        <EmptyState title="暂无核验报告" />
+        <EmptyState
+          title={runtime === "cloud" ? "核验报告云端暂未就绪" : "暂无核验报告"}
+          hint={runtime === "cloud" ? "机会与通知已接入云端；证据核验报告将在后续版本提供。" : undefined}
+        />
       ) : (
         <div className="flex flex-col gap-3">
           {reports.map((r) => (

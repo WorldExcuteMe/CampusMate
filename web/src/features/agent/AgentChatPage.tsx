@@ -23,6 +23,7 @@ import { listProviders, type ProviderPublic, type ChatMessage } from "@/lib/llm/
 import { useSessions } from "@/lib/agent/sessions-context";
 import { autoName, backendSessionId } from "@/lib/agent/sessions";
 import { useAuth } from "@/app/auth";
+import { runtime } from "@/app/config";
 import { MockBadge } from "@/components/shared";
 import { resolveContextCap } from "@/lib/agent/context";
 import { SetupWizard } from "./SetupWizard";
@@ -46,6 +47,7 @@ export function AgentChatPage() {
   const refreshedTasks = useRef(new Set<string>());
   const repository = useRepository();
   const { session } = useAuth();
+  const cloud = runtime === "cloud";
   const local = localWorkspaceIdentity();
   const owner = local?.owner ?? session?.user.id ?? "demo";
   const alive = useRef(true);
@@ -96,7 +98,10 @@ export function AgentChatPage() {
     const stored = localStorage.getItem(`campusmate.reasoning:${owner}`);
     return stored === "low" || stored === "medium" || stored === "high" ? stored : "auto";
   });
-  const { data: providers = [], error: providerError } = useQuery({ queryKey: ["providers", owner], queryFn: listProviders });
+  // 未登录的云端 Demo 不请求 /v1/providers（否则只是无意义的 401）。
+  const { data: providers = [], error: providerError } = useQuery({
+    queryKey: ["providers", owner], queryFn: listProviders, enabled: !cloud || Boolean(session),
+  });
   const { data: profile } = useQuery({ queryKey: ["profile", owner], queryFn: () => repository.getProfile() });
   const endRef = useRef<HTMLDivElement>(null);
   const provider = providers.find((p: ProviderPublic) => p.id === providerId) ?? providers.find((p) => p.isDefault) ?? providers[0];
@@ -318,7 +323,9 @@ export function AgentChatPage() {
         <div className="border-b border-border bg-secondary/40 px-4 py-2 text-xs text-secondary-foreground">
           <div className="mx-auto flex max-w-3xl items-center gap-2">
             <span className="flex-1">
-              描述你的任务，或添加通知与附件开始。执行过程、来源和文档会显示在任务面板；本机资料与群消息需要先连接并授权 Companion。
+              {cloud
+                ? "描述你的任务，粘贴通知或上传文件开始。云端沙箱内可读写与处理文件；执行过程、来源和产物会显示在任务面板。"
+                : "描述你的任务，或添加通知与附件开始。执行过程、来源和文档会显示在任务面板；本机资料与群消息需要先连接并授权 Companion。"}
             </span>
             <button
               className={cn(CONTROL_FEEDBACK, "shrink-0 px-2 py-1")}
@@ -415,7 +422,7 @@ export function AgentChatPage() {
                 </select>}
               </div>
             )}
-            {!local && active?.mode === "auto" && (
+            {!local && !cloud && active?.mode === "auto" && (
               <button
                 className={cn(CONTROL_FEEDBACK, "flex max-w-56 items-center gap-1 px-2 py-1 text-xs")}
                 title="点击选择工作区文件夹"

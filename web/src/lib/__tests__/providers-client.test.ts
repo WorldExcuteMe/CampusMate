@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-vi.mock("@/app/config", () => ({ supabaseClient: { auth: { getSession: async () => ({ data: { session: { access_token: "fixture-token" } } }) } } }));
+vi.mock("@/app/config", () => ({ isCloudRuntime: false, supabaseClient: { auth: { getSession: async () => ({ data: { session: { access_token: "fixture-token" } } }) } } }));
 import { listProviders, saveProvider } from "../llm/proxy";
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 it("模型列表与保存都走认证后端，省略新key，不走遗留明文文件代理", async () => {

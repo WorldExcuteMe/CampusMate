@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/reac
 import { useEffect } from "react";
 import { describe,it,expect,vi } from "vitest";
 const h=vi.hoisted(()=>({mode:"demo",callback:undefined as undefined|((e:string,s:any)=>void),session:{user:{id:"owner-a"}}}));
-vi.mock("./config",()=>({supabaseClient:{auth:{getSession:async()=>({data:{session:h.session}}),onAuthStateChange:(fn:any)=>{h.callback=fn;return {data:{subscription:{unsubscribe(){}}}};}}},setRepository:(r:any)=>{h.mode=r.mode;}}));
+vi.mock("./config",()=>({runtime:"local",isCloudRuntime:false,supabaseClient:{auth:{getSession:async()=>({data:{session:h.session}}),onAuthStateChange:(fn:any)=>{h.callback=fn;return {data:{subscription:{unsubscribe(){}}}};}}},setRepository:(r:any)=>{h.mode=r.mode;}}));
 vi.mock("@/lib/data/demo",()=>({DemoRepository:class {mode="demo";}}));
 vi.mock("@/lib/data/supabase",()=>({SupabaseRepository:class {mode:string;constructor(_db:any,id:string){this.mode=id;}}}));
 import { AuthProvider,useAuth,useRepository } from "./auth";

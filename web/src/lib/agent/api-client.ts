@@ -1,6 +1,7 @@
 // Agent Task API 客户端：前端默认走后端 Task Runtime（AC01）。
 // JWT 取自 Supabase session；VITE_BACKEND_URL 配置后端地址。SSE 实时进度 + 轮询回退。
-import { supabaseClient } from "@/app/config";
+import { isCloudRuntime, supabaseClient } from "@/app/config";
+
 import type { Opportunity } from "@/lib/data/types";
 import { localWorkspaceIdentity } from "./local-workspace";
 
@@ -21,6 +22,7 @@ export interface AgentTask {
 export interface AgentEvent { id: number; taskId: string; seq: number; type: string; payload: Record<string, unknown>; createdAt: number; }
 
 export function backendUrl(): string | null {
+  if (isCloudRuntime) return `${location.origin}/functions/v1/app`;
   if (localWorkspaceIdentity()) return location.origin;
   const env = import.meta.env as Record<string, string | undefined>;
   return env.VITE_BACKEND_URL ?? null;
@@ -28,6 +30,8 @@ export function backendUrl(): string | null {
 export function backendEnabled(): boolean { return Boolean(backendUrl()); }
 
 async function authHeader(): Promise<Record<string, string>> {
+  // Cloud 身份由同源 cookie 经网关注入；占位头只满足客户端的 Bearer 形状。
+  if (isCloudRuntime) return { Authorization: "Bearer sites-session" };
   const local = localWorkspaceIdentity();
   if (local) return { Authorization: `Bearer ${local.token}` };
   if (!supabaseClient) return {};
@@ -191,9 +195,13 @@ export function subscribeTask(id: string, handlers: TaskHandlers, options: { aft
     const headers = await authHeader();
     if (stopped) return;
     const token = (headers.Authorization ?? "").replace(/^Bearer\s+/i, "");
-    if (!base || typeof EventSource === "undefined" || !token) { startPoll(); return; }
+    if (!base || typeof EventSource === "undefined" || (!token && !isCloudRuntime)) { startPoll(); return; }
     source?.close();
-    const current = new EventSource(base + "/v1/tasks/" + encodeURIComponent(id) + "/stream?token=" + encodeURIComponent(token) + "&after=" + seq);
+    // 云态 EventSource 无法设置 Authorization，依赖同源 cookie 由网关识别身份。
+    const query = isCloudRuntime
+      ? `?after=${seq}`
+      : `?token=${encodeURIComponent(token)}&after=${seq}`;
+    const current = new EventSource(base + "/v1/tasks/" + encodeURIComponent(id) + "/stream" + query);
     source = current;
     schedulePoll(); // A stalled initial SSE connection must not hide task progress.
     current.onopen = () => { if (!stopped && source === current) { live = true; if (timer) { clearTimeout(timer); timer = null; } connection("live"); } };

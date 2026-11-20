@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 // mock config：supabaseClient 提供 session token；backendUrl 经 import.meta.env。
-vi.mock("@/app/config", () => ({
+vi.mock("@/app/config", () => ({ isCloudRuntime: false,
   supabaseClient: { auth: { getSession: async () => ({ data: { session: { access_token: "tok" } } }) } },
 }));
 

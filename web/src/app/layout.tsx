@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "./auth";
+import { runtime } from "./config";
 import { useSessions } from "@/lib/agent/sessions-context";
 import { UserChip, BrandMark } from "@/components/UserChip";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -64,7 +65,7 @@ export function Layout() {
       <aside aria-label="主侧边栏" className="hidden min-h-0 w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
         <div className="shrink-0 px-3 py-3">
           <BrandMark />
-          <p className="mt-1 text-[11px] text-muted-foreground">校园机会管家 · 本地 Agent</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">{runtime === "cloud" ? "校园机会管家 · 云端 Agent" : "校园机会管家 · 本地 Agent"}</p>
         </div>
         <nav aria-label="主导航" className="scrollbar-thin flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain px-3 pb-3">
           {NAV.map((item) =>
@@ -179,12 +180,19 @@ export function Layout() {
           ))}
         </nav>
 
-        {!session && (
+        {!session && (runtime === "cloud" ? (
+          <div className="flex shrink-0 items-center justify-center gap-1 border-b border-border bg-muted/50 px-4 py-1.5 text-center text-[11px] text-muted-foreground">
+            演示数据 ·
+            <button type="button" className="font-medium text-foreground/80 underline-offset-4 hover:underline" onClick={() => nav("/login")}>
+              登录进入个人空间
+            </button>
+          </div>
+        ) : (
           <div className="flex shrink-0 items-center justify-center gap-2 border-b border-border bg-muted/50 px-4 py-1.5 text-center text-[11px] text-muted-foreground">
             演示数据模式 · 数据仅保存在本机浏览器
             {configured ? <span className="text-foreground/70">登录后启用真实账号</span> : null}
           </div>
-        )}
+        ))}
 
         {(initialLoading || syncing || syncError) && <div role={syncError ? 'alert' : 'status'} className="shrink-0 border-b px-4 py-2 text-xs"><span>{syncError ?? (initialLoading ? '正在从后端恢复会话…' : '正在保存会话更改…')}</span>{syncError && <button type="button" className="ml-2 underline" onClick={refresh}>重试同步</button>}</div>}
         <main ref={contentRef} className="cm-aurora scrollbar-thin min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain p-4 md:p-8">

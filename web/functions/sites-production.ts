@@ -159,7 +159,18 @@ export function createProductionSites<Context = unknown>(deps: ProductionDepende
     }
   }
 
-  return async (context: Context & { request: Request }): Promise<Response> => {
+  // v1 数据面在首个 Cloud 会话前需要同一 Agent/Environment 绑定：缺失时按 P0 流程初始化一次。
+  async function resolveBinding(): Promise<{ agent: { id: string; version: number }; environmentId: string }> {
+    const current = await readBinding();
+    if (current) return current;
+    const failure = await initialize();
+    if (failure) throw new CloudAgentsError("ai_initialization_pending", 503, "not_sent");
+    const ready = await readBinding();
+    if (!ready) throw new CloudAgentsError("ai_initialization_pending", 503, "not_sent");
+    return ready;
+  }
+
+  const handle = async (context: Context & { request: Request }): Promise<Response> => {
     let user: { id?: unknown } | null | undefined;
     try { user = deps.requireUser(context); }
     catch (error) {
@@ -182,4 +193,5 @@ export function createProductionSites<Context = unknown>(deps: ProductionDepende
     });
     return app(context.request);
   };
+  return Object.assign(handle, { resolveBinding });
 }

@@ -16,6 +16,8 @@ export interface ProviderPublic {
   metadataSource?: string;
   isDefault?: boolean;
   builtin?: boolean;
+  managed?: boolean;
+  readonly?: boolean;
 }
 
 export async function listProviders(): Promise<ProviderPublic[]> {
