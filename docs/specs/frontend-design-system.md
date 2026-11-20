@@ -202,3 +202,8 @@
 ---
 
 **下一步**：确认视觉方向（推荐 B），我按 D1→D2→D3 先落地 token 与基础组件/壳层，再做对话页与设置，逐页截图对比。
+
+## 11. 视觉基线（D2/D3 首批，2026-11-20）
+- 截图基线：`docs/design/visual-baseline/`（对话页 light/dark 1440、设置页 light 1440、对话页移动端 390）。
+- Playwright 用例：`web/e2e/visual-system.spec.ts`（固定 fixture + 固定视口，可重复出图，供 before/after 对比）。
+- 本轮已落：石墨 token、基础组件尺寸/圆角/阴影统一、侧栏导航收敛、演示横幅中性化、对话消息流贴底+助手无气泡+列表行距修复、composer 双层（附件/权限/模型/思考 → 上下文/发送）。

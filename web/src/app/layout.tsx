@@ -40,9 +40,9 @@ const NAV = [
 
 const navItem = (active: boolean) =>
   cn(
-    "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all",
+    "group relative flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium transition-colors",
     active
-      ? "bg-sidebar-accent text-sidebar-foreground shadow-[inset_2px_0_0_0_var(--sidebar-primary)]"
+      ? "bg-sidebar-accent text-sidebar-foreground"
       : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
   );
 
@@ -62,9 +62,9 @@ export function Layout() {
     <TooltipProvider delayDuration={250}>
     <div className="flex h-dvh overflow-hidden bg-background text-foreground">
       <aside aria-label="主侧边栏" className="hidden min-h-0 w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
-        <div className="shrink-0 px-4 py-4">
+        <div className="shrink-0 px-3 py-3">
           <BrandMark />
-          <p className="mt-1 pl-10 text-[11px] text-muted-foreground">校园机会管家 · Agent</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">校园机会管家 · 本地 Agent</p>
         </div>
         <nav aria-label="主导航" className="scrollbar-thin flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain px-3 pb-3">
           {NAV.map((item) =>
@@ -180,9 +180,9 @@ export function Layout() {
         </nav>
 
         {!session && (
-          <div className="shrink-0 border-b border-info/20 bg-info/10 px-4 py-2 text-center text-xs text-info">
-            演示数据模式（Demo）：业务数据保存在当前浏览器；模型配置独立，AI 结果按实际来源标识。
-            {configured ? "登录后可启用真实用户模式。" : "配置 Supabase 后启用真实用户模式。"}
+          <div className="flex shrink-0 items-center justify-center gap-2 border-b border-border bg-muted/50 px-4 py-1.5 text-center text-[11px] text-muted-foreground">
+            演示数据模式 · 数据仅保存在本机浏览器
+            {configured ? <span className="text-foreground/70">登录后启用真实账号</span> : null}
           </div>
         )}
 
@@ -195,3 +195,5 @@ export function Layout() {
     </TooltipProvider>
   );
 }
+
+

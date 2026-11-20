@@ -333,7 +333,7 @@ export function AgentChatPage() {
       {/* 无边框消息流 */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
       <div ref={messageScroll} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6">
+        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-5 px-4 py-6">
           {active.historyPage?.hasMore && <button type="button" className="self-center rounded-md border px-3 py-1 text-xs text-muted-foreground disabled:opacity-50" disabled={loadingOlder} onClick={requestOlder}>{loadingOlder?'正在加载更早消息…':'加载更早消息'}</button>}
           {busy && activity && activity.sessionId !== active.id && <button onClick={()=>setActiveId(activity.sessionId)} className="text-sm text-primary underline">查看处理进度</button>}
           {!backendEnabled() && busy && activity?.sessionId === active.id && <AgentActivityCard activity={activity} />}
@@ -440,7 +440,7 @@ export function AgentChatPage() {
             >
               <Paperclip className="size-4 text-primary transition-transform group-hover:scale-110" />
             </button>
-            <details className="text-[10px] text-muted-foreground"><summary className="cursor-pointer">{IMAGE_LIMIT_HINT} · {ATTACHMENT_LIMIT_HINT}</summary><p className="max-w-md py-1 text-xs">{ATTACHMENT_LIMIT_DETAILS}</p></details>
+            <details className="text-[11px] text-muted-foreground" title={`${IMAGE_LIMIT_HINT} · ${ATTACHMENT_LIMIT_HINT}`}><summary className="cursor-pointer select-none">附件限制<span className="sr-only">{IMAGE_LIMIT_HINT} · {ATTACHMENT_LIMIT_HINT}</span></summary><p className="absolute z-10 mt-1 max-w-md rounded-md border border-border bg-popover p-2 text-xs shadow-md">{ATTACHMENT_LIMIT_DETAILS}</p></details>
             <Select value={provider?.id ?? ""} onValueChange={chooseProvider}>
               <SelectTrigger aria-label="模型连接" className={cn("h-8 w-40 text-xs", CONTROL_FEEDBACK)}><SelectValue placeholder="模型" /></SelectTrigger>
               <SelectContent>
@@ -478,6 +478,7 @@ export function AgentChatPage() {
     </div>
   );
 }
+
 
 
 
