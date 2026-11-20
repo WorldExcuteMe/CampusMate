@@ -116,6 +116,7 @@ export function AgentChatPage() {
   const currentEvents = active.currentTaskId ? active.taskViews?.[active.currentTaskId]?.events ?? [] : [];
   const lastResponseInput = [...currentEvents].reverse().find((event) => event.type === "llm.response")?.payload?.usage as { input?: unknown } | undefined;
   const contextUsed = active.contextUsed ?? (typeof lastResponseInput?.input === "number" ? lastResponseInput.input : null);
+  const liveThinking = currentEvents.filter((event) => event.type === "thinking.delta").map((event) => String(event.payload.text ?? "")).join("").slice(-3_500);
   const runTurns = currentEvents.filter((e) => e.type === "llm.request").length;
   const runSteps = currentEvents.filter((e) => e.type === "tool.called").length;
   const runTtft = currentTask?.modelRuntime?.lastRequest?.ttftMs ?? null;
@@ -368,6 +369,7 @@ export function AgentChatPage() {
           {busyUI && currentTask && !active.messages.some((message) => message.taskId === active.currentTaskId && message.role === "assistant") && (
             <div className="rounded-lg border border-border/70 bg-background p-3" aria-label="实时执行进度">
               <p className="flex items-center gap-2 text-xs font-medium text-primary"><Loader2 className="size-3.5 animate-spin" /> 正在执行 · 实时进度</p>
+              {liveThinking && <div className="mt-2 rounded-md border border-primary/20 bg-primary/5 p-2"><p className="text-[11px] font-medium text-primary">思考中（实时）</p><p className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">{liveThinking}</p></div>}
               {liveDraft && <p className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">{liveDraft}</p>}
               <MessageWorkSteps events={currentEvents} status={currentTask.status} />
             </div>

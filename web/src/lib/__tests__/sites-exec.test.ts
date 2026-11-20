@@ -372,6 +372,8 @@ describe("流式、思考摘要与并行工具", () => {
     const events = ctx.store.rows(EVENTS);
     const deltas = events.filter(event => event.type === "llm.delta").map(event => String((event.payload as Row).text ?? "")).join("");
     expect(deltas).toBe("已整理");
+    const thinkingDeltas = events.filter(event => event.type === "thinking.delta").map(event => String((event.payload as Row).text ?? "")).join("");
+    expect(thinkingDeltas).toContain("先判断通知类型");
     const thinking = events.filter(event => event.type === "thinking.summary");
     expect(thinking).toHaveLength(1);
     expect(String((thinking[0].payload as Row).excerpt)).toContain("先判断通知类型");

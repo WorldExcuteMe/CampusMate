@@ -4,6 +4,7 @@
 // the platform SDK and calls this factory, which keeps the logic testable locally.
 import { createCloudAgentsClient as createRuntimeClient } from "./cloud-agents.ts";
 import { createCloudAgentsClient, ensureCloudResources, CloudAgentsError } from "./qca-managed.mjs";
+import { CloudAgentError } from "./cloud-agents.ts";
 import { createSitesApp, type SitesBinding } from "./sites-app.ts";
 import { createSitesDatabaseStore, type SitesDatabase, type SitesLimits, type SitesLockOptions } from "./sites-database.ts";
 
@@ -164,7 +165,17 @@ export function createProductionSites<Context = unknown>(deps: ProductionDepende
     const current = await readBinding();
     if (current) return current;
     const failure = await initialize();
-    if (failure) throw new CloudAgentsError("ai_initialization_pending", 503, "not_sent");
+    if (failure) {
+      // 把 initialize 的安全错误码透出，避免一律 503 sites_dependency_unavailable。
+      let code = "ai_initialization_pending";
+      let status = failure.status || 503;
+      try {
+        const body = await failure.clone().json() as { error?: unknown };
+        if (typeof body.error === "string" && /^[a-z_]{3,64}$/.test(body.error)) code = body.error;
+      } catch { /* 保留默认码 */ }
+      console.error("[campusmate] cloud binding init failed", { code, status });
+      throw new CloudAgentError(code, status);
+    }
     const ready = await readBinding();
     if (!ready) throw new CloudAgentsError("ai_initialization_pending", 503, "not_sent");
     return ready;

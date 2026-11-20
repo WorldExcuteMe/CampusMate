@@ -1391,8 +1391,26 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
     // 内容增量每 250ms 或 480 字符落一次 llm.delta；流式事件失败不终止任务。
     let pendingContent = "";
     let reasoningText = "";
+    let pendingThinking = "";
+    let thinkingEmitted = 0;
     let flushChain: Promise<unknown> = Promise.resolve();
+    let flushThinkingChain: Promise<unknown> = Promise.resolve();
     let lastFlush = now();
+    let lastThinkingFlush = now();
+    // 思考只流式展示有限长度（每轮 6000 字符），避免事件表被无限推理撑爆。
+    const MAX_THINKING_EVENT_CHARS = 6_000;
+    const flushThinking = (force = false) => {
+      if (!pendingThinking) return flushThinkingChain;
+      if (!force && now() - lastThinkingFlush < 300 && pendingThinking.length < 240) return flushThinkingChain;
+      const text = pendingThinking;
+      pendingThinking = "";
+      lastThinkingFlush = now();
+      thinkingEmitted += text.length;
+      flushThinkingChain = flushThinkingChain.then(async () => {
+        try { await appendEvent(db, owner, task, "thinking.delta", { text }); } catch { /* 流式事件非关键 */ }
+      });
+      return flushThinkingChain;
+    };
     const flushContent = (force = false) => {
       if (!pendingContent) return flushChain;
       if (!force && now() - lastFlush < DELTA_FLUSH_MS && pendingContent.length < 480) return flushChain;
@@ -1407,9 +1425,14 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
     const response = await callModel(
       provider, apiKey, requestMessages(), maxTokens, thinking, deps,
       (chunk) => { pendingContent += chunk; void flushContent(); },
-      (chunk) => { reasoningText += chunk; },
+      (chunk) => {
+        reasoningText += chunk;
+        if (thinkingEmitted + pendingThinking.length < MAX_THINKING_EVENT_CHARS) pendingThinking += chunk;
+        void flushThinking();
+      },
     );
     await flushContent(true);
+    await flushThinking(true);
     model = response.model || provider.model;
 
     const input = response.usage.prompt ?? 0;

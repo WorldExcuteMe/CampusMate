@@ -572,3 +572,9 @@ node scripts/build-sites.mjs
 - 后端 `/v1/providers` 暴露 `contextLimit`；`publicProvider` 透传；前端 `TaskInput.contextLimit` 随任务提交。
 - 测试：`492` 项通过（新增 ContextUsage 编辑用例）；视觉基线 7/7；截图确认输入区单行、无草稿版本块。
 - 发布：action `c73c65c7-6b6d-4420-acf5-4dca3cc68653`，`publication_completed`。
+## 23. 思考实时流与 Cloud Agents 诊断（2026-11-20，第十一轮）
+
+- 服务端模型：reasoning 增量每 300ms/240 字符写 `thinking.delta`（每轮上限 6000 字符），聊天内「思考中（实时）」边思考边显示；轮末仍保留 `thinking.summary` 供回看。
+- Cloud Agents thinking 事件同时映射 `thinking.delta` 与 `thinking.summary`。
+- Cloud Agents 失败定位：历史任务错误为 `sites_dependency_unavailable`（通用 503）。`resolveBinding` 现在解析 initialize 返回的安全错误码并抛出 `CloudAgentError`，`/v1` 保留 `ai_*` 错误码；新增登录态诊断端点 `GET /functions/v1/app/v1/cloud-status`，返回 `tokenPresent`、初始化错误码与平台启用模型列表（不含密钥）。
+- 测试：`492` 项通过；视觉 7/7；发布 action `21c410f3-0d42-4698-9880-26891b862f9a`。

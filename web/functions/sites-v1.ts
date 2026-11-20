@@ -635,6 +635,8 @@ export function createSitesV1(deps: SitesV1Deps) {
           const summary = extractText(event.content).replace(/\s+/g, " ").trim();
           drafts.push(...makeDrafts(cloudId, [["step.started", { phase: "thinking" }]]));
           if (summary) {
+            // 平台 thinking 事件按到达顺序转成增量，聊天内可边思考边显示。
+            drafts.push(...makeDrafts(`${cloudId}:delta`, [["thinking.delta", { text: clampText(summary, 2_000) }]]));
             drafts.push(...makeDrafts(`${cloudId}:summary`, [["thinking.summary", {
               excerpt: clampText(summary, 240), chars: summary.length, source: "cloud",
             }]]));
@@ -1569,6 +1571,8 @@ function errorResponse(error: unknown): Response {
   if (error instanceof AppError) return json(error.status, { error: error.message });
   if (error instanceof CloudAgentError) {
     if (error.message === "cloud_token_missing_or_invalid") return json(503, { error: "ai_not_configured" });
+    // Cloud Agents 初始化/模型配置错误：透出安全错误码，便于定位而不是一律 cloud_unavailable。
+    if (error.message.startsWith("ai_") || error.message.startsWith("sites_")) return json(error.status || 503, { error: error.message });
     const status = error.status === 429 ? 429 : error.status === 409 ? 409 : error.status === 504 ? 504 : 502;
     const code = status === 429 ? "cloud_rate_limited" : status === 409 ? "cloud_busy" : status === 504 ? "cloud_timeout" : "cloud_unavailable";
     return json(status, { error: code }, error.retryAfter === undefined ? {} : { "Retry-After": String(error.retryAfter) });

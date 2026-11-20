@@ -90,6 +90,26 @@ Deno.serve(async request => {
   try {
     context = createSiteContext(request);
     const pathname = new URL(request.url).pathname;
+    // 登录后可直接打开 /v1/cloud-status 查看 Cloud Agents 初始化状态与可用模型（不含密钥）。
+    if (/(?:^|\/)v1\/cloud-status$/.test(pathname)) {
+      const tokenPresent = Boolean(getToken());
+      try {
+        requireUser(context);
+        const binding = await platform.resolveBinding();
+        return Response.json({ ok: true, tokenPresent, agentId: binding.agent.id.slice(0, 12), agentVersion: binding.agent.version, environmentId: binding.environmentId.slice(0, 12) });
+      } catch (error) {
+        const code = error && typeof error === "object" && "message" in error ? String((error as { message: unknown }).message) : "unknown";
+        const status = error && typeof error === "object" && "status" in error ? Number((error as { status: unknown }).status) : 503;
+        console.error("[campusmate] cloud-status failed", { code, status });
+        let models: string[] = [];
+        try {
+          const client = createCloudAgentsClient({ accessToken: getToken() ?? "", baseUrl: CAMPUSMATE_SITES.cloudAgentsApiOrigin, fetch });
+          const list = await client.request("/api/v1/cloud/models") as { data?: Array<{ id?: unknown; is_enabled?: unknown }> };
+          models = (list.data ?? []).filter(item => item && item.is_enabled === true && typeof item.id === "string").map(item => String(item.id)).slice(0, 20);
+        } catch { /* 模型列表失败不阻断诊断 */ }
+        return Response.json({ ok: false, tokenPresent, code, status, models }, { status: 200 });
+      }
+    }
     if (/(?:^|\/)v1(?:\/|$)/.test(pathname)) return await v1(context);
     return await platform(context);
   } catch (error) {
