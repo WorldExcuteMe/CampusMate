@@ -127,10 +127,7 @@ export function UserChip() {
 export function BrandMark({ className }: { className?: string }) {
   return (
     <span className={cn("flex items-center gap-2", className)}>
-      <img src="/campusmate-logo.png" alt="CampusMate" className="size-8 rounded-lg object-cover object-top ring-1 ring-border" />
-      <span className="text-base font-semibold tracking-tight">
-        Campus<span className="cm-gradient-text">Mate</span>
-      </span>
+      <img src="/campusmate-logo.png" alt="CampusMate" className="h-11 w-auto object-contain" />
     </span>
   );
 }

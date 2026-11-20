@@ -2,19 +2,26 @@
 import { useQuery } from "@tanstack/react-query";
 import { Download, Eye, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { downloadArtifact, getArtifact } from "@/lib/agent/api-client";
+import { downloadArtifact, downloadMergedArtifacts, getArtifact } from "@/lib/agent/api-client";
 import { downloadPptx } from "@/lib/agent/pptx-client";
 
 const LABELS: Record<string, string> = { md: "MD", html: "HTML", svg: "SVG", csv: "CSV", json: "JSON", mermaid: "Mermaid", docx: "DOCX", xlsx: "XLSX", pptx: "PPTX" };
 
-export function ArtifactsPanel({ ids, owner }: { ids: string[]; owner: string }) {
+export function ArtifactsPanel({ ids, owner, taskId }: { ids: string[]; owner: string; taskId: string }) {
   const [selected, setSelected] = useState(ids[0] ?? "");
+  const [merging, setMerging] = useState("");
+  async function merge(format: "md" | "docx" | "html") {
+    setMerging(format);
+    try { const file = await downloadMergedArtifacts(taskId, format); const a = document.createElement("a"); a.href = URL.createObjectURL(file.blob); a.download = file.filename; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
+    finally { setMerging(""); }
+  }
   useEffect(() => { if (!ids.includes(selected)) setSelected(ids[0] ?? ""); }, [ids, selected]);
   if (!ids.length) return <p className="text-xs leading-6 text-muted-foreground">本轮还没有生成文档产物。生成后可在这里预览与下载。</p>;
   return <div className="space-y-2">
     <div className="flex flex-wrap gap-1">
       {ids.map((id, i) => <button key={id} type="button" onClick={() => setSelected(id)} className={`rounded-md border px-2 py-1 text-[11px] ${selected === id ? "border-primary/50 bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-muted"}`}>产物 {i + 1}</button>)}
     </div>
+    {ids.length > 1 && <div className="flex flex-wrap items-center gap-1 rounded-md border border-dashed border-border px-2 py-1 text-[10px] text-muted-foreground">合并导出{(["docx", "html", "md"] as const).map((f) => <button key={f} type="button" disabled={Boolean(merging)} onClick={() => void merge(f)} className="rounded px-1.5 py-0.5 text-primary hover:bg-primary/10">{merging === f ? "生成…" : f.toUpperCase()}</button>)}</div>}
     <ArtifactPreview id={selected} owner={owner} />
   </div>;
 }
@@ -81,8 +88,8 @@ export function ArtifactPreview({ id, owner }: { id: string; owner: string }) {
     <div className="p-2">
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       {unsupported && <p className="flex items-center gap-1 text-xs text-muted-foreground"><Eye className="size-3.5" />{LABELS[format]} 不支持内嵌预览，请点“下载”获取成品。</p>}
-      {format === "md" && <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5">{text || "（正文为空）"}</pre>}
-      {(format === "html" || format === "svg") && url && (format === "html" ? <iframe title="产物预览" src={url} sandbox="allow-scripts allow-same-origin" className="h-64 w-full rounded border bg-white" /> : <img src={url} alt="SVG 预览" className="max-h-64 w-full object-contain" />)}
+      {format === "md" && <pre className="max-h-[min(60dvh,620px)] overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5">{text || "（正文为空）"}</pre>}
+      {(format === "html" || format === "svg") && url && (format === "html" ? <iframe title="产物预览" src={url} sandbox="allow-scripts allow-same-origin" className="h-[min(65dvh,680px)] w-full rounded border bg-white" /> : <img src={url} alt="SVG 预览" className="max-h-[min(65dvh,680px)] w-full object-contain" />)}
       {(format === "csv" || format === "json" || format === "mermaid") && <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5">{text || "（内容为空）"}</pre>}
     </div>
   </div>;

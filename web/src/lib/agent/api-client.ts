@@ -89,6 +89,14 @@ export async function decideApproval(id: string, decision: "approved" | "rejecte
 
 export interface DocumentArtifact { id: string; taskId: string; documentId: string; revision: number; sha256: string; kind: string; filename?: string; primaryFormat?: string; section?: number; totalSections?: number; source?: { title?: string; markdown?: string; slides?: Array<{ title: string; bullets: string[] }> }; inline: unknown; }
 export async function getArtifact(id: string): Promise<{ artifact: DocumentArtifact; availableFormats: string[] }> { return req(`/v1/artifacts/${encodeURIComponent(id)}`); }
+export async function downloadMergedArtifacts(taskId: string, format: "md" | "docx" | "html"): Promise<{ blob: Blob; filename: string }> {
+  const base = backendUrl(); if (!base) throw new Error("尚未配置文档后端");
+  const response = await fetch(`${base}/v1/tasks/${encodeURIComponent(taskId)}/artifacts/merge?format=${format}`, { headers: await authHeader() });
+  if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error ?? `合并导出失败（${response.status}）`); }
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  return { blob: await response.blob(), filename: encoded ? decodeURIComponent(encoded) : `campusmate-merged.${format}` };
+}
 export async function downloadArtifact(id: string, format: string): Promise<{ blob: Blob; filename: string; sha256: string | null }> {
   const base = backendUrl(); if (!base) throw new Error("尚未配置文档后端");
   const response = await fetch(`${base}/v1/artifacts/${encodeURIComponent(id)}/download?format=${format}`, { headers: await authHeader() });

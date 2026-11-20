@@ -809,6 +809,31 @@ export function createSitesV1(deps: SitesV1Deps) {
       ...(Number.isSafeInteger(src.totalSections) ? { totalSections: Number(src.totalSections) } : {}),
     };
   }
+  async function mergeTaskArtifacts(owner: string, taskId: string, format: string): Promise<Response> {
+    if (!["md", "docx", "html"].includes(format)) return json(400, { error: "unsupported_format" });
+    const taskRows = await selectRows(tasks, [["id", taskId], ["owner_id", owner]], "id,title", 1);
+    if (!taskRows.length) return json(404, { error: "task_not_found" });
+    const rows = await selectRows(artifacts, [["task_id", taskId], ["owner_id", owner]]);
+    if (!rows.length) return json(404, { error: "artifact_not_found" });
+    rows.sort((a, b) => {
+      const sa = Number.isSafeInteger(jsonObject(jsonObject(a.inline).source).section) ? Number(jsonObject(jsonObject(a.inline).source).section) : 9999;
+      const sb = Number.isSafeInteger(jsonObject(jsonObject(b.inline).source).section) ? Number(jsonObject(jsonObject(b.inline).source).section) : 9999;
+      return sa - sb || integerOr(a.created_at) - integerOr(b.created_at);
+    });
+    const parts = rows.map((row, index) => {
+      const inline = jsonObject(row.inline);
+      const src = jsonObject(inline.source);
+      const section = Number.isSafeInteger(src.section) ? Number(src.section) : index + 1;
+      return `## 第 ${section} 节\n\n${textOf(inline.text)}`;
+    });
+    const title = textOf(taskRows[0].title) || "CampusMate 长文档";
+    const source = { title, markdown: parts.join("\n\n---\n\n") };
+    if (format === "md") {
+      return new Response(new TextEncoder().encode(source.markdown), { status: 200, headers: { "Content-Type": "text/markdown; charset=utf-8", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(title + ".md")}`, "Cache-Control": "no-store" } });
+    }
+    const exported = exportArtifact(source, format as Parameters<typeof exportArtifact>[1]);
+    return new Response(exported.bytes.slice().buffer as ArrayBuffer, { status: 200, headers: { "Content-Type": exported.contentType, "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(exported.filename)}`, "Cache-Control": "no-store" } });
+  }
   function artifactView(row: Row, inline?: { text: string; sha256: string }) {
     const source = inline ?? (jsonObject(row.inline).text !== undefined
       ? { text: textOf(jsonObject(row.inline).text), sha256: textOf(row.sha256) } : null);
@@ -1514,6 +1539,10 @@ export function createSitesV1(deps: SitesV1Deps) {
         onlyFields(data, ["decision"]);
         return await decideApproval(owner, approvalMatch[1], textOf(data.decision));
       }
+
+      // 多节产物合并导出
+      const mergeMatch = /^\/tasks\/([A-Za-z0-9_.:-]{1,200})\/artifacts\/merge$/.exec(route);
+      if (mergeMatch && request.method === "GET") return await mergeTaskArtifacts(owner, mergeMatch[1], url.searchParams.get("format") ?? "md");
 
       // 产物
       const artifactMatch = /^\/artifacts\/([A-Za-z0-9_.:-]{1,200})(\/download)?$/.exec(route);

@@ -659,3 +659,9 @@ node scripts/build-sites.mjs
 - 部分交付（partial）任务新增“继续分节生成”按钮，带着任务标题续写下一节。
 - 侧边栏产物预览支持分节标签；搭配既有交付校验与真实进度说明，长任务不会谎报完成。
 - 测试：496 项通过；视觉 7/7。发布 action `d217674a-d348-4647-b7d6-16ff2f0e69c8`。
+## 34. 合并导出 + LOGO 去白底 + 预览空间扩展（2026-11-20，第二十二轮）
+
+- 合并导出：新增 `GET /v1/tasks/:id/artifacts/merge?format=md|docx|html`，按 section 排序合并多节产物；侧边栏多产物时显示“合并导出 DOCX/HTML/MD”。
+- LOGO：边缘洪水填充去除白底并裁切（保留图标内部白色），透明 PNG；BrandMark 改为整张 LOGO（h-11）并移除顶部“校园机会管家·云端 Agent”与底部“CampusMate·信息本位·机会雷达”文案。
+- 预览空间：侧边栏产物 iframe/图片/文本高度提升到 60–65dvh，侧栏滚动区上限放宽，充分利用空白。
+- 测试：496 项通过；视觉 7/7。发布 action `e38ee72f-5fd7-4c21-bc1b-8e9cdc2b4f60`。

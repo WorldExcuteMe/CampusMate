@@ -65,7 +65,6 @@ export function Layout() {
       <aside aria-label="主侧边栏" className="hidden min-h-0 w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
         <div className="shrink-0 px-3 py-3">
           <BrandMark />
-          <p className="mt-1 text-[11px] text-muted-foreground">{runtime === "cloud" ? "校园机会管家 · 云端 Agent" : "校园机会管家 · 本地 Agent"}</p>
         </div>
         <nav aria-label="主导航" className="scrollbar-thin flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain px-3 pb-3">
           {NAV.map((item) =>
@@ -153,7 +152,6 @@ export function Layout() {
         </nav>
         <div className="flex shrink-0 flex-col gap-2 border-t border-sidebar-border px-3 py-3">
           <UserChip />
-          <p className="px-1 text-[10px] text-muted-foreground">CampusMate · 信息本位 · 机会雷达</p>
         </div>
       </aside>
 
