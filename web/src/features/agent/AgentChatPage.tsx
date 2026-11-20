@@ -343,7 +343,14 @@ export function AgentChatPage() {
               开始一个会话：粘贴群通知、询问机会、或让我创建日常任务。
             </div>
           )}
-          {active?.messages.map((message, i) => <ChatMessageRow key={`${active.id}:${message.role}:${message.historyKey ?? message.turnId ?? message.taskId ?? i}`} message={message} ordinal={i + 1} busy={busyUI} onResend={content => void send(false, { content, ordinal: i + 1 })} />)}
+          {active?.messages.map((message, i) => {
+            const view = message.taskId
+              ? active.taskViews?.[message.taskId]
+              : i === active.messages.length - 1 && message.role === "assistant" && active.currentTaskId
+                ? active.taskViews?.[active.currentTaskId]
+                : undefined;
+            return <ChatMessageRow key={`${active.id}:${message.role}:${message.historyKey ?? message.turnId ?? message.taskId ?? i}`} message={message} ordinal={i + 1} busy={busyUI} taskView={view} onResend={content => void send(false, { content, ordinal: i + 1 })} />;
+          })}
           {!busyUI && active.pendingTurn && !active.pendingTurn.taskId && <Button variant="outline" size="sm" onClick={() => send(true)}>重试提交同一轮次</Button>}
           <div ref={endRef} />
         </div>
@@ -453,7 +460,7 @@ export function AgentChatPage() {
                 <option value="auto">自动</option><option value="minimal">最低</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">极高</option><option value="max">最大</option>
               </select>
             </label>
-            {provider?.capabilities?.reasoning === 'deepseek_thinking' ? <span className="text-xs text-muted-foreground" title="当前模型已接入思考与工具调用；低/中/高分别对应官方low/high/max，内部思考不作为聊天正文展示。">DeepSeek 思考已接入</span> : !["reasoning_effort", "enable_thinking", "chat_template_kwargs"].includes(String(provider?.capabilities?.reasoning)) && <span className="text-xs text-muted-foreground">尚未确认该接口的思考控制能力</span>}
+            {provider?.capabilities?.reasoning === 'deepseek_thinking' ? <span className="sr-only">DeepSeek 思考已接入</span> : !["reasoning_effort", "enable_thinking", "chat_template_kwargs"].includes(String(provider?.capabilities?.reasoning)) && <span className="sr-only">尚未确认该接口的思考控制能力</span>}
             {providerError && <span className="text-xs text-destructive">模型目录加载失败：{errorMessage(providerError)}</span>}
           </div>
           <div className="flex flex-wrap items-center gap-2">

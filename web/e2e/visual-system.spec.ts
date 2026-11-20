@@ -31,7 +31,7 @@ const sessions = [
     currentTaskId: "task-visual",
     messages: [
       { role: "user", content: "帮我整理这周的群通知，把有截止时间的做成待办。" },
-      { role: "assistant", content: "### 本周待办\n\n- **实验课签到**：11/21 09:30，一教 116\n- **竞赛报名截止**：11/30 18:00（来源：[官方通知](https://example.org/notice)）\n\n已生成 `data/待办清单.docx`，可直接打开核对。" },
+      { role: "assistant", taskId: "task-visual", content: "### 本周待办,\n\n- **实验课签到**：11/21 09:30，一教 116\n- **竞赛报名截止**：11/30 18:00（来源：[官方通知](https://example.org/notice)）\n\n已生成 `data/待办清单.docx`，可直接打开核对。" },
     ],
     taskViews: { "task-visual": { task, events, lastSeq: 5, connection: "live" } },
   },
@@ -57,6 +57,8 @@ for (const theme of ["light", "dark"] as const) {
     await page.getByText("整理本周群通知", { exact: false }).first().waitFor();
     await page.waitForTimeout(400);
     await page.screenshot({ path: path.join(OUT, `agent-${theme}-1440.png`) });
+    const stepsSummary = page.getByText(/工作步骤 · \d+ 步/).first();
+    if (await stepsSummary.count()) { await stepsSummary.click(); await page.waitForTimeout(200); await page.screenshot({ path: path.join(OUT, `agent-${theme}-1440-steps.png`) }); }
     await page.setViewportSize({ width: 1024, height: 800 });
     await page.waitForTimeout(200);
     await page.screenshot({ path: path.join(OUT, `agent-${theme}-1024.png`) });

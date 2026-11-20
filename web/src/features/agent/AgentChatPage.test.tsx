@@ -56,8 +56,10 @@ it("刷新后从后端会话关联重新读取事件及结果，不新建任务�
   }));
   const view = render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><SessionsProvider><AgentChatPage /></SessionsProvider></QueryClientProvider>);
   expect(await screen.findByText("恢复后的结果")).toBeVisible();
-  expect(screen.getByText("检索公开资料")).toBeVisible();
-  expect(screen.getByRole("link", { name: /school.example/ })).toHaveAttribute("href", "https://school.example/news");
+  expect(screen.getAllByText("检索公开资料").length).toBeGreaterThan(0);
+  const sourceLinks = screen.getAllByRole("link", { name: /school.example/ });
+  expect(sourceLinks.length).toBeGreaterThan(0);
+  expect(sourceLinks[0]).toHaveAttribute("href", "https://school.example/news");
   await waitFor(() => expect(loadSessions("alice")[0].tokens).toBe(12));
   expect(screen.getAllByText("恢复后的结果")).toHaveLength(1);
   expect(requests.some((r) => r.method === "POST")).toBe(false);

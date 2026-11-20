@@ -7,8 +7,10 @@ import { cn } from '@/lib/utils';
 import type { SessionMsg } from '@/lib/agent/sessions';
 import { hasRawToolMarkup, TOOL_PROTOCOL_ERROR } from '../../../../shared/tool-protocol';
 import { AssistantMessage } from './AssistantMessage';
+import { MessageWorkSteps } from './MessageWorkSteps';
+import type { AgentEvent } from '@/lib/agent/api-client';
 
-export function ChatMessageRow({ message, ordinal, busy, onResend }: { message: SessionMsg; ordinal: number; busy: boolean; onResend: (content: string) => void }) {
+export function ChatMessageRow({ message, ordinal, busy, onResend, taskView }: { message: SessionMsg; ordinal: number; busy: boolean; onResend: (content: string) => void; taskView?: { task: { status: string }; events: AgentEvent[] } }) {
   const user = message.role === 'user';
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -42,6 +44,7 @@ export function ChatMessageRow({ message, ordinal, busy, onResend }: { message: 
           {message.mock && <div className="mt-2"><MockBadge /></div>}
           {message.failed && <div className="mt-2"><span className="inline-flex items-center rounded-md border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600">执行失败 · 可重发重试</span></div>}
         </div>
+        {!user && taskView && <MessageWorkSteps events={taskView.events} status={taskView.task.status} />}
         <div role="group" aria-label={`第 ${ordinal} 条消息操作`} className={cn('mt-1 flex min-h-7 items-center gap-1 transition-opacity md:opacity-0 md:group-hover/message:opacity-100 md:group-focus-within/message:opacity-100', user && 'justify-end', copyState !== 'idle' && 'md:opacity-100')}>
           <Button type="button" variant="ghost" size="icon-xs" aria-label={`复制第 ${ordinal} 条消息`} title={copyState === 'copied' ? '已复制' : '复制消息'} disabled={copyState === 'copying'} onClick={() => void copy()}>{copyState === 'copied' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}</Button>
           {user && <Button type="button" variant="ghost" size="icon-xs" aria-label={`编辑第 ${ordinal} 条消息`} title={busy ? '任务执行中，暂不可编辑' : '编辑消息'} disabled={busy} onClick={() => { setDraft(message.content); setEditing(true); }}><Pencil className="size-3.5" /></Button>}
