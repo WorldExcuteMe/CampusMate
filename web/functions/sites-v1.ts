@@ -2,6 +2,7 @@
 // 产物与领域数据接口。所有查询都带 owner 谓词；上游错误只映射为安全码。
 import { CloudAgentError } from "./cloud-agents.ts";
 import { beijingTimeContext } from "./current-time.ts";
+import { parseDocumentText } from "./document-parser.ts";
 import { readCloudEvents, type CloudStreamEvent } from "./cloud-events.ts";
 
 type Row = Record<string, unknown>;
@@ -947,15 +948,26 @@ export function createSitesV1(deps: SitesV1Deps) {
     const existing = await readTask(owner, taskId);
     if (existing) return json(200, { taskId, status: textOf(existing.status), deduped: true });
 
-    const documents = runtime === "server-model" && Array.isArray(data.documents)
-      ? data.documents.slice(0, 8).flatMap(raw => {
-        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const documents: Array<{ name: string; text: string }> = [];
+    if (runtime === "server-model" && Array.isArray(data.documents)) {
+      for (const raw of data.documents.slice(0, 8)) {
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
         const item = raw as Row;
         const name = clampText(item.name, 200);
-        const text = clampText(item.text, 100_000);
-        return name && text ? [{ name, text }] : [];
-      })
-      : [];
+        if (!name) continue;
+        const fallback = clampText(item.text, 100_000);
+        const dataUrl = typeof item.dataUrl === "string" && item.dataUrl.startsWith("data:") && item.dataUrl.length <= 6_000_000
+          ? item.dataUrl : "";
+        let text = fallback;
+        if (dataUrl) {
+          try {
+            const parsed = await parseDocumentText(dataUrl, name);
+            if (parsed.trim()) text = clampText(parsed, 100_000);
+          } catch { /* 服务端解析失败时保留附件层的文本回退。 */ }
+        }
+        if (text) documents.push({ name, text });
+      }
+    }
     const at = historyTick();
     const history = runtime === "server-model" ? await conversationHistory(owner, sessionId, prompt) : [];
     const task: Row = {

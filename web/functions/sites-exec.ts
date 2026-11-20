@@ -1344,10 +1344,23 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
   if (task.runtime && task.runtime !== "server-model") throw new ExecError("runtime_mismatch", 409);
 
   const requestedId = text(task.provider_id) || SERVER_PROVIDERS[0].id;
-  const provider = serverProvider(requestedId) ?? await byokProvider(db, owner, requestedId);
+  let provider = serverProvider(requestedId) ?? await byokProvider(db, owner, requestedId);
   if (!provider) throw new ExecError("unsupported_provider", 400);
 
   let checkpoint = parseCheckpoint(task.checkpoint);
+  // nex/moss 要求公网图片 URL；Edge 暂无 storage 时自动切到支持 data URI 的 Qwen，
+  // 避免直接抛 vision_storage_required；事件里记录真实模型切换。
+  if (provider.vision === "public-url" && checkpoint.images.length && !deps.storage?.put) {
+    const fallback = serverProvider("srv-qwen38");
+    if (fallback && fallback.id !== provider.id) {
+      try {
+        await appendEvent(db, owner, task, "provider.fallback", {
+          from: provider.id, to: fallback.id, reason: "vision_requires_public_storage",
+        });
+      } catch { /* 事件失败不阻断视觉任务 */ }
+      provider = fallback;
+    }
+  }
   if (checkpoint.done) return resultFromTask(task);
   // 同一任务的并发轮询只有一个持有者；租约到期后其它实例可接管。
   if (checkpoint.leaseUntil > now()) {

@@ -15,6 +15,7 @@ export class ComposerDraftStore {
   private accepting = true;
   private entries = new Map<string, Entry>();
   private listeners = new Set<() => void>();
+  private rawFiles = new Map<string, File>();
   private stopChanges?: () => void;
   private writer = crypto.randomUUID();
   constructor(private owner: string, private exists: (id: string) => boolean, private mark: (id: string, hasDraft: boolean) => void,
@@ -37,6 +38,7 @@ export class ComposerDraftStore {
     return entry;
   }
   snapshot = (id: string) => this.entry(id).snapshot;
+  rawFile = (id: string): File | undefined => this.rawFiles.get(id);
   private current(id: string, entry: Entry) { return this.accepting && this.exists(id) && this.entries.get(id) === entry; }
   private cancelRemoved(entry: Entry, draft: ComposerDraft) { for (const [id, controller] of entry.controllers) if (!draft.attachments.some(a => a.id === id)) controller.abort(); }
   private startParses(id: string, draft: ComposerDraft) { this.cancelRemoved(this.entry(id), draft); for (const attachment of draft.attachments) if (attachment.status === 'parsing') this.process(id, attachment); }
@@ -149,13 +151,14 @@ export class ComposerDraftStore {
     })().catch(() => { entry.snapshot = { ...entry.snapshot, error: '草稿版本选择未保存，两份内容未被覆盖，请稍后重试。' }; this.notify(); }).finally(() => { entry.resolution = undefined; entry.snapshot = { ...entry.snapshot, resolving: false }; this.notify(); this.startParses(id, entry.snapshot.draft); });
     entry.resolution = action; return action;
   }
-  clearComposer(id: string) { this.change(id, draft => ({ ...draft, text: '', attachments: [] })); }
-  removeAttachment(id: string, attachmentId: string) { this.change(id, draft => ({ ...draft, attachments: draft.attachments.filter(a => a.id !== attachmentId) })); this.entries.get(id)?.controllers.get(attachmentId)?.abort(); }
+  clearComposer(id: string) { const entry = this.entries.get(id); for (const attachment of entry?.snapshot.draft.attachments ?? []) this.rawFiles.delete(attachment.id); this.change(id, draft => ({ ...draft, text: '', attachments: [] })); }
+  removeAttachment(id: string, attachmentId: string) { this.rawFiles.delete(attachmentId); this.change(id, draft => ({ ...draft, attachments: draft.attachments.filter(a => a.id !== attachmentId) })); this.entries.get(id)?.controllers.get(attachmentId)?.abort(); }
   async addFiles(id: string, files: File[]) {
     await this.load(id); const entry = this.entry(id); if (!this.current(id, entry) || entry.snapshot.resolving) return;
     // Reject the whole selection before parsing/persisting, including mixed
     // selections, repeated paste/drop and files already being parsed.
     const attachments: DraftAttachment[] = files.map(file => ({ id: crypto.randomUUID(), name: file.name, kind: validateAttachmentFile(file) === 'image' ? 'image' : 'doc', sizeBytes: file.size, status: 'parsing', file }));
+    for (const [index, attachment] of attachments.entries()) this.rawFiles.set(attachment.id, files[index]);
     const error = attachmentSetError([...entry.snapshot.draft.attachments, ...attachments]);
     if (error) throw new AttachmentPolicyError(error);
     this.change(id, draft => ({ ...draft, attachments: [...draft.attachments, ...attachments] }));
@@ -187,7 +190,8 @@ export class ComposerDraftStore {
       });
   }
   remove(id: string, storageId?: string) {
-    const entry = this.entries.get(id); this.entries.delete(id);
+    const entry = this.entries.get(id);
+    for (const attachment of entry?.snapshot.draft.attachments ?? []) this.rawFiles.delete(attachment.id); this.entries.delete(id);
     for (const controller of entry?.controllers.values() ?? []) controller.abort();
     const target = storageId ?? entry?.storageId ?? this.storageKey(id);
     void (entry?.queue ?? Promise.resolve()).catch(() => {}).then(async () => { await entry?.resolution; await this.persistence.remove(this.owner, target, this.writer); if (target !== id) await this.persistence.remove(this.owner, id, this.writer); }).catch(() => {}); this.notify();

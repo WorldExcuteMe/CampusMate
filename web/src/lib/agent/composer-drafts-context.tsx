@@ -17,5 +17,5 @@ export function useComposerDraft(sessionId: string) {
   useEffect(() => { void store.load(sessionId); }, [store, sessionId]);
   return { ...snapshot, setText: (text: string) => store.setText(sessionId, text), setTitleEdit: (value: string | undefined) => store.setTitleEdit(sessionId, value), finishTitle: () => store.finishTitle(sessionId),
     takeForSend: () => store.takeForSend(sessionId), resolve: (choice: 'local' | 'remote' | { version: string }) => store.resolve(sessionId, choice),
-    clear: () => store.clearComposer(sessionId), removeAttachment: (id: string) => store.removeAttachment(sessionId, id), addFiles: (files: File[]) => store.addFiles(sessionId, files) };
+    clear: () => store.clearComposer(sessionId), removeAttachment: (id: string) => store.removeAttachment(sessionId, id), addFiles: (files: File[]) => store.addFiles(sessionId, files), rawFile: (id: string) => store.rawFile(id) };
 }

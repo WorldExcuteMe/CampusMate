@@ -608,3 +608,14 @@ node scripts/build-sites.mjs
 - 首屏：`index.html` 预置 `data-theme="dark"` 与 `font-size:16px`，避免刷新时先闪浅色。
 - 测试：495 项通过；视觉基线 7/7。
 - 最终发布：action `63423848-2e01-4f93-847e-b4cdf31f95d7`，`publication_completed`。
+## 28. 视觉输入回退、Markdown 下载与服务端文档解析（2026-11-20，第十六轮）
+
+- `vision_storage_required` 根因：`srv-moss`（nex）要求公网图片 URL，而 Edge 没有 storage 客户端。现在检测到图片任务且 provider 为 public-url 时自动切到 `srv-qwen38`（data URI Vision），写入 `provider.fallback` 事件，不再直接失败；有 storage 时仍走原路径。
+- Markdown 产物：`create_document` 的 artifact 是 `kind=markdown` + `{format:"md",text}`，但前端只认 DocumentAST，导致“产物结构无法安全预览”且没有下载按钮。现在 Markdown 走独立预览分支并提供“下载 MD”，旧 AST 分支保持兼容。
+- 文档解析下沉：
+  - 新增 `functions/document-parser.ts`，PDF 使用随 Function 部署的 pdfjs（vendor，懒加载），DOCX 使用 ZIP/deflate + `word/document.xml`，TXT/MD 直接解码。
+  - 前端在发送时把原始文档 data URL 一并提交；`sites-v1` 在服务端解析后写入 checkpoint 文本，`read_attachment` 仍按需返回。附件层文本只作为服务端解析失败/刷新恢复的回退。
+  - 原始 File 通过 Composer 的非持久化 `rawFile` 映射保留到发送时；文档附件层解析失败不再阻断发送，服务端仍可解析。
+  - 任务请求体上限 8MB；原始文档 data URL 有大小预算，图片较多时自动退回文本。
+- 测试：496 项通过；视觉基线 7/7。
+- 最终发布：action `ab7ce74c-ddc0-444c-bc1c-86bbaa3e7a91`，`publication_completed`。

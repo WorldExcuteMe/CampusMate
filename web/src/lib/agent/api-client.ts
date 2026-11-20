@@ -55,7 +55,7 @@ export async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export type ReasoningPreference = "auto" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-export interface TaskDocument { name: string; text: string; }
+export interface TaskDocument { name: string; text?: string; dataUrl?: string; }
 export interface TaskInput { title: string; intent?: string; sessionId?: string; turnId?: string; images?: string[]; documents?: TaskDocument[]; providerId?: string; reasoning?: ReasoningPreference; contextLimit?: number; }
 export async function createTask(input: TaskInput): Promise<{ taskId: string; status: string }> {
   return req("/v1/tasks", { method: "POST", body: JSON.stringify(input) });
@@ -87,7 +87,7 @@ export interface TaskApproval { id: string; taskId: string; toolName: string; ri
 export async function listApprovals(): Promise<TaskApproval[]> { return (await req<{ approvals: TaskApproval[] }>("/v1/approvals")).approvals; }
 export async function decideApproval(id: string, decision: "approved" | "rejected"): Promise<void> { await req(`/v1/approvals/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ decision }) }); }
 
-export interface DocumentArtifact { id: string; taskId: string; documentId: string; revision: number; sha256: string; kind: string; inline: unknown; }
+export interface DocumentArtifact { id: string; taskId: string; documentId: string; revision: number; sha256: string; kind: string; filename?: string; inline: unknown; }
 export async function getArtifact(id: string): Promise<{ artifact: DocumentArtifact; availableFormats: string[] }> { return req(`/v1/artifacts/${encodeURIComponent(id)}`); }
 export async function downloadArtifact(id: string, format: "md" | "docx" | "pdf"): Promise<{ blob: Blob; filename: string; sha256: string | null }> {
   const base = backendUrl(); if (!base) throw new Error("尚未配置文档后端");

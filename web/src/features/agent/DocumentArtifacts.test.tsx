@@ -25,3 +25,14 @@ it("后端确认可用后显示DOCX/PDF，并把选中格式交给下载客户�
   await act(async () => { fireEvent.click(word); }); expect(api.download).toHaveBeenCalledWith("multi", "docx");
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "下载 PDF" })); }); expect(api.download).toHaveBeenCalledWith("multi", "pdf");
 });
+it("markdown 产物直接展示正文并可下载，不再误报结构无法预览", async () => {
+  api.get.mockResolvedValue({ artifact: { id: "md", kind: "markdown", revision: 1, sha256: "md5", filename: "通知.md", inline: { format: "md", text: "# 通知\n正文内容" } }, availableFormats: ["md"] });
+  api.download.mockResolvedValue({ blob: new Blob(["md"]), filename: "通知.md" });
+  URL.createObjectURL = vi.fn(() => "blob:md"); URL.revokeObjectURL = vi.fn(); vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  render(<QueryClientProvider client={new QueryClient()}><DocumentArtifacts ids={["md"]} owner="alice" partial={false} /></QueryClientProvider>);
+  fireEvent.click(screen.getByRole("button", { name: /查看文档/ }));
+  expect(await screen.findByText(/正文内容/)).toBeVisible();
+  expect(screen.queryByText(/结构无法安全预览/)).toBeNull();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "下载 MD" })); });
+  await vi.waitFor(() => expect(api.download).toHaveBeenCalledWith("md", "md"));
+});

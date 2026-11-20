@@ -39,6 +39,32 @@ import type { AgentActivity } from "@/lib/agent/progress";
 import { IMAGE_LIMIT_HINT, imageLimitError } from '../../../../shared/attachments';
 import { ATTACHMENT_ACCEPT, ATTACHMENT_LIMIT_DETAILS, ATTACHMENT_LIMIT_HINT, attachmentSendError, composeAttachmentText } from '@/lib/ingest/limits';
 
+function fileDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error("文档读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function documentPayload(files: Array<{ id?: string; kind: string; name: string; text?: string; dataUrl?: string; file?: File; sizeBytes?: number }>, rawFile?: (id: string) => File | undefined) {
+  const documents: Array<{ name: string; text?: string; dataUrl?: string }> = [];
+  const imageChars = files.reduce((total, attachment) => total + (attachment.kind === "image" ? String(attachment.dataUrl ?? "").length : 0), 0);
+  let rawChars = 0;
+  for (const attachment of files) {
+    if (attachment.kind !== "doc") continue;
+    let dataUrl = "";
+    // 原始字节交给服务端 Agent 解析；限额内同时保留文本作为解析失败的回退。
+    const file = attachment.file ?? (attachment.id && rawFile ? rawFile(attachment.id) : undefined);
+    if (file && file.size <= 4 * 1024 * 1024 && rawChars < Math.max(0, 5_500_000 - imageChars)) {
+      try { dataUrl = await fileDataUrl(file); } catch { dataUrl = ""; }
+    }
+    if (dataUrl) rawChars += dataUrl.length;
+    if (dataUrl || attachment.text) documents.push({ name: attachment.name, ...(dataUrl ? { dataUrl } : {}), ...(attachment.text ? { text: attachment.text } : {}) });
+  }
+  return documents;
+}
 // 统一控件鼠标反馈：悬停边框+阴影+图标放大、聚焦环、按压缩放
 const CONTROL_FEEDBACK =
   "group cursor-pointer rounded-md border border-transparent bg-muted transition-all duration-150 hover:border-ring/40 hover:bg-accent hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.97]";
@@ -76,7 +102,8 @@ export function AgentChatPage() {
   const [busy, setBusy] = useState(false);
   const [activity,setActivity] = useState<AgentActivity | null>(null);
   const editing = titleEdit !== undefined;
-  const incompleteAttachments = attachments.some(a => a.status !== 'ready');
+  // 文档附件层解析失败时仍保留原始 File；服务端 Agent 解析器可重试，不阻断发送。
+  const incompleteAttachments = attachments.some(a => a.status !== 'ready' && !(a.kind === 'doc' && (a.file || composer.rawFile(a.id))));
   const [showSetup, setShowSetup] = useState(false);
   const [picking, setPicking] = useState(false);
   const [showOnboard, setShowOnboard] = useState(() => !localStorage.getItem("campusmate.onboarded"));
@@ -177,12 +204,13 @@ export function AgentChatPage() {
     // Editing a historical message must not consume or attach the separate composer draft.
     const files = edit || retry ? [] : currentDraft.attachments;
     if ((!text && files.length === 0 && !retry) || busyUI || !active || (!backendEnabled() && !profile)) return;
+    const documents = edit || retry ? [] : await documentPayload(files, composer.rawFile);
     const content = retry ? active.pendingTurn?.content ?? "" : composeAttachmentText(text, files, !backendEnabled());
     if (!content) return;
     const pendingTurn = retry && active.pendingTurn ? active.pendingTurn : {
       turnId: crypto.randomUUID(), content, providerId: provider?.id, reasoning,
       images: files.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string),
-      documents: files.filter((a) => a.kind === "doc" && a.text).map((a) => ({ name: a.name, text: a.text! })),
+      documents: documents.map(({ name, text }) => ({ name, text: text ?? "" })),
     };
     // A normal send already consumed this exact persisted version atomically.
     // Retrying/editing a historical turn never consumes a newly typed draft.
@@ -207,7 +235,7 @@ export function AgentChatPage() {
         if (!alive.current) return;
         update(active.id, (s) => ({ ...s, backendId: id }));
         const task = await runTaskViaBackend(
-          { title: content.slice(0, 80), intent: content, sessionId: id, turnId: pendingTurn.turnId, images: pendingTurn.images, documents: pendingTurn.documents, providerId: pendingTurn.providerId, reasoning: pendingTurn.reasoning, ...(active.contextCap ? { contextLimit: active.contextCap } : {}) },
+          { title: content.slice(0, 80), intent: content, sessionId: id, turnId: pendingTurn.turnId, images: pendingTurn.images, documents, providerId: pendingTurn.providerId, reasoning: pendingTurn.reasoning, ...(active.contextCap ? { contextLimit: active.contextCap } : {}) },
           (t) => {
             if (!alive.current) return;
             update(active.id, (s) => mergeTask(s, t));
