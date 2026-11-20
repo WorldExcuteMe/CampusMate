@@ -33,6 +33,7 @@ import { useTaskMonitor } from "./use-task-monitor";
 import { TaskWorkspace } from "./TaskWorkspace";
 import { ChatMessageRow } from './ChatMessageRow';
 import { AgentActivityCard } from "./AgentActivityCard";
+import { MessageWorkSteps } from "./MessageWorkSteps";
 import { ContextUsage } from "./ContextUsage";
 import type { AgentActivity } from "@/lib/agent/progress";
 import { IMAGE_LIMIT_HINT, imageLimitError } from '../../../../shared/attachments';
@@ -108,6 +109,8 @@ export function AgentChatPage() {
   const modelName = provider?.model || "未知模型";
   const contextCap = (backendEnabled() ? active.contextCap : provider?.contextLimit) ?? null;
   const currentTask = active.currentTaskId ? active.taskViews?.[active.currentTaskId]?.task : undefined;
+  const liveView = active.currentTaskId ? active.taskViews?.[active.currentTaskId] : undefined;
+  const liveDraft = liveView?.draft ?? "";
   const currentEvents = active.currentTaskId ? active.taskViews?.[active.currentTaskId]?.events ?? [] : [];
   const runTurns = currentEvents.filter((e) => e.type === "llm.request").length;
   const runSteps = currentEvents.filter((e) => e.type === "tool.called").length;
@@ -358,6 +361,13 @@ export function AgentChatPage() {
                 : undefined;
             return <ChatMessageRow key={`${active.id}:${message.role}:${message.historyKey ?? message.turnId ?? message.taskId ?? i}`} message={message} ordinal={i + 1} busy={busyUI} taskView={view} onResend={content => void send(false, { content, ordinal: i + 1 })} />;
           })}
+          {busyUI && currentTask && !active.messages.some((message) => message.taskId === active.currentTaskId && message.role === "assistant") && (
+            <div className="rounded-lg border border-border/70 bg-background p-3" aria-label="实时执行进度">
+              <p className="flex items-center gap-2 text-xs font-medium text-primary"><Loader2 className="size-3.5 animate-spin" /> 正在执行 · 实时进度</p>
+              {liveDraft && <p className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">{liveDraft}</p>}
+              <MessageWorkSteps events={currentEvents} status={currentTask.status} />
+            </div>
+          )}
           {!busyUI && active.pendingTurn && !active.pendingTurn.taskId && <Button variant="outline" size="sm" onClick={() => send(true)}>重试提交同一轮次</Button>}
           <div ref={endRef} />
         </div>

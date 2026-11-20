@@ -207,7 +207,15 @@ export function subscribeTask(id: string, handlers: TaskHandlers, options: { aft
     current.onopen = () => { if (!stopped && source === current) { live = true; if (timer) { clearTimeout(timer); timer = null; } connection("live"); } };
     current.addEventListener("task_event", (ev) => { if (stopped || source !== current) return; try { receive([JSON.parse((ev as MessageEvent).data)]); } catch { startPoll(); } });
     current.addEventListener("task_status", (ev) => { if (stopped || source !== current) return; try { const task = JSON.parse((ev as MessageEvent).data) as AgentTask; handlers.onStatus?.(task); if (terminal(task.status)) void finish(); } catch { startPoll(); } });
-    current.addEventListener("close", () => { if (stopped || source !== current) return; current.close(); source = null; live = false; void finish(); });
+    current.addEventListener("close", (ev) => {
+      if (stopped || source !== current) return;
+      let status = "";
+      try { status = String((JSON.parse((ev as MessageEvent).data) as { status?: unknown }).status ?? ""); } catch { status = ""; }
+      current.close(); source = null; live = false;
+      if (status && terminal(status)) { void finish(); return; }
+      // 服务端只是到达本次流的时间窗，任务仍在运行：继续轮询并自动重连。
+      startPoll();
+    });
     current.onerror = () => { if (stopped || source !== current) return; current.close(); source = null; startPoll(); };
   };
   void connect().catch(() => startPoll());

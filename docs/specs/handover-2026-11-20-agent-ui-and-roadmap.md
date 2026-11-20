@@ -544,3 +544,12 @@ node scripts/build-sites.mjs
 - DB：迁移 v4 增加 7 个热路径索引（events owner+task+seq、messages owner+session+ord、tasks owner+session/status、approvals/artifacts owner+task、conversations owner+updated_at），migration `01a1f851-08b6-718d-b270-2c5ca863723d` applied。
 - 测试：全量 `487` 项通过；新增流式增量、思考摘要边界、并行工具、stream 回退、Cloud thinking 映射用例；视觉基线 7/7。
 - 发布：action `0be591ee-9d6c-4da9-9bb3-1454a8acdeef`，`publication_completed`；线上资源 `index-5fjHUySH.js`。
+## 20. 聊天内实时进度与长任务自动续跑（2026-11-20，第八轮）
+
+- 聊天框内新增「正在执行 · 实时进度」块：运行中直接显示工作步骤、每步参数/耗时、思考摘要和流式草稿；完成后仍由 assistant 消息内的工作步骤回看，避免只依赖右侧执行面板。
+- 流式窗口结束但任务仍在 running 时，客户端不再当作结束：`close` 事件读取状态，非终态则继续轮询并自动重连 SSE，不需要用户再输入“继续”。
+- 思考 token 计入 `max_tokens`：阶段预算上调（simple 4096 / write 8192 / plan 6144 / verify 3072 / summary 1536 / extract 1536）。
+- 截断或空正文不再伪装成“已完成本轮处理”：保存 checkpoint、追加“继续输出”提示并返回 running 自动续跑；两次仍为空则如实标记 `server_model_empty_response` 失败。
+- 上游实测（只记录字段与耗时，不记录内容/密钥）：Qwen3.8-27B 首个 reasoning 约 4.1s；MiMo-V2.6-Flash 约 17.9s；nex-n2.6 约 1.7s；三者 SSE 均返回 `reasoning_content`。
+- 测试：`489` 项通过（新增截断续跑、SSE 时间窗自动重连）；视觉基线 7/7。
+- 发布：action `ab1d70a1-8fc7-4d78-affc-78ff730e4e21`，`publication_completed`；线上资源 `index-CpTkqZoL.js`。

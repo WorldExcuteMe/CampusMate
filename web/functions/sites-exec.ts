@@ -155,13 +155,14 @@ export function resolveServerThinking(
 }
 
 // 各阶段输出预算；与 generation-policy 的“输出不足时限制思考档位”配合使用。
+// 这些上游把 reasoning token 也计入 max_tokens：预算不足时会只产出思考而没有正文。
 const STAGE_MAX_TOKENS: Record<GenerationStage, number> = {
-  plan: 4096,
-  verify: 2048,
-  write: 6144,
-  simple: 2048,
-  summary: 1200,
-  extract: 1024,
+  plan: 6144,
+  verify: 3072,
+  write: 8192,
+  simple: 4096,
+  summary: 1536,
+  extract: 1536,
 };
 
 const MAX_TOOL_ROUNDS_PER_ADVANCE = 4;
@@ -1396,7 +1397,42 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
     });
 
     if (!response.toolCalls.length) {
-      const summary = (response.content.trim() || "已完成本轮处理。").slice(0, 12_000);
+      const finalText = response.content.trim();
+      const truncated = response.finishReason === "length";
+      const attempts = Number.isSafeInteger(checkpoint.attempts) ? Number(checkpoint.attempts) : 0;
+      // 思考 token 也计入 max_tokens：截断/空正文时保存进度并自动续跑，不伪装成“已完成”。
+      if ((truncated || !finalText) && attempts < 2) {
+        if (finalText) history.push({ role: "assistant", content: finalText });
+        history.push({ role: "user", content: `上一次响应${truncated ? "达到输出长度上限" : "没有返回正文"}。请直接继续给出最终中文答复，不要重复已完成的工具调用。` });
+        checkpoint = {
+          ...checkpoint, messages: history, images: checkpoint.images, toolRounds, usage, stage,
+          attempts: attempts + 1, leaseUntil: 0, done: false,
+        };
+        const expectedAt = Number.isSafeInteger(task.updated_at) ? Number(task.updated_at) : undefined;
+        const resumed = await updateTask(db, owner, taskId, {
+          status: "running", checkpoint, usage: usageView(usage), updated_at: now(),
+        }, "running", expectedAt);
+        if (!resumed.length) throw new ExecError("task_cancelled", 409);
+        await appendEvent(db, owner, task, "run.continue", {
+          reason: truncated ? "output_budget" : "empty_response", attempt: attempts + 1,
+        });
+        return { status: "running", toolRounds, usage, providerId: provider.id, model, retryable: true };
+      }
+      if (!finalText) {
+        await appendEvent(db, owner, task, "run.summary", {
+          rounds: toolRounds, toolCalls: usage.toolCalls, tokens: usage.tokens,
+          input: usage.inputTokens, output: usage.outputTokens, costUsd: null,
+          providerId: provider.id, model, stopReason: "error", error: "server_model_empty_response",
+        });
+        const expectedAt = Number.isSafeInteger(task.updated_at) ? Number(task.updated_at) : undefined;
+        await updateTask(db, owner, taskId, {
+          status: "failed", error: "server_model_empty_response",
+          checkpoint: { ...checkpoint, done: true, leaseUntil: 0 },
+          usage: usageView(usage), updated_at: now(),
+        }, "running", expectedAt);
+        return { status: "failed", error: "server_model_empty_response", toolRounds, usage, providerId: provider.id, model };
+      }
+      const summary = (truncated ? `${finalText}\n\n（输出达到长度上限，已截断）` : finalText).slice(0, 12_000);
       const artifacts = resultRows(await db.from(ARTIFACTS).select("id").eq("task_id", taskId).eq("owner_id", owner));
       const result = { summary, artifactIds: artifacts.map(row => text(row.id)).filter(Boolean) };
       const finalCheckpoint = {

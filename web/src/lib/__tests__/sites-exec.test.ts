@@ -310,7 +310,7 @@ describe("密钥边界", () => {
     const init = endpoint.calls[0].init!;
     expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${API_KEY}`);
     const body = JSON.parse(String(init.body)) as Row;
-    expect(body).toMatchObject({ model: "Qwen3.8-27B", max_tokens: 2048, reasoning_effort: "xhigh" });
+    expect(body).toMatchObject({ model: "Qwen3.8-27B", max_tokens: 4096, reasoning_effort: "xhigh" });
 
     // 任一表（含 checkpoint / 事件载荷 / assistant 消息）都不得出现明文密钥。
     const snapshot = JSON.stringify({
@@ -416,5 +416,32 @@ describe("流式、思考摘要与并行工具", () => {
     expect(calls).toHaveLength(2);
     expect(JSON.parse(calls[0].body!)).toMatchObject({ stream: true });
     expect(JSON.parse(calls[1].body!)).not.toHaveProperty("stream");
+  });
+});
+
+function chatTruncated(): Row {
+  return {
+    model: "Qwen3.8-27B",
+    choices: [{ finish_reason: "length", message: { content: "" } }],
+    usage: { prompt_tokens: 10, completion_tokens: 96, total_tokens: 106, completion_tokens_details: { reasoning_tokens: 96 } },
+  };
+}
+
+describe("长任务自动续跑", () => {
+  it("思考吃光输出预算时保存 checkpoint 并返回 running，而不是假完成", async () => {
+    const ctx = await fixture();
+    const endpoint = fakeFetch([chatTruncated(), chatFinal("补全后的答复")]);
+    const first = await advance("task_exec_1", "owner-a", depsOf(ctx, endpoint.fetch));
+    expect(first.status).toBe("running");
+    expect(first.retryable).toBe(true);
+    const events = ctx.store.rows(EVENTS);
+    expect(events.some(event => event.type === "run.continue")).toBe(true);
+    expect((ctx.store.rows(TASKS)[0].checkpoint as Row).attempts).toBe(1);
+    const second = await advance("task_exec_1", "owner-a", depsOf(ctx, endpoint.fetch));
+    expect(second).toMatchObject({ status: "succeeded", summary: "补全后的答复" });
+    // 第二次请求携带“继续输出”的提示，避免重复工具调用。
+    const body = JSON.parse(String(endpoint.calls[1].init!.body)) as Row;
+    const messages = body.messages as Array<Row>;
+    expect(String(messages.at(-1)?.content)).toContain("继续");
   });
 });

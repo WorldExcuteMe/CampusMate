@@ -41,3 +41,30 @@ it("SSE乱序/重复，断线poll补事件并携cursor重连，终态补齐后�
   sub.stop(); first.emit("task_event", event(7));
   expect(received).not.toContain(7);
 });
+
+it("服务端流时间窗结束但任务仍在运行：自动轮询/重连，不要求用户输入继续", async () => {
+  vi.useFakeTimers();
+  vi.stubEnv("VITE_BACKEND_URL", "http://backend.test"); vi.stubGlobal("EventSource", FakeSource);
+  let status = "running";
+  const close = vi.fn();
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+    ok: true,
+    text: async () => JSON.stringify(url.includes("/events?")
+      ? { events: [] }
+      : { task: { id: "t1", status, usage: {} } }),
+  })));
+  subscribeTask("t1", { onClose: close }, { pollMs: 5, reconnectMs: 10 });
+  await vi.advanceTimersByTimeAsync(0);
+  const first = FakeSource.instances[0];
+  first.onopen?.();
+  first.emit("close", { status: "running" });
+  await vi.advanceTimersByTimeAsync(20);
+  expect(close).not.toHaveBeenCalled();
+  expect(FakeSource.instances.length).toBeGreaterThan(1);
+  status = "succeeded";
+  const last = FakeSource.instances.at(-1)!;
+  last.onopen?.();
+  last.emit("close", { status: "succeeded" });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(close).toHaveBeenCalledTimes(1);
+});
