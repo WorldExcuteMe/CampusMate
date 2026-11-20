@@ -145,6 +145,7 @@ function TaskDetails({ view, resumeBlocked, onTask, onRefresh, onContinue }: { v
       {!resumeBlocked && (["paused", "failed"].includes(task.status) || task.status === "needs_input" && !approvals.isPending && !pendingApprovals.length) && reason !== "budget_exceeded" && reason !== "missing_information" && reason !== "tool_protocol_error" && <Button size="sm" variant="outline" disabled={Boolean(action)} onClick={() => act("resume", async () => { await resumeTask(task.id); })}>恢复任务</Button>}
       {["queued", "running", "paused", "needs_input"].includes(task.status) && <Button size="sm" variant="ghost" disabled={Boolean(action) || task.cancelRequested} onClick={() => act("cancel", async () => { if (!await cancelTask(task.id)) throw new Error("此任务当前无法取消"); })}>取消任务</Button>}
       {task.status === "failed" && <Button size="sm" variant="ghost" onClick={() => onContinue(task.title)}>用新消息继续</Button>}
+      {task.result?.partial && <Button size="sm" variant="outline" onClick={() => onContinue(`${task.title}（继续生成下一节）`)}>继续分节生成</Button>}
     </div>}
     {error && <p role="alert" className="whitespace-pre-wrap text-xs leading-5 text-destructive">{error}</p>}
   </>;

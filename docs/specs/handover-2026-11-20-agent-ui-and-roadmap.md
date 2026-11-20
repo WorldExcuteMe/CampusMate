@@ -652,3 +652,10 @@ node scripts/build-sites.mjs
 - 产物格式切换、下载成品（PPTX 走客户端 pptxgenjs，其他走服务端导出）；DOCX/XLSX/PPTX 标注不支持内嵌预览并引导下载。
 - 测试：496 项（session-cloud 单文件复跑通过，全量偶发时序波动）；视觉 7/7。
 - 发布：action `f1a58162-a518-4162-a87b-3d60597b0f77`，`publication_completed`。
+## 33. 长文档分节生成 + 续写入口（2026-11-20，第二十一轮）
+
+- 系统提示新增【长文】：万字/长篇任务先 create_plan 列章节，再按章节多次 create_document（section/totalSections），每轮推进 1-2 节，禁止未生成正文就宣称完成。
+- create_document 支持 section/totalSections，产物显示“第 N/M 节”；摘要标注分节。
+- 部分交付（partial）任务新增“继续分节生成”按钮，带着任务标题续写下一节。
+- 侧边栏产物预览支持分节标签；搭配既有交付校验与真实进度说明，长任务不会谎报完成。
+- 测试：496 项通过；视觉 7/7。发布 action `d217674a-d348-4647-b7d6-16ff2f0e69c8`。

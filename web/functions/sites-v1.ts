@@ -805,6 +805,8 @@ export function createSitesV1(deps: SitesV1Deps) {
       ...(src.chart && typeof src.chart === "object" ? { chart: src.chart as ExportSource["chart"] } : {}),
       ...(typeof src.mermaid === "string" ? { mermaid: src.mermaid } : {}),
       ...(src.json !== undefined ? { json: src.json } : {}),
+      ...(Number.isSafeInteger(src.section) ? { section: Number(src.section) } : {}),
+      ...(Number.isSafeInteger(src.totalSections) ? { totalSections: Number(src.totalSections) } : {}),
     };
   }
   function artifactView(row: Row, inline?: { text: string; sha256: string }) {
@@ -816,6 +818,8 @@ export function createSitesV1(deps: SitesV1Deps) {
       size: integerOr(row.size),
       inline: source ? { format: "md", text: source.text } : null,
       primaryFormat: textOf(jsonObject(row.inline).primaryFormat) || undefined,
+      section: Number.isSafeInteger(jsonObject(jsonObject(row.inline).source).section) ? Number(jsonObject(jsonObject(row.inline).source).section) : undefined,
+      totalSections: Number.isSafeInteger(jsonObject(jsonObject(row.inline).source).totalSections) ? Number(jsonObject(jsonObject(row.inline).source).totalSections) : undefined,
       source: artifactSource(row),
       availableFormats: availableFormats(artifactSource(row)),
     };

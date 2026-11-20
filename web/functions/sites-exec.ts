@@ -197,6 +197,7 @@ const SERVER_SYSTEM_PROMPT = [
   "【核验】交付前核对工具的真实返回；引用实际读取到的来源 URL；未核实部分明确标注。模型记忆不是证据。",
   "【规划】用户要求设计/计划/方案时，输出全面结构化方案：目标、背景、分阶段步骤、时间线、资源、风险与应对、验收指标；并用 create_document 附 mermaid 流程图/结构图与 table 时间线，按用户要求选择 format 直接交付成品。",
   "【成品】用户要 PPT/Word/Excel/PDF/HTML/CSV 时，create_document 必须带 format 及对应 slides/table/chart/mermaid，直接生成成品供下载，不要只给 Markdown 让用户自行转换。",
+  "【长文】用户要求万字/长篇/完整计划时，先 create_plan 列章节，再按章节多次调用 create_document（带 section/totalSections），每轮推进 1-2 节；严禁未生成正文就宣称完成；达到上限时说明已交付章节与下一节计划。",
   "【收尾】任务完成或信息不足时，用中文给出简洁、可执行的总结；不要输出工具调用格式的文本。",
 ].join("\n");
 
@@ -339,6 +340,8 @@ const TOOL_DEFS = [
           json: { type: "object", description: "可选结构化 JSON 数据" },
           format: { type: "string", description: "用户要求的成品格式：docx/pptx/xlsx/csv/html/svg/mermaid/json/pdf；pdf 以 HTML 打印交付" },
           theme: { type: "string", description: "PPT 视觉主题：tech/academic/lively，按用户提示词选择" },
+          section: { type: "number", description: "长文分节序号" },
+          totalSections: { type: "number", description: "长文总节数" },
         },
         required: ["filename", "markdown"],
         additionalProperties: false,
@@ -1026,6 +1029,8 @@ function exportSourceFromArgs(args: Row, title: string, markdown: string): Row {
   if (typeof args.mermaid === "string") source.mermaid = args.mermaid.slice(0, 20_000);
   if (args.json !== undefined) source.json = args.json;
   if (typeof args.theme === "string") source.theme = args.theme.slice(0, 20);
+  if (Number.isSafeInteger(args.section) && Number(args.section) > 0) source.section = Number(args.section);
+  if (Number.isSafeInteger(args.totalSections) && Number(args.totalSections) > 0) source.totalSections = Number(args.totalSections);
   return source;
 }
 async function createDocument(ctx: ToolContext, args: Row): Promise<Row> {
@@ -1049,7 +1054,8 @@ async function createDocument(ctx: ToolContext, args: Row): Promise<Row> {
     }, { onConflict: "id" }).select("id");
   }
   const fmt = typeof args.format === "string" ? args.format.toLowerCase() : "";
-  return { ok: true, summary: `已生成文档 ${filename}${fmt ? `（成品格式 ${fmt}，可在产物面板直接下载）` : ""}`, artifactId: id, filename, ...(fmt ? { format: fmt } : {}) };
+  const section = Number.isSafeInteger(args.section) ? `第 ${Number(args.section)}${Number.isSafeInteger(args.totalSections) ? `/${Number(args.totalSections)}` : ""} 节` : "";
+  return { ok: true, summary: `已生成文档 ${filename}${section ? `（${section}）` : ""}${fmt ? `（成品格式 ${fmt}，可在产物面板直接下载）` : ""}`, artifactId: id, filename, ...(fmt ? { format: fmt } : {}), ...(section ? { section } : {}) };
 }
 
 function decodeEntities(value: string): string {

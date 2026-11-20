@@ -74,7 +74,7 @@ export function ArtifactPreview({ id, owner }: { id: string; owner: string }) {
   return <div className="rounded-lg border border-border/70 bg-background">
     <div className="flex flex-wrap items-center gap-1 border-b px-2 py-1.5">
       <FileText className="size-3.5 text-primary" />
-      <span className="mr-auto truncate text-[11px] text-muted-foreground" title={artifact.filename}>{artifact.filename}</span>
+      <span className="mr-auto truncate text-[11px] text-muted-foreground" title={artifact.filename}>{artifact.section ? `第 ${artifact.section}${artifact.totalSections ? `/${artifact.totalSections}` : ""} 节 · ` : ""}{artifact.filename}</span>
       {formats.map((f) => <button key={f} type="button" onClick={() => setFormat(f)} className={`rounded px-1.5 py-0.5 text-[10px] ${format === f ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted"}`}>{LABELS[f] ?? f}</button>)}
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => void save()}><Download className="size-3" />{busy ? "生成…" : "下载"}</Button>
     </div>

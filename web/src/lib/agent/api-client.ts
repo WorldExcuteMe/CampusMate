@@ -87,7 +87,7 @@ export interface TaskApproval { id: string; taskId: string; toolName: string; ri
 export async function listApprovals(): Promise<TaskApproval[]> { return (await req<{ approvals: TaskApproval[] }>("/v1/approvals")).approvals; }
 export async function decideApproval(id: string, decision: "approved" | "rejected"): Promise<void> { await req(`/v1/approvals/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ decision }) }); }
 
-export interface DocumentArtifact { id: string; taskId: string; documentId: string; revision: number; sha256: string; kind: string; filename?: string; primaryFormat?: string; source?: { title?: string; markdown?: string; slides?: Array<{ title: string; bullets: string[] }> }; inline: unknown; }
+export interface DocumentArtifact { id: string; taskId: string; documentId: string; revision: number; sha256: string; kind: string; filename?: string; primaryFormat?: string; section?: number; totalSections?: number; source?: { title?: string; markdown?: string; slides?: Array<{ title: string; bullets: string[] }> }; inline: unknown; }
 export async function getArtifact(id: string): Promise<{ artifact: DocumentArtifact; availableFormats: string[] }> { return req(`/v1/artifacts/${encodeURIComponent(id)}`); }
 export async function downloadArtifact(id: string, format: string): Promise<{ blob: Blob; filename: string; sha256: string | null }> {
   const base = backendUrl(); if (!base) throw new Error("尚未配置文档后端");
