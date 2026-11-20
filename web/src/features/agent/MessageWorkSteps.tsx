@@ -41,6 +41,7 @@ export function MessageWorkSteps({ events, status }: { events: AgentEvent[]; sta
                 {step.durationMs !== undefined && <span className="text-[11px] tabular-nums text-muted-foreground">{formatDuration(step.durationMs)}</span>}
               </p>
               <p className="mt-0.5 leading-5 text-muted-foreground">{step.summary}</p>
+              {step.argsSummary && <p className="mt-0.5 truncate text-[11px] text-muted-foreground">参数 · {step.argsSummary}</p>}
               {step.sources.map(({ url, host }) => (
                 <a key={url} href={url} target="_blank" rel="noreferrer" className="mt-0.5 block truncate text-primary underline underline-offset-2">
                   来源 · {host}

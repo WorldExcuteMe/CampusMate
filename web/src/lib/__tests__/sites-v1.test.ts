@@ -364,3 +364,28 @@ describe("Sites V1 跨 owner 隔离与只读托管项", () => {
     expect((await f.call("POST", "/v1/providers", {})).status).toBe(403);
   });
 });
+
+describe("思考摘要与参数摘要映射", () => {
+  it("thinking 有 content 时落有界摘要；tool_use input 只落短参数摘要", async () => {
+    const f = fixture();
+    await seedSession(f);
+    const taskId = await seedTask(f);
+    f.cloud.listEvents.mockResolvedValue({
+      data: [
+        { id: "evt_tool", type: "agent.tool_use", name: "save_to_inbox", tool_use_id: "t1", input: { title: "讲座", content: "长正文".repeat(100) } },
+        { id: "evt_think", type: "agent.thinking", content: [{ type: "text", text: "先核对时间再保存".repeat(40) }] },
+      ],
+      next_page: null,
+    });
+    const body = await (await f.call("GET", `/v1/tasks/${taskId}/events`)).json();
+    const types = body.events.map((event: { type: string }) => event.type);
+    expect(types).toContain("thinking.summary");
+    const summary = body.events.find((event: { type: string }) => event.type === "thinking.summary");
+    expect(summary.payload.excerpt.length).toBeLessThanOrEqual(240);
+    expect(summary.payload.chars).toBeGreaterThan(240);
+    const called = body.events.find((event: { type: string }) => event.type === "tool.called");
+    expect(String(called.payload.argsSummary)).toContain("title=讲座");
+    expect(String(called.payload.argsSummary).length).toBeLessThanOrEqual(200);
+    expect(JSON.stringify(body.events)).not.toContain("长正文".repeat(20));
+  });
+});

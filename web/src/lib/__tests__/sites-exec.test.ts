@@ -321,3 +321,100 @@ describe("密钥边界", () => {
     expect(snapshot).not.toContain("Authorization");
   });
 });
+
+function sseResponse(lines: string[]): Response {
+  const body = lines.map(line => `data: ${line}\n\n`).join("") + "data: [DONE]\n\n";
+  return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
+function fakeMixedFetch(responses: Array<Row | Response>) {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  const fn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(input), init });
+    const next = responses.shift();
+    if (!next) throw new Error("unexpected_fetch_call");
+    if (next instanceof Response) return next;
+    return new Response(JSON.stringify(next), { status: 200, headers: { "Content-Type": "application/json" } });
+  }) as unknown as typeof fetch;
+  return { fetch: fn, calls };
+}
+
+const OPPORTUNITIES = "campusmate_opportunities";
+
+function multiTool(): Row {
+  return {
+    model: "Qwen3.8-27B",
+    choices: [{
+      finish_reason: "tool_calls",
+      message: {
+        content: "",
+        tool_calls: [
+          { id: "call_a", type: "function", function: { name: "save_to_inbox", arguments: JSON.stringify({ title: "并行事项A" }) } },
+          { id: "call_b", type: "function", function: { name: "save_opportunity", arguments: JSON.stringify({ title: "并行机会B" }) } },
+        ],
+      },
+    }],
+    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+  };
+}
+
+describe("流式、思考摘要与并行工具", () => {
+  it("上游 SSE 增量落 llm.delta，思考只落有界摘要", async () => {
+    const ctx = await fixture();
+    const endpoint = fakeMixedFetch([sseResponse([
+      JSON.stringify({ model: "Qwen3.8-27B", choices: [{ delta: { reasoning_content: "先判断通知类型，再决定是否保存" } }] }),
+      JSON.stringify({ choices: [{ delta: { content: "已" } }] }),
+      JSON.stringify({ choices: [{ delta: { content: "整理" } }] }),
+      JSON.stringify({ choices: [{ finish_reason: "stop", delta: {} }], usage: { prompt_tokens: 7, completion_tokens: 2, total_tokens: 9 } }),
+    ])]);
+    const result = await advance("task_exec_1", "owner-a", depsOf(ctx, endpoint.fetch));
+    expect(result).toMatchObject({ status: "succeeded", summary: "已整理" });
+    const events = ctx.store.rows(EVENTS);
+    const deltas = events.filter(event => event.type === "llm.delta").map(event => String((event.payload as Row).text ?? "")).join("");
+    expect(deltas).toBe("已整理");
+    const thinking = events.filter(event => event.type === "thinking.summary");
+    expect(thinking).toHaveLength(1);
+    expect(String((thinking[0].payload as Row).excerpt)).toContain("先判断通知类型");
+    expect(Number((thinking[0].payload as Row).chars)).toBeGreaterThan(10);
+    const llmResponse = events.find(event => event.type === "llm.response")!;
+    expect(Number((llmResponse.payload as Row).reasoningChars)).toBeGreaterThan(10);
+    const request = endpoint.calls[0].init!;
+    expect(JSON.parse(String(request.body))).toMatchObject({ stream: true, stream_options: { include_usage: true } });
+  });
+
+  it("同一轮多个工具并行执行，事件带 callInstanceId、参数摘要与耗时", async () => {
+    const ctx = await fixture();
+    const endpoint = fakeFetch([multiTool(), chatFinal("两项都已处理")]);
+    const result = await advance("task_exec_1", "owner-a", depsOf(ctx, endpoint.fetch));
+    expect(result.status).toBe("succeeded");
+    expect(ctx.store.rows(INBOX)).toHaveLength(1);
+    expect(ctx.store.rows(OPPORTUNITIES)).toHaveLength(1);
+    const events = ctx.store.rows(EVENTS);
+    const called = events.filter(event => event.type === "tool.called");
+    expect(called).toHaveLength(2);
+    expect((called[0].payload as Row).callInstanceId).toBe("call_a");
+    expect(String((called[0].payload as Row).argsSummary)).toContain("title=并行事项A");
+    expect((called[1].payload as Row).callInstanceId).toBe("call_b");
+    const results = events.filter(event => event.type === "tool.result");
+    expect(results).toHaveLength(2);
+    expect(typeof (results[0].payload as Row).durationMs).toBe("number");
+    expect(results.every(event => (event.payload as Row).ok === true)).toBe(true);
+  });
+
+  it("上游拒绝 stream 时退回一次性请求，任务仍能完成", async () => {
+    const ctx = await fixture();
+    const calls: { body?: string }[] = [];
+    let index = 0;
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ body: String(init?.body ?? "") });
+      index += 1;
+      if (index === 1) return new Response(JSON.stringify({ error: "stream_unsupported" }), { status: 400, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify(chatFinal("回退成功")), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const result = await advance("task_exec_1", "owner-a", depsOf(ctx, fetchImpl));
+    expect(result).toMatchObject({ status: "succeeded", summary: "回退成功" });
+    expect(calls).toHaveLength(2);
+    expect(JSON.parse(calls[0].body!)).toMatchObject({ stream: true });
+    expect(JSON.parse(calls[1].body!)).not.toHaveProperty("stream");
+  });
+});

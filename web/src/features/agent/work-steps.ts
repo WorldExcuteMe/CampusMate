@@ -26,6 +26,7 @@ export interface WorkStep {
   recovered: boolean;
   warning: boolean;
   summary: string;
+  argsSummary: string;
   durationMs: number | undefined;
   sources: { url: string; host: string }[];
 }
@@ -63,6 +64,7 @@ export function deriveWorkSteps(events: AgentEvent[], taskStatus?: string): Work
         : result
           ? String(result.payload.summary ?? (ok ? "完成" : "未完成"))
           : running ? "正在执行" : "已停止",
+      argsSummary: typeof start.payload.argsSummary === "string" ? start.payload.argsSummary : "",
       durationMs: typeof result?.payload.durationMs === "number" ? result.payload.durationMs : undefined,
       sources: sourceList(result?.payload.sourceUrls),
     };

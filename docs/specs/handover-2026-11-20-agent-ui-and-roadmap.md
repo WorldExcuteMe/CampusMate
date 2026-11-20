@@ -535,3 +535,12 @@ node scripts/build.mjs
 node scripts/build-sites.mjs
 # prepare/publish 使用 .local/sites/in-prepare-full.json（actionId 每轮新生成）
 ```
+## 19. 流式、思考摘要、并行工具与索引（2026-11-20，第七轮）
+
+- 服务端模型改为上游 SSE 流式：`llm.delta` 每 250ms 或 480 字符批量落库；`/v1/tasks/:id/stream` 在 advance 进行期间每 280ms 拉取新事件推送，首字体感接近流式；上游拒绝 stream（400/404/405/415/422）时自动退回一次性请求。
+- 同一轮多个工具调用改为并行执行；`tool.called`/`tool.result` 各用一次 seq CAS 批量写入，事件新增 `callInstanceId`、`argsSummary`（最多 4 个键、200 字符）、`durationMs`。
+- L2 思考摘要：服务端解析 `reasoning_content`/`reasoning`，每轮只写一条 `thinking.summary`（excerpt ≤240 字符、chars、durationMs），不落原始思考；Cloud Agents 的 thinking 有 content 时同样只落有界摘要；工作台「思考摘要」默认折叠并标注“自动截取，非完整推理”。
+- `llm.response` 增加 `durationMs`、`reasoningChars`；`llm.request` 标记 `stream: true`。
+- DB：迁移 v4 增加 7 个热路径索引（events owner+task+seq、messages owner+session+ord、tasks owner+session/status、approvals/artifacts owner+task、conversations owner+updated_at），migration `01a1f851-08b6-718d-b270-2c5ca863723d` applied。
+- 测试：全量 `487` 项通过；新增流式增量、思考摘要边界、并行工具、stream 回退、Cloud thinking 映射用例；视觉基线 7/7。
+- 发布：action `0be591ee-9d6c-4da9-9bb3-1454a8acdeef`，`publication_completed`；线上资源 `index-5fjHUySH.js`。

@@ -128,6 +128,18 @@ function jsonObject(value: unknown): Row {
   const parsed = jsonValue(value, {});
   return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Row : {};
 }
+// 工具参数只展示少量可读键，避免把正文/隐私整段写进事件。
+function previewArgs(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const row = value as Row;
+  const parts: string[] = [];
+  for (const key of ["title", "query", "url", "filename", "name", "kind", "dueAt", "deadline"]) {
+    const item = row[key];
+    if (typeof item === "string" && item.trim()) parts.push(`${key}=${item.replace(/\s+/g, " ").trim().slice(0, 60)}`);
+  }
+  return parts.slice(0, 4).join(" · ").slice(0, 200);
+}
+
 function clampText(value: unknown, max: number): string {
   const text = textOf(value);
   return text.length > max ? text.slice(0, max) : text;
@@ -594,8 +606,9 @@ export function createSitesV1(deps: SitesV1Deps) {
         case "tool_use": {
           const name = safeToolName(event.name);
           const toolUseId = safeRef(event.tool_use_id, cloudId);
+          const args = previewArgs(event.input ?? event.arguments);
           drafts.push(...makeDrafts(cloudId, [
-            ["tool.called", { name, toolUseId, callInstanceId: toolUseId }],
+            ["tool.called", { name, toolUseId, callInstanceId: toolUseId, ...(args ? { argsSummary: args } : {}) }],
             ["step.started", { name, toolUseId }],
           ]));
           break;
@@ -616,8 +629,14 @@ export function createSitesV1(deps: SitesV1Deps) {
           break;
         }
         case "thinking": {
-          // 不持久化思考原文，只暴露有界的阶段信号。
+          // L2：只保留有界摘要，不持久化完整思考原文。
+          const summary = extractText(event.content).replace(/\s+/g, " ").trim();
           drafts.push(...makeDrafts(cloudId, [["step.started", { phase: "thinking" }]]));
+          if (summary) {
+            drafts.push(...makeDrafts(`${cloudId}:summary`, [["thinking.summary", {
+              excerpt: clampText(summary, 240), chars: summary.length, source: "cloud",
+            }]]));
+          }
           break;
         }
         case "artifact_delivered": {
@@ -1076,14 +1095,25 @@ export function createSitesV1(deps: SitesV1Deps) {
         try {
           for (let step = 0; step < 12; step++) {
             if (request.signal.aborted || Date.now() >= deadline) break;
-            await deps.exec!.advance(taskId, owner).catch(() => undefined);
+            // advance 进行期间持续拉取事件：llm.delta 一落库就推给浏览器，首字体感接近流式。
+            let settled = false;
+            const advancing = deps.exec!.advance(taskId, owner)
+              .catch(() => undefined)
+              .finally(() => { settled = true; });
+            while (!settled && !request.signal.aborted && Date.now() < deadline) {
+              await new Promise(resolve => setTimeout(resolve, 280));
+              const live = await listTaskEvents(owner, taskId, cursor);
+              for (const event of live) { send("task_event", event); cursor = Math.max(cursor, integerOr(event.seq)); }
+            }
+            await advancing;
             const current = await readTask(owner, taskId);
             if (!current) { finish("failed"); return; }
             const list = await listTaskEvents(owner, taskId, cursor);
             for (const event of list) { send("task_event", event); cursor = Math.max(cursor, integerOr(event.seq)); }
             send("task_status", taskView(current));
             if (terminalStatuses.has(textOf(current.status))) { finish(textOf(current.status)); return; }
-            await new Promise(resolve => setTimeout(resolve, 900));
+            // advance 被租约挡住时会立即返回，避免空转。
+            await new Promise(resolve => setTimeout(resolve, 250));
           }
           const current = await readTask(owner, taskId);
           finish(current ? textOf(current.status) : "failed");

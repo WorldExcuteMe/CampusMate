@@ -667,39 +667,48 @@ function usageView(usage: ExecUsage): Row {
 }
 
 // ── 事件：seq 通过 tasks.seq_counter CAS 递增 ────────────────────────────────
-async function appendEvent(db: ExecDatabase, owner: string, task: Row, type: string, payload: Row): Promise<void> {
+// 一次 CAS 预留 N 个 seq，再批量插入事件：把每事件两次任务行写入降为每批一次。
+async function appendEvents(db: ExecDatabase, owner: string, task: Row, drafts: Array<{ type: string; payload: Row }>): Promise<number[]> {
+  if (!drafts.length) return [];
   const taskId = text(task.id);
   for (let attempt = 0; attempt < 4; attempt++) {
     const current = attempt === 0 ? task : await readTask(db, owner, taskId);
     if (!current) throw new ExecError("task_not_found", 404);
     const previous = Number.isSafeInteger(current.seq_counter) ? Number(current.seq_counter) : 0;
-    const seq = previous + 1;
+    const next = previous + drafts.length;
     const at = Date.now();
     const changed = resultRows(await db.from(TASKS)
-      .update({ seq_counter: seq, updated_at: at })
+      .update({ seq_counter: next, updated_at: at })
       .eq("id", taskId).eq("owner_id", owner).eq("seq_counter", previous)
       .select("id,seq_counter"));
     if (changed.length !== 1) continue;
-    const eventId = `${taskId}:exec:${seq}`;
-    const inserted = resultRows(await db.from(EVENTS).insertIfAbsent({
-      id: eventId, task_id: taskId, owner_id: owner, seq,
-      cloud_event_id: eventId, type, payload, created_at: at,
-    }, { onConflict: "id" }).select("id"));
-    if (inserted.length === 1) {
-      task.seq_counter = seq;
-      task.updated_at = at;
-      return;
+    const seqs: number[] = [];
+    for (const [index, draft] of drafts.entries()) {
+      const seq = previous + index + 1;
+      const eventId = `${taskId}:exec:${seq}`;
+      await db.from(EVENTS).insertIfAbsent({
+        id: eventId, task_id: taskId, owner_id: owner, seq,
+        cloud_event_id: eventId, type: draft.type, payload: draft.payload, created_at: at + index,
+      }, { onConflict: "id" }).select("id");
+      seqs.push(seq);
     }
-    // 同 seq 已被其他写入者占用：回滚计数后重试，避免前端等待缺失的 seq。
-    await db.from(TASKS).update({ seq_counter: previous }).eq("id", taskId).eq("owner_id", owner).eq("seq_counter", seq).select("id");
-    task.seq_counter = previous;
+    task.seq_counter = next;
+    task.updated_at = at;
+    return seqs;
   }
   throw new ExecError("event_sequence_conflict", 503);
 }
 
+async function appendEvent(db: ExecDatabase, owner: string, task: Row, type: string, payload: Row): Promise<void> {
+  await appendEvents(db, owner, task, [{ type, payload }]);
+}
 // ── 模型请求 ────────────────────────────────────────────────────────────────
+const STREAM_TIMEOUT_MS = 40_000;
+const DELTA_FLUSH_MS = 250;
+
 interface ModelResponse {
   content: string;
+  reasoning: string;
   toolCalls: ToolCall[];
   usage: { prompt: number | null; completion: number | null; total: number | null; reasoning: number | null };
   finishReason: string;
@@ -726,41 +735,16 @@ function messageText(value: unknown): string {
     ? text((block as Row).text) : "").join("");
 }
 
-function requestSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
-  const any = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
-  return signal && any ? any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
-}
-
-async function callModel(
-  provider: ServerProvider, apiKey: string, messages: LlmMessage[], maxTokens: number,
-  thinking: ServerThinking, deps: ServerExecDeps,
-): Promise<ModelResponse> {
-  const fetchImpl = deps.fetch ?? fetch;
-  const url = `${provider.baseUrl.replace(/\/+$/, "")}/chat/completions`;
-  let response: Response;
-  try {
-    response = await fetchImpl(url, {
-      method: "POST",
-      redirect: "error",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      signal: requestSignal(deps.signal, deps.timeoutMs ?? MODEL_TIMEOUT_MS),
-      body: JSON.stringify({
-        model: provider.model,
-        messages,
-        tools: TOOL_DEFS,
-        tool_choice: "auto",
-        max_tokens: maxTokens,
-        ...(provider.byok ? {} : thinking.params),
-      }),
-    });
-  } catch (error) {
-    const name = error && typeof error === "object" ? (error as { name?: unknown }).name : undefined;
-    throw new ExecError(name === "TimeoutError" || name === "AbortError" ? "server_model_timeout" : "server_model_network", 504);
+// 部分推理模型把思考放在 reasoning_content；不接受时退回 reasoning 字段。
+function messageReasoning(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const row = value as Row;
+  for (const key of ["reasoning_content", "reasoning"]) {
+    if (typeof row[key] === "string" && row[key]) return row[key] as string;
   }
-  if (!response.ok) throw new ExecError("server_model_upstream_error", 502);
-  let data: Row;
-  try { data = await response.json() as Row; }
-  catch { throw new ExecError("server_model_invalid_response", 502); }
+  return "";
+}
+function parseModelPayload(data: Row, provider: ServerProvider): ModelResponse {
   const choice = Array.isArray(data.choices) ? data.choices[0] : null;
   if (!choice || typeof choice !== "object" || Array.isArray(choice)) throw new ExecError("server_model_invalid_response", 502);
   const message = (choice as Row).message;
@@ -768,6 +752,7 @@ async function callModel(
   const body = message as Row;
   return {
     content: messageText(body.content).slice(0, 60_000),
+    reasoning: messageReasoning(body).slice(0, 60_000),
     toolCalls: normalizeToolCalls(body.tool_calls),
     usage: reportedUsage(data.usage),
     finishReason: text((choice as Row).finish_reason),
@@ -775,6 +760,158 @@ async function callModel(
   };
 }
 
+function requestBody(provider: ServerProvider, messages: LlmMessage[], maxTokens: number, thinking: ServerThinking, stream: boolean): Row {
+  return {
+    model: provider.model,
+    messages,
+    tools: TOOL_DEFS,
+    tool_choice: "auto",
+    max_tokens: maxTokens,
+    ...(provider.byok ? {} : thinking.params),
+    ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
+  };
+}
+
+function requestSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const any = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+  return signal && any ? any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
+}
+
+async function fetchModel(provider: ServerProvider, apiKey: string, body: Row, timeoutMs: number, deps: ServerExecDeps): Promise<Response> {
+  const fetchImpl = deps.fetch ?? fetch;
+  const url = `${provider.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+  try {
+    return await fetchImpl(url, {
+      method: "POST",
+      redirect: "error",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      signal: requestSignal(deps.signal, timeoutMs),
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    const name = error && typeof error === "object" ? (error as { name?: unknown }).name : undefined;
+    throw new ExecError(name === "TimeoutError" || name === "AbortError" ? "server_model_timeout" : "server_model_network", 504);
+  }
+}
+
+function contentTypeOf(response: unknown): string {
+  const headers = (response as { headers?: { get?: (name: string) => string | null } }).headers;
+  return typeof headers?.get === "function" ? (headers.get("content-type") ?? "").toLowerCase() : "";
+}
+
+async function callModelNonStreaming(
+  provider: ServerProvider, apiKey: string, messages: LlmMessage[], maxTokens: number,
+  thinking: ServerThinking, deps: ServerExecDeps,
+  onContent: (text: string) => void, onReasoning: (text: string) => void,
+): Promise<ModelResponse> {
+  const response = await fetchModel(provider, apiKey, requestBody(provider, messages, maxTokens, thinking, false), deps.timeoutMs ?? MODEL_TIMEOUT_MS, deps);
+  if (!response.ok) throw new ExecError("server_model_upstream_error", 502);
+  let data: Row;
+  try { data = await response.json() as Row; }
+  catch { throw new ExecError("server_model_invalid_response", 502); }
+  const result = parseModelPayload(data, provider);
+  if (result.content) onContent(result.content);
+  if (result.reasoning) onReasoning(result.reasoning);
+  return result;
+}
+
+// 上游 SSE：边收边把 content 增量交给调用方落 llm.delta；tool_calls 只累积不逐字下发。
+async function streamModel(
+  provider: ServerProvider, apiKey: string, messages: LlmMessage[], maxTokens: number,
+  thinking: ServerThinking, deps: ServerExecDeps,
+  onContent: (text: string) => void, onReasoning: (text: string) => void,
+): Promise<ModelResponse> {
+  const response = await fetchModel(provider, apiKey, requestBody(provider, messages, maxTokens, thinking, true), deps.timeoutMs ?? STREAM_TIMEOUT_MS, deps);
+  if (!response.ok) {
+    // BYOK/兼容网关可能不支持 stream：仅在明确拒绝时退回一次性请求。
+    if ([400, 404, 405, 415, 422].includes(response.status)) {
+      return await callModelNonStreaming(provider, apiKey, messages, maxTokens, thinking, deps, onContent, onReasoning);
+    }
+    throw new ExecError("server_model_upstream_error", 502);
+  }
+  const body = (response as { body?: { getReader?: () => ReadableStreamDefaultReader<Uint8Array> } }).body;
+  if (!contentTypeOf(response).includes("text/event-stream") || typeof body?.getReader !== "function") {
+    let data: Row;
+    try { data = await response.json() as Row; }
+    catch { throw new ExecError("server_model_invalid_response", 502); }
+    const result = parseModelPayload(data, provider);
+    if (result.content) onContent(result.content);
+    if (result.reasoning) onReasoning(result.reasoning);
+    return result;
+  }
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "", content = "", reasoning = "", finishReason = "", model = provider.model;
+  let usage = reportedUsage(null);
+  const calls = new Map<number, { id: string; name: string; arguments: string }>();
+  const consume = (payload: string) => {
+    if (!payload || payload === "[DONE]") return;
+    let chunk: Row;
+    try { chunk = JSON.parse(payload) as Row; } catch { return; }
+    if (typeof chunk.model === "string" && chunk.model) model = chunk.model;
+    if (chunk.usage) usage = reportedUsage(chunk.usage);
+    const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : null;
+    if (!choice || typeof choice !== "object" || Array.isArray(choice)) return;
+    const delta = ((choice as Row).delta ?? {}) as Row;
+    const textPart = messageText(delta.content);
+    if (textPart) { content += textPart; onContent(textPart); }
+    const thinkPart = messageReasoning(delta);
+    if (thinkPart) { reasoning += thinkPart; onReasoning(thinkPart); }
+    const toolDeltas = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
+    for (const raw of toolDeltas) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      const item = raw as Row;
+      const at = Number(item.index);
+      const key = Number.isSafeInteger(at) && at >= 0 ? at : calls.size;
+      const current = calls.get(key) ?? { id: "", name: "", arguments: "" };
+      if (typeof item.id === "string" && item.id) current.id = item.id;
+      const fn = item.function && typeof item.function === "object" && !Array.isArray(item.function) ? item.function as Row : {};
+      if (typeof fn.name === "string" && fn.name) current.name = fn.name;
+      if (typeof fn.arguments === "string") current.arguments += fn.arguments;
+      calls.set(key, current);
+    }
+    const reason = text((choice as Row).finish_reason);
+    if (reason) finishReason = reason;
+  };
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let index = buffer.indexOf("\n");
+      while (index >= 0) {
+        const line = buffer.slice(0, index).replace(/\r$/, "");
+        buffer = buffer.slice(index + 1);
+        if (line.startsWith("data:")) consume(line.slice(5).trim());
+        index = buffer.indexOf("\n");
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.startsWith("data:")) consume(buffer.slice(5).trim());
+  } catch (error) {
+    const name = error && typeof error === "object" ? (error as { name?: unknown }).name : undefined;
+    throw new ExecError(name === "TimeoutError" || name === "AbortError" ? "server_model_timeout" : "server_model_stream_failed", 504);
+  } finally {
+    try { reader.releaseLock(); } catch { /* 已释放 */ }
+  }
+  const toolCalls = normalizeToolCalls([...calls.values()]
+    .filter(call => call.name)
+    .map((call, index) => ({
+      id: call.id || `call_${index}`,
+      function: { name: call.name, arguments: call.arguments || "{}" },
+    })));
+  if (!content && !toolCalls.length && !finishReason) throw new ExecError("server_model_invalid_response", 502);
+  return { content: content.slice(0, 60_000), reasoning: reasoning.slice(0, 60_000), toolCalls, usage, finishReason, model };
+}
+
+async function callModel(
+  provider: ServerProvider, apiKey: string, messages: LlmMessage[], maxTokens: number,
+  thinking: ServerThinking, deps: ServerExecDeps,
+  onContent: (text: string) => void = () => undefined,
+  onReasoning: (text: string) => void = () => undefined,
+): Promise<ModelResponse> {
+  return await streamModel(provider, apiKey, messages, maxTokens, thinking, deps, onContent, onReasoning);
+}
 // ── 工具执行 ────────────────────────────────────────────────────────────────
 interface ToolContext {
   db: ExecDatabase;
@@ -1036,6 +1173,19 @@ function toolObservation(value: Row): string {
   }
 }
 
+function summarizeArguments(value: unknown, raw: string): string {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const row = value as Row;
+    const parts: string[] = [];
+    for (const key of ["title", "query", "url", "filename", "name", "kind", "dueAt", "deadline"]) {
+      const item = row[key];
+      if (typeof item === "string" && item.trim()) parts.push(`${key}=${clamp(item.replace(/\s+/g, " ").trim(), 60)}`);
+    }
+    if (parts.length) return clamp(parts.slice(0, 4).join(" · "), 200);
+  }
+  return clamp(raw.replace(/\s+/g, " ").trim(), 200);
+}
+
 function toolSummary(value: Row): string {
   for (const key of ["summary", "error", "note"]) {
     if (typeof value[key] === "string" && value[key]) return clamp(value[key] as string, 300);
@@ -1187,12 +1337,34 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
   };
 
   for (let round = 0; round < MAX_TOOL_ROUNDS_PER_ADVANCE; round++) {
+    const roundStarted = now();
     const thinking = resolveServerThinking(provider, deps.reasoning, stage, maxTokens);
     await appendEvent(db, owner, task, "llm.request", {
       providerId: provider.id, model: provider.model, stage, round: toolRounds,
-      reasoning: thinking.effective,
+      reasoning: thinking.effective, stream: true,
     });
-    const response = await callModel(provider, apiKey, requestMessages(), maxTokens, thinking, deps);
+    // 内容增量每 250ms 或 480 字符落一次 llm.delta；流式事件失败不终止任务。
+    let pendingContent = "";
+    let reasoningText = "";
+    let flushChain: Promise<unknown> = Promise.resolve();
+    let lastFlush = now();
+    const flushContent = (force = false) => {
+      if (!pendingContent) return flushChain;
+      if (!force && now() - lastFlush < DELTA_FLUSH_MS && pendingContent.length < 480) return flushChain;
+      const text = pendingContent;
+      pendingContent = "";
+      lastFlush = now();
+      flushChain = flushChain.then(async () => {
+        try { await appendEvent(db, owner, task, "llm.delta", { text }); } catch { /* 流式事件非关键 */ }
+      });
+      return flushChain;
+    };
+    const response = await callModel(
+      provider, apiKey, requestMessages(), maxTokens, thinking, deps,
+      (chunk) => { pendingContent += chunk; void flushContent(); },
+      (chunk) => { reasoningText += chunk; },
+    );
+    await flushContent(true);
     model = response.model || provider.model;
 
     const input = response.usage.prompt ?? 0;
@@ -1204,10 +1376,21 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
       tokens: usage.tokens + input + output,
       wallMs: priorWallMs + Math.max(0, now() - startedAt),
     };
+    const thinkingText = reasoningText.replace(/\s+/g, " ").trim();
+    if (thinkingText) {
+      // L2：只保留有界摘要，不落原始思考；UI 默认折叠展示。
+      await appendEvent(db, owner, task, "thinking.summary", {
+        round: toolRounds, chars: thinkingText.length,
+        excerpt: thinkingText.slice(0, 240), truncated: thinkingText.length > 240,
+        durationMs: Math.max(0, now() - roundStarted), source: "model",
+      });
+    }
     await appendEvent(db, owner, task, "llm.response", {
       providerId: provider.id, model, stage, round: toolRounds,
       toolCalls: response.toolCalls.length, finishReason: response.finishReason,
       truncated: response.finishReason === "length",
+      durationMs: Math.max(0, now() - roundStarted),
+      reasoningChars: thinkingText.length,
       // reported tokens 原样上报；成本不做猜测。
       usage: { input: response.usage.prompt, output: response.usage.completion, total: response.usage.total, reasoning: response.usage.reasoning, costUsd: null },
     });
@@ -1220,7 +1403,6 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
         ...checkpoint, messages: history, images: checkpoint.images, toolRounds, usage, stage,
         attempts: 0, leaseUntil: 0, done: true,
       };
-      await appendEvent(db, owner, task, "llm.delta", { text: summary.slice(0, 16_000) });
       await appendEvent(db, owner, task, "run.summary", {
         rounds: toolRounds, toolCalls: usage.toolCalls, tokens: usage.tokens,
         input: usage.inputTokens, output: usage.outputTokens, costUsd: null,
@@ -1249,12 +1431,18 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
 
     const calls = response.toolCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND);
     history.push({ role: "assistant", content: response.content, tool_calls: calls });
-    for (const call of calls) {
-      const parsed = parseArguments(call.function.arguments);
-      await appendEvent(db, owner, task, "tool.called", {
-        name: call.function.name, toolCallId: call.id, round: toolRounds,
+    const prepared = calls.map(call => ({ call, parsed: parseArguments(call.function.arguments) }));
+    // 同一轮的独立工具调用并行执行；工具事件先用一次 CAS 批量写入。
+    await appendEvents(db, owner, task, prepared.map(({ call, parsed }) => ({
+      type: "tool.called",
+      payload: {
+        name: call.function.name, toolCallId: call.id, callInstanceId: call.id, round: toolRounds,
         argumentsValid: !parsed.error,
-      });
+        argsSummary: summarizeArguments(parsed.args, call.function.arguments),
+        ...(parsed.error ? { error: parsed.error } : {}),
+      },
+    })));
+    const outcomes = await Promise.all(prepared.map(async ({ call, parsed }) => {
       const toolStarted = now();
       let output: Row;
       if (parsed.error) {
@@ -1268,12 +1456,19 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
           output = { ok: false, error: error instanceof ExecError ? error.code : "tool_failed" };
         }
       }
-      await appendEvent(db, owner, task, "tool.result", {
-        name: call.function.name, toolCallId: call.id,
-        ok: output.ok === true, durationMs: Math.max(0, now() - toolStarted),
-        summary: toolSummary(output),
-      });
-      history.push({ role: "tool", tool_call_id: call.id, content: toolObservation(output) });
+      return { output, durationMs: Math.max(0, now() - toolStarted) };
+    }));
+    await appendEvents(db, owner, task, prepared.map(({ call }, index) => ({
+      type: "tool.result",
+      payload: {
+        name: call.function.name, toolCallId: call.id, callInstanceId: call.id,
+        ok: outcomes[index].output.ok === true, durationMs: outcomes[index].durationMs,
+        summary: toolSummary(outcomes[index].output),
+      },
+    })));
+    // 历史消息按调用顺序回填，保证模型看到的工具结果顺序稳定。
+    for (const [index, { call }] of prepared.entries()) {
+      history.push({ role: "tool", tool_call_id: call.id, content: toolObservation(outcomes[index].output) });
     }
     toolRounds += 1;
     usage = { ...usage, toolCalls: usage.toolCalls + calls.length };
