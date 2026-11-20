@@ -40,6 +40,8 @@ export interface ServerProvider {
   defaultTier: ServerReasoningTier;
   // radeon 接受 data URI；moss 只接受 storage 公网 URL。
   vision: "data-uri" | "public-url";
+  // 模型真实上下文上限（token）；来自 /models 元数据或官方规格。
+  contextLimit: number;
   // 用户 BYOK：不发送 reasoning_effort（上游未必支持），完全按用户配置调用。
   byok?: boolean;
 }
@@ -56,6 +58,7 @@ export const SERVER_PROVIDERS: readonly ServerProvider[] = Object.freeze([
     tiers: ["low", "medium", "xhigh"],
     defaultTier: "xhigh",
     vision: "data-uri",
+    contextLimit: 262_144,
   },
   {
     id: "srv-mimo",
@@ -66,6 +69,7 @@ export const SERVER_PROVIDERS: readonly ServerProvider[] = Object.freeze([
     tiers: ["low", "medium", "high", "xhigh", "max"],
     defaultTier: "medium",
     vision: "data-uri",
+    contextLimit: 1_048_576,
   },
   {
     id: "srv-moss",
@@ -76,6 +80,8 @@ export const SERVER_PROVIDERS: readonly ServerProvider[] = Object.freeze([
     tiers: ["minimal", "low", "medium", "high", "xhigh", "max"],
     defaultTier: "medium",
     vision: "public-url",
+    // MOSS 未公开该值；先按 256K 保守展示，页面可实时调整。
+    contextLimit: 262_144,
   },
 ]);
 
@@ -99,7 +105,7 @@ async function byokProvider(db: ExecDatabase, owner: string, id: string): Promis
   return {
     id: id as ServerProviderId, name: text(row.display_name) || model, baseUrl, model,
     keyRef: `user:${owner}:${id}` as ServerKeyRef, tiers: reasoningLadder, defaultTier: "medium",
-    vision: capabilities.vision === "url" ? "public-url" : "data-uri", byok: true,
+    vision: capabilities.vision === "url" ? "public-url" : "data-uri", byok: true, contextLimit: 262_144,
   };
 }
 
@@ -557,6 +563,7 @@ export function createUserKeyVault(db: ExecDatabase, options: { env?: Record<str
 // ── Checkpoint / 任务状态 ────────────────────────────────────────────────────
 interface ExecCheckpoint {
   version: 1;
+  contextLimit?: number;
   messages: LlmMessage[];
   images: string[];
   toolRounds: number;
@@ -637,6 +644,7 @@ function parseCheckpoint(value: unknown): ExecCheckpoint {
       tokens: number(usage.tokens), toolCalls: number(usage.toolCalls), wallMs: number(usage.wallMs),
     },
     stage,
+    ...(Number.isSafeInteger(item.contextLimit) && Number(item.contextLimit) >= 8_000 ? { contextLimit: Number(item.contextLimit) } : {}),
     attempts: number(item.attempts),
     leaseUntil: number(item.leaseUntil),
     done: item.done === true,
@@ -1167,6 +1175,36 @@ function parseArguments(value: string): { args: Row; error?: string } {
   }
 }
 
+// 粗略 token 估算：中文约 1 token/字，其他约 4 字符/token；只用于裁剪预算。
+function estimateMessageTokens(message: LlmMessage): number {
+  const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? "");
+  let cjk = 0, other = 0;
+  for (const ch of content) {
+    const code = ch.codePointAt(0) ?? 0;
+    if ((code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3000 && code <= 0x303f) || (code >= 0xff00 && code <= 0xffef)) cjk++;
+    else other++;
+  }
+  return cjk + Math.ceil(other / 4) + (message.tool_calls ? 64 : 0) + 8;
+}
+
+// 保留首条用户任务与最近消息，从中间裁掉最旧内容；不改变工具结果语义。
+function trimHistoryToCap(history: LlmMessage[], cap: number): LlmMessage[] {
+  if (history.length <= 2) return history;
+  const budget = Math.max(8_000, cap - 8_000);
+  const costs = history.map(estimateMessageTokens);
+  if (costs.reduce((sum, cost) => sum + cost, 0) <= budget) return history;
+  const keep = new Array(history.length).fill(false);
+  keep[0] = true;
+  keep[history.length - 1] = true;
+  let total = costs[0] + costs[history.length - 1];
+  for (let index = history.length - 2; index >= 1; index--) {
+    if (total + costs[index] > budget) break;
+    keep[index] = true;
+    total += costs[index];
+  }
+  return history.filter((_, index) => keep[index]);
+}
+
 function toolObservation(value: Row): string {
   try {
     const textValue = JSON.stringify(value);
@@ -1316,7 +1354,7 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
   const startedAt = now();
   const priorWallMs = usage.wallMs;
   let model = provider.model;
-  const history = checkpoint.messages.length ? checkpoint.messages : [{ role: "user", content: taskPrompt(task) } as LlmMessage];
+  let history = checkpoint.messages.length ? checkpoint.messages : [{ role: "user", content: taskPrompt(task) } as LlmMessage];
   const parts = await imageParts(provider, checkpoint.images, deps, owner, taskId);
   const requestMessages = (): LlmMessage[] => [
     { role: "system", content: `${beijingTimeContext(now())}\n\n${SERVER_SYSTEM_PROMPT}` },
@@ -1341,6 +1379,9 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
 
   for (let round = 0; round < MAX_TOOL_ROUNDS_PER_ADVANCE; round++) {
     const roundStarted = now();
+    // 本会话可实时调整上下文上限；只影响服务端请求的历史裁剪。
+    const contextCap = Number.isSafeInteger(checkpoint.contextLimit) ? Number(checkpoint.contextLimit) : provider.contextLimit;
+    history = trimHistoryToCap(history, contextCap);
     const thinking = resolveServerThinking(provider, deps.reasoning, stage, maxTokens);
     await appendEvent(db, owner, task, "llm.request", {
       providerId: provider.id, model: provider.model, stage, round: toolRounds,

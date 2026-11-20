@@ -10,7 +10,9 @@ const MODEL_MAX: Array<[RegExp, number]> = [
   [/claude/i, 200_000],
   [/gpt-4\.1/i, 1_000_000],
   [/gpt-4o|o3|o4/i, 128_000],
-  [/qwen/i, 1_000_000],
+  [/qwen/i, 262_144],
+  [/mimo/i, 1_048_576],
+  [/nex-?n2/i, 262_144],
   [/glm/i, 128_000],
 ];
 export const DEFAULT_MAX_CONTEXT = 128_000;

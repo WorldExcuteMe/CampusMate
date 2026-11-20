@@ -32,7 +32,8 @@ const managedProviders = [
   },
   ...SERVER_PROVIDERS.map(provider => ({
     id: provider.id, displayName: provider.name, modelId: provider.model,
-    protocol: "openai", baseUrl: provider.baseUrl, managed: true, readonly: true, builtin: true,
+    protocol: "openai", baseUrl: provider.baseUrl, contextLimit: provider.contextLimit,
+    managed: true, readonly: true, builtin: true,
     hasKey: true,
     capabilities: {
       vision: true,

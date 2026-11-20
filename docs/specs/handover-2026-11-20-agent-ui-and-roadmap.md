@@ -562,3 +562,13 @@ node scripts/build-sites.mjs
 - 本地浏览器对话原本已注入北京时间；本机 Node 后端也在 taskContext 注入北京时间，无需改动。
 - 测试：`490` 项通过（新增 system 时间注入、Cloud 消息前缀、P0 通知前缀断言）；视觉基线 7/7。
 - 发布：action `7d922b46-52f7-4561-bad1-93171b6c30de`，`publication_completed`。
+## 22. 聊天布局、上下文上限编辑与截断修复（2026-11-20，第十轮）
+
+- 输入区压缩：Textarea 高度 2 行→1 行（min-h-9、max-h-32），输入区 padding 3→2；对话区自动获得更大可视高度。
+- 移除「保留的草稿版本」整块 UI；草稿状态行只在保存时出现，不再常驻。
+- 修复对话与输入框之间的截断：消息滚动区增加 scroll-pb-6，内容底部 pb-8，避免最后一条消息被输入区边缘裁切。
+- 上下文指示器：优先用最近一次 `llm.response.usage.input` 计算占用百分比；上限按 Provider 元数据（Qwen3.8-27B 262,144 / MiMo-V2.6-Flash 1,048,576 / nex-n2.6 未公开按 256K 保守值）显示，未知时仍显示“窗口未知”。
+- 支持在原地点铅笔修改本会话上下文上限（8K–2M），可一键恢复模型默认；修改对后续任务生效，并写入 server-model checkpoint，Edge 执行器按该上限裁剪历史（保留首条任务与最近消息）。
+- 后端 `/v1/providers` 暴露 `contextLimit`；`publicProvider` 透传；前端 `TaskInput.contextLimit` 随任务提交。
+- 测试：`492` 项通过（新增 ContextUsage 编辑用例）；视觉基线 7/7；截图确认输入区单行、无草稿版本块。
+- 发布：action `c73c65c7-6b6d-4420-acf5-4dca3cc68653`，`publication_completed`。

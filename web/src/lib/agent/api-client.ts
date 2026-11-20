@@ -55,7 +55,7 @@ export async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export type ReasoningPreference = "auto" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-export interface TaskInput { title: string; intent?: string; sessionId?: string; turnId?: string; images?: string[]; providerId?: string; reasoning?: ReasoningPreference; }
+export interface TaskInput { title: string; intent?: string; sessionId?: string; turnId?: string; images?: string[]; providerId?: string; reasoning?: ReasoningPreference; contextLimit?: number; }
 export async function createTask(input: TaskInput): Promise<{ taskId: string; status: string }> {
   return req("/v1/tasks", { method: "POST", body: JSON.stringify(input) });
 }

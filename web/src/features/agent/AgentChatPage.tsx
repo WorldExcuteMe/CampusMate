@@ -25,7 +25,7 @@ import { autoName, backendSessionId } from "@/lib/agent/sessions";
 import { useAuth } from "@/app/auth";
 import { runtime } from "@/app/config";
 import { MockBadge } from "@/components/shared";
-import { resolveContextCap } from "@/lib/agent/context";
+import { modelMaxContext, resolveContextCap } from "@/lib/agent/context";
 import { SetupWizard } from "./SetupWizard";
 import { useComposerDraft } from '@/lib/agent/composer-drafts-context';
 import { mergeTask, mergeEvent } from "@/lib/agent/task-state";
@@ -107,11 +107,15 @@ export function AgentChatPage() {
   const endRef = useRef<HTMLDivElement>(null);
   const provider = providers.find((p: ProviderPublic) => p.id === providerId) ?? providers.find((p) => p.isDefault) ?? providers[0];
   const modelName = provider?.model || "未知模型";
-  const contextCap = (backendEnabled() ? active.contextCap : provider?.contextLimit) ?? null;
+  // 上限优先级：本会话手动修改 > 服务端模型元数据 > 模型名推断。
+  const modelCap = provider?.contextLimit ?? modelMaxContext(provider?.model);
+  const contextCap = active.contextCap ?? modelCap ?? null;
   const currentTask = active.currentTaskId ? active.taskViews?.[active.currentTaskId]?.task : undefined;
   const liveView = active.currentTaskId ? active.taskViews?.[active.currentTaskId] : undefined;
   const liveDraft = liveView?.draft ?? "";
   const currentEvents = active.currentTaskId ? active.taskViews?.[active.currentTaskId]?.events ?? [] : [];
+  const lastResponseInput = [...currentEvents].reverse().find((event) => event.type === "llm.response")?.payload?.usage as { input?: unknown } | undefined;
+  const contextUsed = active.contextUsed ?? (typeof lastResponseInput?.input === "number" ? lastResponseInput.input : null);
   const runTurns = currentEvents.filter((e) => e.type === "llm.request").length;
   const runSteps = currentEvents.filter((e) => e.type === "tool.called").length;
   const runTtft = currentTask?.modelRuntime?.lastRequest?.ttftMs ?? null;
@@ -198,7 +202,7 @@ export function AgentChatPage() {
         if (!alive.current) return;
         update(active.id, (s) => ({ ...s, backendId: id }));
         const task = await runTaskViaBackend(
-          { title: content.slice(0, 80), intent: content, sessionId: id, turnId: pendingTurn.turnId, images: pendingTurn.images, providerId: pendingTurn.providerId, reasoning: pendingTurn.reasoning },
+          { title: content.slice(0, 80), intent: content, sessionId: id, turnId: pendingTurn.turnId, images: pendingTurn.images, providerId: pendingTurn.providerId, reasoning: pendingTurn.reasoning, ...(active.contextCap ? { contextLimit: active.contextCap } : {}) },
           (t) => {
             if (!alive.current) return;
             update(active.id, (s) => mergeTask(s, t));
@@ -342,8 +346,8 @@ export function AgentChatPage() {
 
       {/* 无边框消息流 */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-      <div ref={messageScroll} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-5 px-4 py-6">
+      <div ref={messageScroll} className="min-h-0 flex-1 overflow-y-auto scroll-pb-6">
+        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-5 px-4 pb-8 pt-6">
           {active.historyPage?.hasMore && <button type="button" className="self-center rounded-md border px-3 py-1 text-xs text-muted-foreground disabled:opacity-50" disabled={loadingOlder} onClick={requestOlder}>{loadingOlder?'正在加载更早消息…':'加载更早消息'}</button>}
           {busy && activity && activity.sessionId !== active.id && <button onClick={()=>setActiveId(activity.sessionId)} className="text-sm text-primary underline">查看处理进度</button>}
           {!backendEnabled() && busy && activity?.sessionId === active.id && <AgentActivityCard activity={activity} />}
@@ -376,7 +380,7 @@ export function AgentChatPage() {
       </div>
 
       {/* 输入区：工作区在输入栏左；模型选择在输入框下、Enter 左；上下文状态 */}
-      <div className="border-t border-border bg-background px-4 py-3">
+      <div className="border-t border-border bg-background px-3 py-2">
         <div className="mx-auto max-w-3xl">
           {storageError && <p role="alert" className="mb-2 text-xs text-destructive">{storageError}</p>}
           {composer.error && <p role="alert" className="mb-2 text-xs text-destructive">{composer.error}</p>}
@@ -385,9 +389,8 @@ export function AgentChatPage() {
             <div className="grid gap-2 sm:grid-cols-2"><div><p>本页草稿</p><pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words">{input.slice(0, 600) || '（无文字）'}</pre><p>{attachments.map(a => a.name).join('、') || '无附件'}</p></div><div><p>本机最新草稿</p><pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words">{composer.conflict.draft.text.slice(0, 600) || '（无文字）'}</pre><p>{composer.conflict.draft.attachments.map(a => a.name).join('、') || '无附件'}</p></div></div>
             <div className="flex gap-3"><button type="button" className="underline" disabled={composer.saving || composer.resolving || composer.conflict.deleted} onClick={() => void composer.resolve('local')}>保留本页草稿</button><button type="button" className="underline" disabled={composer.saving || composer.resolving || composer.conflict.deleted} onClick={() => void composer.resolve('remote')}>使用本机最新草稿</button></div>
           </section>}
-          {composer.versions.length > 0 && <details className="mb-2 text-xs"><summary className="cursor-pointer">保留的草稿版本（{composer.versions.length}）</summary><div className="max-h-56 space-y-2 overflow-auto py-2">{composer.versions.map((version, i) => <div key={version.key} data-draft-version={version.key} className="rounded border p-2"><p>{version.source === 'conflict' ? '冲突副本' : '操作前备份'} · {new Date(version.createdAt).toLocaleString()}</p><pre className="max-h-20 overflow-auto whitespace-pre-wrap break-words">{version.draft.text.slice(0, 600) || '（无文字）'}</pre><p>{version.draft.attachments.map(a => a.name).join('、') || '无附件'}</p><button type="button" aria-label={`恢复草稿版本 ${i + 1}`} className="underline" disabled={composer.saving || composer.resolving || composer.conflict?.deleted} onClick={() => void composer.resolve({ version: version.key })}>恢复此版本（当前稿也保留）</button></div>)}</div></details>}
           {!composer.ready && <p role="status" className="mb-2 text-xs text-muted-foreground">正在恢复本地草稿…</p>}
-          {composer.ready && !composer.error && <p role="status" className="mb-2 text-[10px] text-muted-foreground">{composer.saving ? '草稿正在保存到本机…' : '草稿按会话保存在本机，不跨设备同步'}</p>}
+          {composer.saving && !composer.error && <p role="status" className="mb-1 text-[10px] text-muted-foreground">草稿正在保存…</p>}
           {attachments.length > 0 && (
             <section aria-label="附件工作流" className="mb-2 rounded-lg border border-border/70 bg-muted/30 p-2.5">
               <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">附件工作流 · {attachments.length} 个 · 解析完成后随消息发送</p>
@@ -412,8 +415,8 @@ export function AgentChatPage() {
           )}
           <Textarea
             disabled={initialLoading || !composer.ready || composer.resolving}
-            rows={2}
-            className="resize-none border-0 bg-muted focus-visible:ring-1"
+            rows={1}
+            className="min-h-9 max-h-32 resize-none border-0 bg-muted py-2 text-sm focus-visible:ring-1"
             placeholder="输入消息 / 粘贴群通知 / 拖拽或粘贴图片文档…（Enter 发送）"
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -482,13 +485,17 @@ export function AgentChatPage() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <ContextUsage
-              used={active?.contextUsed}
+              used={contextUsed}
               cap={contextCap}
               tokens={active?.tokens}
               lastRequest={currentTask?.modelRuntime?.lastRequest}
               compressed={active?.compressed}
               pruned={active?.pruned}
               model={active.actualModel ?? modelName}
+              turns={runTurns}
+              steps={runSteps}
+              capEditable={Boolean(provider) || Boolean(active.contextCap)}
+              onCapChange={(value) => update(active.id, (session) => ({ ...session, contextCap: value ?? undefined }))}
             />
             <Button size="sm" className="ml-auto" disabled={initialLoading || !composer.ready || composer.resolving || Boolean(composer.conflict) || incompleteAttachments || busyUI || (!input.trim() && attachments.length === 0)} onClick={() => send()}>
               {busyUI ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}

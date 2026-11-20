@@ -1,4 +1,5 @@
-import { Gauge, Coins } from "lucide-react";
+import { useState } from "react";
+import { Gauge, Coins, Pencil, Check, RotateCcw } from "lucide-react";
 
 export interface ContextUsageProps {
   /** 最近一次请求的窗口输入 token（估算或后端上报） */
@@ -19,6 +20,10 @@ export interface ContextUsageProps {
   /** 当前任务轮次与工具步数（来自事件流） */
   turns?: number;
   steps?: number;
+  /** 是否允许在当前页面实时修改上下文上限 */
+  capEditable?: boolean;
+  /** 传 null 表示恢复模型默认上限 */
+  onCapChange?: (value: number | null) => void;
 }
 
 function formatTokens(value: number | null | undefined): string {
@@ -30,9 +35,11 @@ function formatTokens(value: number | null | undefined): string {
 
 /**
  * 上下文/用量紧凑指示器：图标 + 占用百分比 + 已用/上限，附带缓存命中与累计 token。
- * 完整信息放在 title 里，视觉上保持一行小徽标，避免占用输入区。
+ * 上限可在原地修改（仅影响本会话的预算显示与前端裁剪），支持恢复模型默认。
  */
-export function ContextUsage({ used, cap, tokens, lastRequest, compressed, pruned, model, ttftMs, turns, steps }: ContextUsageProps) {
+export function ContextUsage({ used, cap, tokens, lastRequest, compressed, pruned, model, ttftMs, turns, steps, capEditable, onCapChange }: ContextUsageProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
   const pct = used != null && cap ? Math.max(0, Math.min(100, Math.round((used / cap) * 100))) : null;
   const request = lastRequest?.usage;
   const cacheHit = request?.cacheRead != null && request?.inputTotal ? Math.round((request.cacheRead / request.inputTotal) * 100) : null;
@@ -46,6 +53,40 @@ export function ContextUsage({ used, cap, tokens, lastRequest, compressed, prune
     pruned ? "较旧工具结果已截断" : "",
   ].filter(Boolean).join("\n");
 
+  const startEdit = () => { setDraft(cap ? String(cap) : ""); setEditing(true); };
+  const commit = () => {
+    const value = Number(draft);
+    if (!Number.isFinite(value) || value < 8_000 || value > 2_000_000) { setEditing(false); return; }
+    onCapChange?.(Math.round(value));
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/60 px-2 py-1 text-[11px] leading-none text-muted-foreground">
+        <Gauge aria-hidden="true" className="size-3.5 shrink-0 text-primary/80" />
+        <input
+          autoFocus
+          aria-label="上下文上限（tokens）"
+          type="number"
+          min={8_000}
+          max={2_000_000}
+          step={1_000}
+          className="w-24 rounded border border-border bg-background px-1 py-0.5 text-[11px] tabular-nums"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") { event.preventDefault(); commit(); }
+            if (event.key === "Escape") setEditing(false);
+          }}
+        />
+        <span className="text-[10px]">tok</span>
+        <button type="button" aria-label="保存上下文上限" title="保存（8K–2M）" onClick={commit}><Check className="size-3" /></button>
+        <button type="button" aria-label="恢复模型默认上限" title="恢复自动" onClick={() => { onCapChange?.(null); setEditing(false); }}><RotateCcw className="size-3" /></button>
+      </span>
+    );
+  }
+
   return (
     <span
       aria-label="上下文占用"
@@ -57,6 +98,11 @@ export function ContextUsage({ used, cap, tokens, lastRequest, compressed, prune
       <span className="tabular-nums text-muted-foreground">
         {formatTokens(used)}/{formatTokens(cap)}
       </span>
+      {capEditable && onCapChange && (
+        <button type="button" aria-label="修改上下文上限" title="修改本会话上下文上限" onClick={startEdit} className="text-muted-foreground hover:text-foreground">
+          <Pencil className="size-3" />
+        </button>
+      )}
       <span aria-hidden="true" className="text-border">·</span>
       <span className="tabular-nums" title="本任务累计 tokens">
         <Coins aria-hidden="true" className="mr-0.5 inline size-3" />
@@ -67,10 +113,7 @@ export function ContextUsage({ used, cap, tokens, lastRequest, compressed, prune
       {ttftMs != null && <span className="tabular-nums" title="最近一次请求的首 token 延迟">首 token {(ttftMs / 1000).toFixed(2)}s</span>}
       {compressed && <span className="rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">已压缩</span>}
       {pruned && !compressed && <span className="rounded bg-info/15 px-1 py-0.5 text-info">工具截断</span>}
-      {/* 屏幕阅读器保留完整描述；视觉上不占空间 */}
       <span className="sr-only" title={title}>窗口输入 {used ?? "未知"} / {cap?.toLocaleString() ?? "上限未知"} tok</span>
     </span>
   );
 }
-
-

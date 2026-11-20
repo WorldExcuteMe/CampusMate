@@ -311,6 +311,7 @@ function publicProvider(provider: Row) {
     id, name, displayName: name, model, modelId: model,
     protocol: safeDisplay(provider.protocol ?? "openai"),
     ...(typeof provider.baseUrl === "string" ? { baseUrl: provider.baseUrl.slice(0, 500) } : {}),
+    ...(Number.isSafeInteger(provider.contextLimit) ? { contextLimit: Number(provider.contextLimit) } : {}),
     capabilities: jsonObject(provider.capabilities),
     // 只暴露“是否已在服务端配置密钥”，绝不返回密钥本身。
     managed: true, readonly: true, builtin: true,
@@ -911,7 +912,7 @@ export function createSitesV1(deps: SitesV1Deps) {
 
   async function createTaskRoute(owner: string, request: Request): Promise<Response> {
     const data = await readJson(request);
-    onlyFields(data, ["title", "intent", "sessionId", "turnId", "images", "providerId", "reasoning"]);
+    onlyFields(data, ["title", "intent", "sessionId", "turnId", "images", "providerId", "reasoning", "contextLimit"]);
     const sessionId = safeId(data.sessionId, "invalid_session_id");
     const turnId = safeId(data.turnId, "invalid_turn_id");
     // title 是任务列表的短标签；完整用户输入在 intent，必须按原文发给云端。
@@ -936,7 +937,12 @@ export function createSitesV1(deps: SitesV1Deps) {
       result: null, error: null, seq_counter: 0, cancel_requested: false,
       last_cloud_event_id: null, created_at: at, updated_at: at,
       provider_id: providerId || null, runtime,
-      checkpoint: runtime === "server-model" ? { version: 1, messages: [], images: Array.isArray(data.images) ? data.images.slice(0, 4).filter(v => typeof v === "string") : [], toolRounds: 0, usage: { inputTokens: 0, outputTokens: 0, tokens: 0, toolCalls: 0, wallMs: 0 }, stage: "simple", attempts: 0, leaseUntil: 0, done: false } : null,
+      checkpoint: runtime === "server-model" ? {
+        version: 1, messages: [], images: Array.isArray(data.images) ? data.images.slice(0, 4).filter(v => typeof v === "string") : [],
+        toolRounds: 0, usage: { inputTokens: 0, outputTokens: 0, tokens: 0, toolCalls: 0, wallMs: 0 },
+        stage: "simple", attempts: 0, leaseUntil: 0, done: false,
+        ...(Number.isSafeInteger(data.contextLimit) && Number(data.contextLimit) >= 8_000 && Number(data.contextLimit) <= 2_000_000 ? { contextLimit: Number(data.contextLimit) } : {}),
+      } : null,
     };
     const inserted = await insertRow(tasks, task);
     if (!inserted.length) {
