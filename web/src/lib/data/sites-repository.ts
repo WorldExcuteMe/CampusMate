@@ -38,6 +38,7 @@ function mapProfile(data: Row, userId: string): Profile {
   return {
     id: userId,
     name: text(data.name),
+    school: text(data.school),
     major: text(data.major),
     grade: text(data.grade),
     interests: strings(data.interests),

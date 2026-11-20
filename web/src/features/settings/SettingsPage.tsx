@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -8,6 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
 import { useRepository } from "@/app/auth";
 import { resetDemo } from "@/lib/data/demo";
@@ -18,6 +19,7 @@ import { runtime } from "@/app/config";
 import { cn } from "@/lib/utils";
 import type { Profile } from "@/lib/data/types";
 import { ProviderSettings } from "./ProviderSettings";
+import { useDisplayProfile } from "@/lib/user-display";
 
 const TABS = [
   { id: "account", label: "账号与画像", icon: UserRound },
@@ -41,25 +43,39 @@ export function SettingsPage() {
   const [tab, setTab] = useState<TabId>("account");
   const { appearance, setAppearance } = useAppearance();
   const { session } = useAuth();
+  const display = useDisplayProfile(session?.user?.id, { email: session?.user?.email, name: cloud ? undefined : "演示用户" });
+  const [displayName, setDisplayName] = useState("");
+  const avatarRef = useRef<HTMLInputElement>(null);
   const { active, update } = useSessions();
   const qc = useQueryClient();
   const { data: profile } = useQuery({ queryKey: ["profile"], queryFn: () => repository.getProfile() });
-  const { data: runs = [] } = useQuery({ queryKey: ["runs"], queryFn: () => repository.listAgentRuns() });
   const [form, setForm] = useState<Profile | null>(null);
   const [defaultMode, setDefaultMode] = useState<string>(() => localStorage.getItem("campusmate.defaultMode") || "auto");
 
   useEffect(() => { if (profile && !form) setForm(profile); }, [profile, form]);
+  useEffect(() => { setDisplayName(display.name); }, [display.name]);
 
   const set = (k: keyof Profile, v: unknown) => setForm((f) => (f ? { ...f, [k]: v } : f));
   const list = (k: "interests" | "skills" | "goals") => (form?.[k] ?? []).join("、");
   const setList = (k: "interests" | "skills" | "goals", v: string) =>
-    set(k, v.split(/[,，、]/).map((s) => s.trim()).filter(Boolean));
+    set(k, v.split(/[,，、;；\n\r|]+|\s{2,}/).map((s) => s.trim()).filter(Boolean));
 
   async function saveProfile() {
     if (!form) return;
     await repository.updateProfile(form);
     await qc.invalidateQueries({ queryKey: ["profile"] });
     toast.success("画像已保存");
+  }
+  function saveDisplay() {
+    display.setName(displayName);
+    toast.success("昵称已保存");
+  }
+  function pickAvatar(file: File) {
+    if (file.size > 512 * 1024) { toast.error("头像请控制在 512KB 以内"); return; }
+    const reader = new FileReader();
+    reader.onload = () => { display.setAvatarUrl(String(reader.result ?? "")); toast.success("头像已更新"); };
+    reader.onerror = () => toast.error("头像读取失败，请重试");
+    reader.readAsDataURL(file);
   }
   function applyPreset(mode: "auto" | "daily") {
     localStorage.setItem("campusmate.defaultMode", mode);
@@ -122,11 +138,12 @@ export function SettingsPage() {
           {tab === "account" && (
             <div className="flex flex-col gap-5">
               <div className="flex items-center gap-4">
-                <span className="cm-glow flex size-14 items-center justify-center rounded-full bg-primary/15 text-xl font-semibold text-primary">
-                  {(session?.user?.email?.[0] || form?.name?.[0] || "U").toUpperCase()}
-                </span>
+                <Avatar className="cm-glow size-14 ring-1 ring-border">
+                  {display.avatarUrl ? <AvatarImage src={display.avatarUrl} alt={display.name} /> : null}
+                  <AvatarFallback className="bg-primary/15 text-xl font-semibold text-primary">{(display.name || "U").slice(0, 1).toUpperCase()}</AvatarFallback>
+                </Avatar>
                 <div>
-                  <p className="text-base font-semibold">{session?.user?.email || form?.name || (cloud ? "Qoder 用户" : "演示用户")}</p>
+                  <p className="text-base font-semibold">{display.name}</p>
                   <p className="text-xs text-muted-foreground">
                     {cloud
                       ? session ? "Qoder 账号 · 云端数据隔离" : "未登录 · 演示数据"
@@ -135,8 +152,31 @@ export function SettingsPage() {
                 </div>
               </div>
               <Separator />
+              {cloud && session && (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="flex flex-col gap-1.5">
+                    <Label className="text-[12px] text-muted-foreground">昵称</Label>
+                    <div className="flex gap-2">
+                      <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="显示昵称" />
+                      <Button type="button" variant="outline" onClick={saveDisplay} disabled={!displayName.trim()}>保存</Button>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label className="text-[12px] text-muted-foreground">头像</Label>
+                    <div className="flex items-center gap-2">
+                      <Avatar className="size-9 ring-1 ring-border">
+                        {display.avatarUrl ? <AvatarImage src={display.avatarUrl} alt={display.name} /> : null}
+                        <AvatarFallback className="bg-primary/15 text-sm font-semibold text-primary">{(display.name || "U").slice(0, 1).toUpperCase()}</AvatarFallback>
+                      </Avatar>
+                      <Button type="button" variant="outline" size="sm" onClick={() => avatarRef.current?.click()}>上传图片</Button>
+                      {display.custom && <Button type="button" variant="ghost" size="sm" onClick={() => display.reset()}>恢复默认</Button>}
+                      <input ref={avatarRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (file) pickAvatar(file); e.target.value = ""; }} />
+                    </div>
+                  </div>
+                </div>
+              )}
               <div className="grid gap-4 sm:grid-cols-2">
-                {field("姓名", "name", "你的名字")}
+                {field("学校", "school", "如 XX大学")}
                 {field("专业", "major", "如 计算机科学与技术")}
                 {field("年级", "grade", "如 大二")}
                 <div className="flex flex-col gap-1.5">
@@ -144,15 +184,15 @@ export function SettingsPage() {
                   <Input type="number" value={form?.timeBudgetHours ?? 0} onChange={(e) => set("timeBudgetHours", Number(e.target.value))} />
                 </div>
                 <div className="flex flex-col gap-1.5 sm:col-span-2">
-                  <Label className="text-[12px] text-muted-foreground">兴趣（顿号分隔）</Label>
+                  <Label className="text-[12px] text-muted-foreground">兴趣</Label>
                   <Input value={list("interests")} onChange={(e) => setList("interests", e.target.value)} />
                 </div>
                 <div className="flex flex-col gap-1.5 sm:col-span-2">
-                  <Label className="text-[12px] text-muted-foreground">技能（顿号分隔）</Label>
+                  <Label className="text-[12px] text-muted-foreground">技能</Label>
                   <Input value={list("skills")} onChange={(e) => setList("skills", e.target.value)} />
                 </div>
                 <div className="flex flex-col gap-1.5 sm:col-span-2">
-                  <Label className="text-[12px] text-muted-foreground">目标（顿号分隔）</Label>
+                  <Label className="text-[12px] text-muted-foreground">目标</Label>
                   <Input value={list("goals")} onChange={(e) => setList("goals", e.target.value)} />
                 </div>
                 <div className="flex flex-col gap-1.5 sm:col-span-2">
@@ -187,7 +227,7 @@ export function SettingsPage() {
                 <div className="flex flex-col gap-1.5">
                   <Label className="text-[12px] text-muted-foreground">字号</Label>
                   <select className="h-8 rounded-md border border-input bg-background px-2 text-[13px]" value={appearance.fontSize} onChange={(e) => setAppearance({ fontSize: Number(e.target.value) })}>
-                    {[12, 13, 14, 15, 16].map((n) => <option key={n} value={n}>{n}px</option>)}
+                    {[12, 13, 14, 15, 16, 17, 18, 19, 20].map((n) => <option key={n} value={n}>{n}px</option>)}
                   </select>
                 </div>
                 <div className="flex flex-col gap-1.5">
@@ -253,11 +293,6 @@ export function SettingsPage() {
                     <span className="text-xs text-muted-foreground">{p.desc}</span>
                   </button>
                 ))}
-              </div>
-              <Separator />
-              <div className="text-xs text-muted-foreground">
-                <p>数据层：{cloud ? (isDemo ? "Demo（云端演示）" : "Qoder Sites 云端") : isDemo ? "Demo（本地演示）" : "Supabase（真实用户）"} · AI：服务端模型 / BYOK / Mock，结果按实际来源标识</p>
-                {!cloud && <p className="mt-1">Agent 执行记录 {runs.length} 条{runs[0] ? ` · 最近 ${runs[0].taskType}/${runs[0].status}` : ""}</p>}
               </div>
             </div>
           )}

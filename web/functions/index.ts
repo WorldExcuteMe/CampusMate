@@ -25,16 +25,10 @@ const platform = createProductionSites({
 // Qoder 托管模型（Cloud Agents 沙箱）与服务端模型（Edge 分步执行器）统一成
 // 只读 Provider 列表；这里只含公开元数据，任何密钥都不下发给浏览器。
 const managedProviders = [
-  {
-    id: "qoder-cloud", displayName: "Qoder Cloud Agents", modelId: CAMPUSMATE_SITES.model,
-    protocol: "qoder-cloud", managed: true, readonly: true, builtin: true, isDefault: true,
-    hasKey: true,
-    capabilities: { vision: true, tools: "native", streaming: true },
-  },
   ...SERVER_PROVIDERS.map(provider => ({
     id: provider.id, displayName: provider.name, modelId: provider.model,
     protocol: "openai", baseUrl: provider.baseUrl, contextLimit: provider.contextLimit,
-    managed: true, readonly: true, builtin: true,
+    managed: true, readonly: true, builtin: true, isDefault: provider.id === "srv-moss",
     hasKey: true,
     capabilities: {
       vision: true,

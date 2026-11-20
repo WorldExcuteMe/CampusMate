@@ -167,13 +167,12 @@ describe("生产初始化：POST /initialize", () => {
     expect(await response.json()).toEqual({ ready: true });
     expect(f.calls.length).toBe(before);
   });
-  it("模型 is_enabled=false 时不创建任何云资源", async () => {
+  it("模型目录存在即继续创建云资源，是否可用以平台响应为准", async () => {
     const f = setup({ enabled: false });
     const response = await f.handler({ request: siteRequest("/initialize", { method: "POST" }) });
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "ai_model_not_enabled" });
-    expect(f.calls.every(call => call.method === "GET")).toBe(true);
-    expect(f.lockRow(bindingKey)).toBeNull();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ready: true });
+    expect(f.calls.some(call => call.method === "POST")).toBe(true);
   });
   it("缺少平台 QODER_PAT 时不发起模型或资源请求", async () => {
     const f = setup({ token: undefined });

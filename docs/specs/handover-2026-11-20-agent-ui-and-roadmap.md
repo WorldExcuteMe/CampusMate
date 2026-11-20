@@ -596,3 +596,14 @@ node scripts/build-sites.mjs
 - `/v1/cloud-status` 显示平台模型目录：`auto/ultimate/fast/efficient/smodel/cmodel/qmodel_latest/...` 均存在，但全部 `is_enabled:false`；`ultimate` 支持 1M 上下文、efforts 到 max。
 - 判断 `is_enabled` 是控制台启用状态，不应由我们直接判定不可用；`checkModel` 改为只要目录中存在配置模型即通过，真实可用性以创建 Agent/Session 的响应为准。
 - 发布 action `97507b4b-3613-4268-8eb3-a98853b83bbe`；若平台硬性拒绝，会返回 `ai_access_denied`/`ai_model_not_enabled`，据此再决定是否需在 Qoder 控制台启用模型。
+## 27. 收敛到服务端模型与资料/多模态微调（2026-11-20，第十五轮）
+
+- 运行时：Provider 列表移除 Qoder Cloud Agents，默认 `srv-moss`（nex-n2.6）；所有新任务固定 `server-model`，旧客户端传 `qoder-cloud` 映射到 `srv-moss`。Cloud 代码保留但不再暴露。
+- 长任务：客户端等待上限 10 分钟提升到 30 分钟；沿用 checkpoint、SSE 自动重连、4 轮/次自动续跑与跨轮会话历史。
+- 画像：设置与个人画像移除“姓名”，新增“学校”；兴趣/技能/目标支持逗号、顿号、分号、换行、竖线、连续空格分隔。
+- 外观：默认深色 + 16px，字号新增 17–20px；存储键升级到 `campusmate.appearance.v2`，旧偏好不再覆盖新默认。
+- 账号：新增昵称/头像编辑（本机按 Qoder 用户保存）；优先读取 `/__qoder_auth/me` 的昵称/头像，缺失时用邮箱前缀/首字母。UserChip 同步展示学校。
+- 多模态：图片继续以原始 data URL 作为 vision 输入；文档不再把全文塞进提示词，改为服务端 `read_attachment` 工具按需读取（checkpoint 保存文件名与正文），任务请求体上限 8MB。
+- Provider 卡片精简为模型、密钥状态、上下文窗口和图片输入，不再展示接口/能力来源等冗余信息。
+- 测试：495 项通过；视觉基线 7/7。
+- 发布：action `54d8e023-3c3e-4f85-ae8c-afccad29cbe7`，`publication_completed`。

@@ -32,7 +32,7 @@ export interface ChatSession {
   historyPage?: { after: string; before?: string; hasMore: boolean; next?: string };
   /** Local-only marker; actual drafts/files are isolated in browser IndexedDB. */
   hasDraft?: boolean;
-  pendingTurn?: { turnId: string; content: string; images?: string[]; taskId?: string; providerId?: string; reasoning?: "auto" | "low" | "medium" | "high" };
+  pendingTurn?: { turnId: string; content: string; images?: string[]; documents?: Array<{ name: string; text: string }>; taskId?: string; providerId?: string; reasoning?: "auto" | "low" | "medium" | "high" };
   promptSource?: "estimated" | "reported" | "unknown";
   actualModel?: string;
   configuredModel?: string;

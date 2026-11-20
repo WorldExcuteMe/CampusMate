@@ -88,6 +88,7 @@ const domainTables = { inbox: "campusmate_inbox", daily: "campusmate_daily", opp
 const terminalStatuses = new Set(["succeeded", "failed", "cancelled", "needs_input", "paused"]);
 const safeTaskStatuses = new Set(["queued", "running", "needs_input", "paused", "succeeded", "failed", "cancelled"]);
 const maxBody = 256 * 1024;
+const maxTaskBody = 8 * 1024 * 1024;
 const maxImportMessages = 500;
 
 class AppError extends Error {
@@ -926,8 +927,8 @@ export function createSitesV1(deps: SitesV1Deps) {
   }
 
   async function createTaskRoute(owner: string, request: Request): Promise<Response> {
-    const data = await readJson(request);
-    onlyFields(data, ["title", "intent", "sessionId", "turnId", "images", "providerId", "reasoning", "contextLimit"]);
+    const data = await readJson(request, maxTaskBody);
+    onlyFields(data, ["title", "intent", "sessionId", "turnId", "images", "documents", "providerId", "reasoning", "contextLimit"]);
     const sessionId = safeId(data.sessionId, "invalid_session_id");
     const turnId = safeId(data.turnId, "invalid_turn_id");
     // title 是任务列表的短标签；完整用户输入在 intent，必须按原文发给云端。
@@ -935,9 +936,10 @@ export function createSitesV1(deps: SitesV1Deps) {
     const title = clampText(data.title, 500);
     const intent = typeof data.intent === "string" ? clampText(data.intent, 16_000) : null;
     const prompt = intent && intent.trim() ? intent : title;
-    const providerId = textOf(data.providerId);
-    // srv-* 或用户 BYOK 走服务端分步执行器；qoder-cloud/缺省走 Cloud Agents。
-    const runtime = deps.exec && providerId && providerId !== "qoder-cloud" ? "server-model" : "cloud-agents";
+    // Cloud Agents 已隐藏：所有新任务固定走服务端模型执行器；旧客户端传 qoder-cloud 时映射到默认模型。
+    const requestedProvider = textOf(data.providerId);
+    const providerId = requestedProvider === "qoder-cloud" ? "srv-moss" : requestedProvider || "srv-moss";
+    const runtime = deps.exec ? "server-model" : "cloud-agents";
     if (!prompt.trim()) throw new AppError(400, "invalid_title");
     await requireSession(owner, sessionId);
 
@@ -945,6 +947,15 @@ export function createSitesV1(deps: SitesV1Deps) {
     const existing = await readTask(owner, taskId);
     if (existing) return json(200, { taskId, status: textOf(existing.status), deduped: true });
 
+    const documents = runtime === "server-model" && Array.isArray(data.documents)
+      ? data.documents.slice(0, 8).flatMap(raw => {
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+        const item = raw as Row;
+        const name = clampText(item.name, 200);
+        const text = clampText(item.text, 100_000);
+        return name && text ? [{ name, text }] : [];
+      })
+      : [];
     const at = historyTick();
     const history = runtime === "server-model" ? await conversationHistory(owner, sessionId, prompt) : [];
     const task: Row = {
@@ -954,7 +965,7 @@ export function createSitesV1(deps: SitesV1Deps) {
       last_cloud_event_id: null, created_at: at, updated_at: at,
       provider_id: providerId || null, runtime,
       checkpoint: runtime === "server-model" ? {
-        version: 1, messages: history, images: Array.isArray(data.images) ? data.images.slice(0, 4).filter(v => typeof v === "string") : [],
+        version: 1, messages: history, images: Array.isArray(data.images) ? data.images.slice(0, 4).filter(v => typeof v === "string") : [], documents,
         toolRounds: 0, usage: { inputTokens: 0, outputTokens: 0, tokens: 0, toolCalls: 0, wallMs: 0 },
         stage: "simple", attempts: 0, leaseUntil: 0, done: false,
         ...(Number.isSafeInteger(data.contextLimit) && Number(data.contextLimit) >= 8_000 && Number(data.contextLimit) <= 2_000_000 ? { contextLimit: Number(data.contextLimit) } : {}),

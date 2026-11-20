@@ -12,6 +12,7 @@ import type { AgentRun } from "../agent/orchestrator";
 export interface Profile {
   id: string;
   name: string;
+  school: string;
   major: string;
   grade: string;
   interests: string[];

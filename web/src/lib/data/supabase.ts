@@ -43,6 +43,7 @@ export class SupabaseRepository implements Repository {
     return {
       id: data.id,
       name: data.name ?? "",
+      school: data.school ?? "",
       major: data.major ?? "",
       grade: data.grade ?? "",
       interests: data.interests ?? [],

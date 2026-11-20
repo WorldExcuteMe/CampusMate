@@ -64,14 +64,15 @@ export function validateDocumentText(text: string): string {
   if (!text.trim()) throw new AttachmentPolicyError('文档没有可提取的文字；扫描版PDF请先做OCR，空文档不会发送。');
   return text;
 }
-export function composeAttachmentText(text: string, attachments: BoundedAttachment[]): string {
-  const docs = attachments.filter(a => a.kind === 'doc' && a.text).map(a => `\n[附件 ${a.name}]\n${a.text}`).join('');
+// 附件不在这里拼接正文：图片作为 vision 输入原样发送，文档正文由服务端 read_attachment 工具按需读取。
+export function composeAttachmentText(text: string, attachments: BoundedAttachment[], includeDocumentText = false): string {
+  const docs = attachments.filter(a => a.kind === 'doc' && a.text).map(a => includeDocumentText ? `\n[附件 ${a.name}]\n${a.text}` : `[文档附件 ${a.name}]`).join(includeDocumentText ? '' : ' ');
   const images = attachments.filter(a => a.kind === 'image').map(a => `[图片附件 ${a.name}]`).join(' ');
-  return (text.trim() + docs + (images ? '\n' + images : '')).trim();
+  return [text.trim(), docs, images].filter(Boolean).join('\n');
 }
 export function attachmentSendError(text: string, attachments: BoundedAttachment[]): string | undefined {
   const error = attachmentSetError(attachments); if (error) return error;
   if (text.length > ATTACHMENT_LIMITS.requestBytes) return '消息过大，请拆分后发送；草稿已保留。';
-  const body = JSON.stringify({ intent: composeAttachmentText(text, attachments), images: attachments.filter(a => a.kind === 'image').map(a => a.dataUrl ?? '') });
+  const body = JSON.stringify({ intent: composeAttachmentText(text, attachments), images: attachments.filter(a => a.kind === 'image').map(a => a.dataUrl ?? ''), documents: attachments.filter(a => a.kind === 'doc' && a.text).map(a => ({ name: a.name, text: a.text })) });
   if (new TextEncoder().encode(body).byteLength > ATTACHMENT_LIMITS.requestBytes) return '消息和附件编码后超过7MB，请拆分后发送；草稿已保留。';
 }

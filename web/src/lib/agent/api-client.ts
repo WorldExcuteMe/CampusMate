@@ -55,7 +55,8 @@ export async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export type ReasoningPreference = "auto" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-export interface TaskInput { title: string; intent?: string; sessionId?: string; turnId?: string; images?: string[]; providerId?: string; reasoning?: ReasoningPreference; contextLimit?: number; }
+export interface TaskDocument { name: string; text: string; }
+export interface TaskInput { title: string; intent?: string; sessionId?: string; turnId?: string; images?: string[]; documents?: TaskDocument[]; providerId?: string; reasoning?: ReasoningPreference; contextLimit?: number; }
 export async function createTask(input: TaskInput): Promise<{ taskId: string; status: string }> {
   return req("/v1/tasks", { method: "POST", body: JSON.stringify(input) });
 }
@@ -236,7 +237,7 @@ export async function runTaskViaBackend(input: TaskInput, onProgress?: (t: Agent
       onStatus: (t) => onProgress?.(t),
       onClose: async () => { done(); try { resolve(await getTask(taskId)); } catch (e) { reject(e); } },
     });
-    const timer = setTimeout(() => { done(); reject(new Error("等待超时，任务仍保留在后台，可稍后查看")); }, 600000);
+    const timer = setTimeout(() => { done(); reject(new Error("等待超时，任务仍保留在后台，可稍后查看")); }, 1_800_000);
     options.signal?.addEventListener("abort", abort, { once: true });
     if (options.signal?.aborted) abort();
   });

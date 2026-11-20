@@ -74,8 +74,7 @@ export function ProviderSettings() {
                 <div className="min-w-0">
                   <p className="font-medium">{p.name}{p.isDefault && <span className="ml-2 text-xs text-primary">默认</span>}{managed && <span className="ml-2 text-xs text-muted-foreground">服务端提供 · 只读</span>}</p>
                   <p className="mt-1 break-all text-xs text-muted-foreground">{p.model || "模型未知"} · {p.hasKey ? "密钥已配置" : "缺少密钥"} · 窗口 {p.contextLimit?.toLocaleString() ?? "未知"}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">图片：{capabilityLabel(p.capabilities?.vision)} · 工具：{p.capabilities?.tools === "native" ? "原生调用" : p.capabilities?.tools === "none" ? "不支持" : "兼容回退"} · 流式：{capabilityLabel(p.capabilities?.streaming)}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{p.metadataSource?.startsWith("endpoint-profile") ? "按厂商接口规则自动适配；实际可用性以请求为准。" : "接口自动适配；未确认的能力保留未知，不需要手动填写。"}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">图片输入：{capabilityLabel(p.capabilities?.vision)}</p>
                 </div>
                 {!managed && <div className="flex flex-wrap gap-1">
                   <Button size="sm" variant="ghost" disabled={!enabled || action.isPending} aria-label={`测试连接 ${p.name}`} onClick={() => action.mutate({ p, kind: "test" })}>测试连接</Button>
@@ -87,7 +86,6 @@ export function ProviderSettings() {
                   </>}
                 </div>}
               </div>
-              <p className="mt-2 break-all text-xs text-muted-foreground">{p.baseUrl} · OpenAI兼容 · 能力来源：{p.metadataSource ?? "未提供"}</p>
               {feedback[p.id] && <p role="status" className="mt-2 text-xs text-primary">{feedback[p.id]}</p>}
             </div>
             );

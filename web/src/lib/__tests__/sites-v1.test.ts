@@ -409,7 +409,7 @@ describe("同会话上下文连续性", () => {
     expect((await call("POST", "/v1/sessions", { id: "sess_1", title: "会话", mode: "auto" })).status).toBe(201);
     db.seed("campusmate_messages", { id: "m1", owner_id: "owner-a", session_id: "sess_1", turn_id: "turn_0", task_id: "t0", role: "user", content: "上一轮问题", ord: 1, created_at: 1, updated_at: 1 });
     db.seed("campusmate_messages", { id: "m2", owner_id: "owner-a", session_id: "sess_1", turn_id: "turn_0", task_id: "t0", role: "assistant", content: "上一轮回答", ord: 2, created_at: 2, updated_at: 2 });
-    const created = await call("POST", "/v1/tasks", { title: "新问题", intent: "新问题", sessionId: "sess_1", turnId: "turn_2", providerId: "srv-qwen38" });
+    const created = await call("POST", "/v1/tasks", { title: "新问题", intent: "新问题", sessionId: "sess_1", turnId: "turn_2", providerId: "srv-qwen38", documents: [{ name: "通知.pdf", text: "附件正文" }] });
     expect(created.status).toBe(201);
     const task = (db.tables.get("campusmate_tasks") ?? []).find(row => row.turn_id === "turn_2")!;
     const history = ((task.checkpoint as Row).messages ?? []) as Row[];
@@ -417,6 +417,7 @@ describe("同会话上下文连续性", () => {
     expect(history[0].content).toBe("上一轮问题");
     expect(history[1].content).toBe("上一轮回答");
     expect(history[2].content).toBe("新问题");
+    expect((task.checkpoint as Row).documents).toEqual([{ name: "通知.pdf", text: "附件正文" }]);
     expect(advance).toHaveBeenCalledTimes(1);
   });
 });

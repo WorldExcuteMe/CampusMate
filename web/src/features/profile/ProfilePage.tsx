@@ -13,7 +13,7 @@ import { useRepository } from "@/app/auth";
 import { PageHeader } from "@/components/shared";
 
 const formSchema = z.object({
-  name: z.string().min(1),
+  school: z.string(),
   major: z.string().min(1),
   grade: z.string().min(1),
   interests: z.string(),
@@ -24,7 +24,7 @@ const formSchema = z.object({
 });
 type FormValues = z.infer<typeof formSchema>;
 
-const split = (s: string) => s.split(/[,，、\n]/).map((x) => x.trim()).filter(Boolean);
+const split = (s: string) => s.split(/[,，、;；\n\r|]+|\s{2,}/).map((x) => x.trim()).filter(Boolean);
 
 export function ProfilePage() {
   const repository = useRepository();
@@ -33,14 +33,14 @@ export function ProfilePage() {
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      name: "", major: "", grade: "", interests: "", skills: "", goals: "", timeBudgetHours: 10, bio: "",
+      school: "", major: "", grade: "", interests: "", skills: "", goals: "", timeBudgetHours: 10, bio: "",
     },
   });
 
   useEffect(() => {
     if (profile) {
       form.reset({
-        name: profile.name,
+        school: profile.school,
         major: profile.major,
         grade: profile.grade,
         interests: profile.interests.join("、"),
@@ -56,7 +56,8 @@ export function ProfilePage() {
     mutationFn: (v: FormValues) =>
       repository.updateProfile({
         id: profile?.id ?? "demo-user",
-        name: v.name,
+        name: profile?.name ?? "",
+        school: v.school,
         major: v.major,
         grade: v.grade,
         interests: split(v.interests),
@@ -79,13 +80,13 @@ export function ProfilePage() {
         <CardHeader><CardTitle className="text-base">基本信息</CardTitle></CardHeader>
         <CardContent>
           <form className="grid gap-4 sm:grid-cols-2" onSubmit={form.handleSubmit((v) => save.mutate(v))}>
-            <div><Label>姓名</Label><Input {...form.register("name")} /></div>
+            <div><Label>学校</Label><Input {...form.register("school")} /></div>
             <div><Label>专业</Label><Input {...form.register("major")} /></div>
             <div><Label>年级</Label><Input {...form.register("grade")} /></div>
             <div><Label>每周时间预算（小时）</Label><Input type="number" {...form.register("timeBudgetHours")} /></div>
-            <div className="sm:col-span-2"><Label>兴趣（顿号分隔）</Label><Input {...form.register("interests")} /></div>
-            <div className="sm:col-span-2"><Label>技能（顿号分隔）</Label><Input {...form.register("skills")} /></div>
-            <div className="sm:col-span-2"><Label>发展目标（顿号分隔）</Label><Input {...form.register("goals")} /></div>
+            <div className="sm:col-span-2"><Label>兴趣</Label><Input {...form.register("interests")} /></div>
+            <div className="sm:col-span-2"><Label>技能</Label><Input {...form.register("skills")} /></div>
+            <div className="sm:col-span-2"><Label>发展目标</Label><Input {...form.register("goals")} /></div>
             <div className="sm:col-span-2"><Label>简介</Label><Textarea rows={2} {...form.register("bio")} /></div>
             <div className="sm:col-span-2">
               <Button type="submit" disabled={save.isPending}>保存画像</Button>

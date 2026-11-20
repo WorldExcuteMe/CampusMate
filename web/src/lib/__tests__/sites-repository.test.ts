@@ -81,7 +81,7 @@ describe("SitesRepository 云端兼容形状", () => {
       : json({ profile: { name: "云端用户", major: "计算机", goals: ["保研"] } });
     expect(await repository.getProfile()).toMatchObject({ id: "user-cloud", name: "云端用户", major: "计算机" });
     expect(await repository.updateProfile({
-      id: "user-cloud", name: "云端用户", major: "", grade: "", interests: [], skills: [],
+      id: "user-cloud", name: "云端用户", school: "", major: "", grade: "", interests: [], skills: [],
       goals: ["保研"], timeBudgetHours: 10, bio: "",
     })).toMatchObject({ name: "云端用户", goals: ["保研"] });
     expect(calls.at(-1)?.init?.method).toBe("PUT");

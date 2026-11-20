@@ -177,9 +177,13 @@ export function AgentChatPage() {
     // Editing a historical message must not consume or attach the separate composer draft.
     const files = edit || retry ? [] : currentDraft.attachments;
     if ((!text && files.length === 0 && !retry) || busyUI || !active || (!backendEnabled() && !profile)) return;
-    const content = retry ? active.pendingTurn?.content ?? "" : composeAttachmentText(text, files);
+    const content = retry ? active.pendingTurn?.content ?? "" : composeAttachmentText(text, files, !backendEnabled());
     if (!content) return;
-    const pendingTurn = retry && active.pendingTurn ? active.pendingTurn : { turnId: crypto.randomUUID(), content, providerId: provider?.id, reasoning, images: files.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string) };
+    const pendingTurn = retry && active.pendingTurn ? active.pendingTurn : {
+      turnId: crypto.randomUUID(), content, providerId: provider?.id, reasoning,
+      images: files.filter((a) => a.kind === "image" && a.dataUrl).map((a) => a.dataUrl as string),
+      documents: files.filter((a) => a.kind === "doc" && a.text).map((a) => ({ name: a.name, text: a.text! })),
+    };
     // A normal send already consumed this exact persisted version atomically.
     // Retrying/editing a historical turn never consumes a newly typed draft.
     setBusy(true);
@@ -203,7 +207,7 @@ export function AgentChatPage() {
         if (!alive.current) return;
         update(active.id, (s) => ({ ...s, backendId: id }));
         const task = await runTaskViaBackend(
-          { title: content.slice(0, 80), intent: content, sessionId: id, turnId: pendingTurn.turnId, images: pendingTurn.images, providerId: pendingTurn.providerId, reasoning: pendingTurn.reasoning, ...(active.contextCap ? { contextLimit: active.contextCap } : {}) },
+          { title: content.slice(0, 80), intent: content, sessionId: id, turnId: pendingTurn.turnId, images: pendingTurn.images, documents: pendingTurn.documents, providerId: pendingTurn.providerId, reasoning: pendingTurn.reasoning, ...(active.contextCap ? { contextLimit: active.contextCap } : {}) },
           (t) => {
             if (!alive.current) return;
             update(active.id, (s) => mergeTask(s, t));
@@ -395,7 +399,7 @@ export function AgentChatPage() {
           {composer.saving && !composer.error && <p role="status" className="mb-1 text-[10px] text-muted-foreground">草稿正在保存…</p>}
           {attachments.length > 0 && (
             <section aria-label="附件工作流" className="mb-2 rounded-lg border border-border/70 bg-muted/30 p-2.5">
-              <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">附件工作流 · {attachments.length} 个 · 解析完成后随消息发送</p>
+              <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">附件工作流 · {attachments.length} 个 · 随消息附加，文档由 Agent 按需读取</p>
               <div className="flex flex-wrap gap-2">
               {attachments.map((a) => (
                 <span key={a.id} className="flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs">

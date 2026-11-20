@@ -3,13 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { ChevronUp, GraduationCap, LogIn, LogOut, Settings, UserRound } from "lucide-react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
 import { useRepository } from "@/app/auth";
 import { signOut, useAuth } from "@/app/auth";
 import { runtime } from "@/app/config";
 import { cn } from "@/lib/utils";
+import { useDisplayProfile } from "@/lib/user-display";
 
 // 左下角已登录用户芯片：头像+名字，展开显示画像摘要与设置/退出入口（DSH 左下角用户区理念）。
 export function UserChip() {
@@ -19,7 +20,8 @@ export function UserChip() {
   const [open, setOpen] = useState(false);
   const go = (path: string) => { setOpen(false); nav(path); };
   const { data: profile } = useQuery({ queryKey: ["profile", session?.user.id ?? "demo"], queryFn: () => repository.getProfile() });
-  const name = session?.user?.email?.split("@")[0] || profile?.name || (session ? "Qoder 用户" : "演示用户");
+  const display = useDisplayProfile(session?.user?.id, { email: session?.user?.email, name: profile?.name });
+  const name = display.name;
   const initial = (name || "U").slice(0, 1).toUpperCase();
   const sub = session
     ? session.user?.email || (runtime === "cloud" ? "Qoder 账号" : "")
@@ -51,6 +53,7 @@ export function UserChip() {
           aria-label="用户与设置"
         >
           <Avatar className="size-8 shrink-0 ring-1 ring-border">
+            {display.avatarUrl ? <AvatarImage src={display.avatarUrl} alt={name} /> : null}
             <AvatarFallback className="bg-primary/15 text-sm font-semibold text-primary">{initial}</AvatarFallback>
           </Avatar>
           <span className="min-w-0 flex-1">
@@ -63,6 +66,7 @@ export function UserChip() {
       <PopoverContent side="top" align="start" className="w-72 p-0">
         <div className="flex items-center gap-3 px-4 py-3">
           <Avatar className="size-10 ring-1 ring-border">
+            {display.avatarUrl ? <AvatarImage src={display.avatarUrl} alt={name} /> : null}
             <AvatarFallback className="bg-primary/15 text-base font-semibold text-primary">{initial}</AvatarFallback>
           </Avatar>
           <div className="min-w-0">
@@ -72,6 +76,8 @@ export function UserChip() {
         </div>
         <Separator />
         <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 px-4 py-3 text-xs">
+          <span className="text-muted-foreground">学校</span>
+          <span className="truncate text-right font-medium">{profile?.school || "—"}</span>
           <span className="text-muted-foreground">专业</span>
           <span className="truncate text-right font-medium">{profile?.major || "—"}</span>
           <span className="text-muted-foreground">年级</span>

@@ -193,6 +193,7 @@ const SERVER_SYSTEM_PROMPT = [
   "【不编造】只陈述工具真实返回或用户明确提供的信息；没有依据的内容写“未核实”或“未知”。不得虚构文件、网址、日期、报名入口、工具结果或个人数据。",
   "【时间】以系统注入的权威当前时间为唯一基准，不得凭训练记忆推断今天是哪天；涉及尚未结束/即将开始的竞赛、报名截止等时效信息，必须检索并核验来源，无法核验就标注未核实。",
   "【工具纪律】需要保存、搜索、抓取或生成文档时调用提供的工具；同一参数不要重复调用。工具失败时换参数或换来源，查不到不等于不存在，应如实说明。领域写入只能作用于当前用户。",
+  "【附件】图片已作为视觉输入直接提供；文档正文不要凭空猜测，需要时调用 read_attachment 读取用户附带的文档，引用时注明文件名。",
   "【核验】交付前核对工具的真实返回；引用实际读取到的来源 URL；未核实部分明确标注。模型记忆不是证据。",
   "【收尾】任务完成或信息不足时，用中文给出简洁、可执行的总结；不要输出工具调用格式的文本。",
 ].join("\n");
@@ -303,6 +304,18 @@ const TOOL_DEFS = [
         type: "object",
         properties: { url: { type: "string" } },
         required: ["url"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_attachment",
+      description: "读取用户随本轮消息附带的文档正文（按文件名，省略则读取第一份）。",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string", description: "附件文件名；省略读取第一份" } },
         additionalProperties: false,
       },
     },
@@ -566,6 +579,7 @@ interface ExecCheckpoint {
   contextLimit?: number;
   messages: LlmMessage[];
   images: string[];
+  documents: Array<{ name: string; text: string }>;
   toolRounds: number;
   usage: ExecUsage;
   stage: GenerationStage;
@@ -575,7 +589,7 @@ interface ExecCheckpoint {
 }
 
 const newCheckpoint = (): ExecCheckpoint => ({
-  version: 1, messages: [], images: [], toolRounds: 0, usage: emptyUsage(),
+  version: 1, messages: [], images: [], documents: [], toolRounds: 0, usage: emptyUsage(),
   stage: "simple", attempts: 0, leaseUntil: 0, done: false,
 });
 
@@ -638,6 +652,13 @@ function parseCheckpoint(value: unknown): ExecCheckpoint {
     version: 1,
     messages: normalizeHistory(item.messages),
     images: Array.isArray(item.images) ? item.images.filter((image): image is string => typeof image === "string").slice(0, 4) : [],
+    documents: Array.isArray(item.documents) ? item.documents.flatMap(raw => {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+      const doc = raw as Row;
+      const name = text(doc.name);
+      const body = typeof doc.text === "string" ? doc.text : "";
+      return name && body ? [{ name, text: body.slice(0, 100_000) }] : [];
+    }).slice(0, 8) : [],
     toolRounds: number(item.toolRounds),
     usage: {
       inputTokens: number(usage.inputTokens), outputTokens: number(usage.outputTokens),
@@ -1151,6 +1172,16 @@ async function webFetch(ctx: ToolContext, args: Row): Promise<Row> {
   };
 }
 
+function readAttachment(ctx: ToolContext, args: Row): Row {
+  const docs = parseCheckpoint(ctx.task.checkpoint).documents;
+  if (!docs.length) return { ok: false, error: "no_attachments" };
+  const requested = text(args.name);
+  const doc = requested ? docs.find(item => item.name === requested) : docs[0];
+  if (!doc) return { ok: false, error: "attachment_not_found", available: docs.map(item => item.name) };
+  const limit = 60_000;
+  return { ok: true, name: doc.name, text: doc.text.slice(0, limit), truncated: doc.text.length > limit };
+}
+
 async function executeTool(ctx: ToolContext, name: string, args: Row): Promise<Row> {
   switch (name) {
     case "save_to_inbox": return await saveDomain(ctx, "inbox", args, "已保存到 Inbox");
@@ -1159,6 +1190,7 @@ async function executeTool(ctx: ToolContext, name: string, args: Row): Promise<R
     case "create_opportunity": return await saveDomain(ctx, "opportunities", args, "已保存到机会雷达");
     case "set_growth_goal": return await setGrowthGoal(ctx, args);
     case "create_document": return await createDocument(ctx, args);
+    case "read_attachment": return readAttachment(ctx, args);
     case "web_search": return await webSearch(ctx, args);
     case "web_fetch": return await webFetch(ctx, args);
     default: return { ok: false, error: "unsupported_tool", tool: clamp(name, 100) };

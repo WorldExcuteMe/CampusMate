@@ -13,6 +13,7 @@ export const DEMO_USER = "demo-user";
 export const demoProfile: Profile = {
   id: DEMO_USER,
   name: "林晓（虚拟档案）",
+  school: "示例大学",
   major: "计算机科学与技术",
   grade: "大二",
   interests: ["人工智能", "开源", "机器人"],

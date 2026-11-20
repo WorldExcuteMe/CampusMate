@@ -13,8 +13,8 @@ export interface Appearance {
   language: "zh" | "en";
 }
 
-const KEY = "campusmate.appearance";
-const DEFAULT: Appearance = { theme: "light", fontSize: 14, stepDensity: "standard", stepCollapseTiming: "after_answer", stepReplyRetention: "all", language: "zh" };
+const KEY = "campusmate.appearance.v2";
+const DEFAULT: Appearance = { theme: "dark", fontSize: 16, stepDensity: "standard", stepCollapseTiming: "after_answer", stepReplyRetention: "all", language: "zh" };
 
 function load(): Appearance {
   try {
