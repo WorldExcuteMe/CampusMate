@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CheckCircle2, Circle, Clock3, Loader2, XCircle } from "lucide-react";
+import { CheckCircle2, Circle, Clock3, Loader2, PanelRightClose, PanelRightOpen, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,23 +19,32 @@ function sources(value: unknown): { url: string; host: string }[] {
   return value.slice(0, 3).flatMap((raw) => { try { const url = new URL(String(raw)); return ["http:", "https:"].includes(url.protocol) ? [{ url: url.toString(), host: url.hostname }] : []; } catch { return []; } });
 }
 
-export function TaskWorkspace({ session, sending = false, onSelect, onTask, onRefresh, onContinue, loadError }: { session: ChatSession; sending?: boolean; onSelect: (id: string) => void; onTask: (task: AgentTask) => void; onRefresh: () => void; onContinue: (title: string) => void; loadError?: string }) {
+export function TaskWorkspace({ session, sending = false, onSelect, onTask, onRefresh, onContinue, loadError, width = 320, collapsed = false, onWidth, onToggle }: { session: ChatSession; sending?: boolean; onSelect: (id: string) => void; onTask: (task: AgentTask) => void; onRefresh: () => void; onContinue: (title: string) => void; loadError?: string; width?: number; collapsed?: boolean; onWidth?: (w: number) => void; onToggle?: () => void }) {
   const [tab, setTab] = useState<"steps" | "artifacts" | "context">("steps");
   const views = Object.values(session.taskViews ?? {}).sort((a, b) => (b.task.turnSeq ?? 0) - (a.task.turnSeq ?? 0) || (b.task.createdAt ?? 0) - (a.task.createdAt ?? 0));
   const view = views.find((v) => v.task.id === session.currentTaskId) ?? views[0];
   const submitting = sending && Boolean(session.pendingTurn && !session.pendingTurn.taskId);
   const [expanded, setExpanded] = useState(() => typeof window === "undefined" || window.innerWidth >= 1024);
   const unfinished = view && ["queued", "running"].includes(view.task.status) ? [...view.events].reverse().find((event) => event.type === "tool.called" && !view.events.some((end) => end.seq > event.seq && end.type === "tool.result" && end.payload.callInstanceId === event.payload.callInstanceId)) : undefined;
-  return <aside aria-label="任务执行面板" className="border-t border-border bg-muted/20 lg:w-80 lg:shrink-0 lg:border-l lg:border-t-0">
+  function startResize(e: { preventDefault: () => void; clientX: number }) {
+    e.preventDefault();
+    const startX = e.clientX, startW = width;
+    const move = (ev: PointerEvent) => onWidth?.(Math.min(560, Math.max(280, startW + (startX - ev.clientX))));
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  }
+  if (collapsed) return <aside aria-label="任务执行面板（已收起）" className="hidden w-10 shrink-0 flex-col items-center border-l border-border bg-muted/20 py-2 lg:flex"><button type="button" aria-label="展开任务面板" title="展开任务面板" onClick={onToggle} className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"><PanelRightOpen className="size-4" /></button></aside>;
+  return <aside aria-label="任务执行面板" style={{ width }} className="relative hidden shrink-0 border-l border-border bg-muted/20 lg:block">
+    <div role="separator" aria-label="拖拽调整侧边栏宽度" title="拖拽调整宽度" onPointerDown={startResize} className="absolute left-0 top-0 z-10 h-full w-1 cursor-col-resize hover:bg-primary/40" />
     <details open={expanded} onToggle={(e) => setExpanded(e.currentTarget.open)} className="h-full">
-      <summary className="cursor-pointer px-4 py-3 text-sm font-semibold">执行进度 <span className="ml-2 text-xs font-normal text-muted-foreground">{submitting ? "正在提交新任务" : unfinished ? tools[String(unfinished.payload.name)] ?? "执行工具中" : view ? statuses[view.task.status] : "等待新任务"}</span></summary>
+      <summary className="flex cursor-pointer items-center gap-2 px-4 py-3 text-sm font-semibold">执行进度 <span className="ml-1 truncate text-xs font-normal text-muted-foreground">{submitting ? "正在提交新任务" : unfinished ? tools[String(unfinished.payload.name)] ?? "执行工具中" : view ? statuses[view.task.status] : "等待新任务"}</span><button type="button" aria-label="收起任务面板" title="收起" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggle?.(); }} className="ml-auto rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"><PanelRightClose className="size-4" /></button></summary>
       <div role="tablist" aria-label="执行面板分区" className="mb-2 flex gap-1 border-b border-border/60 px-3 pb-2">
         {([["steps", "工作步骤"], ["artifacts", "产物"], ["context", "上下文"]] as const).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={tab === id} className={`rounded-md px-2.5 py-1 text-xs transition-colors ${tab === id ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted"}`} onClick={() => setTab(id)}>{label}</button>)}
       </div>
       <div className="max-h-80 space-y-4 overflow-y-auto px-4 pb-5 lg:max-h-[calc(100dvh-18rem)]">
         {submitting && <p role="status" className="text-xs leading-5 text-primary">正在提交，尚未收到后端确认；以下为已有任务记录。</p>}
         {loadError && <div role="alert" className="text-xs text-destructive">任务状态加载失败：{loadError}<Button size="sm" variant="ghost" onClick={onRefresh}>重试加载</Button></div>}
-        {views.length > 1 && <select aria-label="查看任务记录" className="h-9 w-full rounded-md border bg-background px-2 text-xs" value={view?.task.id ?? ""} onChange={(e) => onSelect(e.target.value)}>{views.map(({ task }) => <option key={task.id} value={task.id}>{statuses[task.status]} · {task.title}</option>)}</select>}
+        {views.length > 1 && <TurnPicker views={views} current={view?.task.id} onSelect={onSelect} />}
         {view ? (tab === "context" ? <ContextTab session={session} task={view.task} events={view.events} /> : <div className={tab === "steps" ? "" : "hidden"}><TaskDetails key={view.task.id} view={view} resumeBlocked={view.task.status === "failed" && views.some(v => v.task.id !== view.task.id && ((v.task.turnSeq ?? 0) > (view.task.turnSeq ?? 0) || !(v.task.turnSeq && view.task.turnSeq) && (v.task.createdAt ?? 0) > (view.task.createdAt ?? 0)))} onTask={onTask} onRefresh={onRefresh} onContinue={onContinue} /></div>) : <p className="text-xs leading-6 text-muted-foreground">发送消息后，这里会显示排队、资料检索、工具结果和产物检查。</p>}
         {view && tab === "artifacts" && (view.task.result?.artifactIds.length ? <DocumentArtifacts ids={view.task.result.artifactIds} owner={view.task.userId} partial={view.task.result.completion?.state !== "complete"} /> : <p className="text-xs leading-6 text-muted-foreground">本轮还没有生成文档产物。生成后可在这里预览与下载。</p>)}
       </div>
@@ -43,6 +52,18 @@ export function TaskWorkspace({ session, sending = false, onSelect, onTask, onRe
   </aside>;
 }
 
+function TurnPicker({ views, current, onSelect }: { views: Array<{ task: AgentTask }>; current?: string; onSelect: (id: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const active = views.find(v => v.task.id === current) ?? views[0];
+  return <div className="relative">
+    <button type="button" aria-label="查看任务记录" aria-expanded={open} onClick={() => setOpen(v => !v)} className="flex h-9 w-full items-center gap-2 rounded-md border bg-background px-2 text-xs hover:bg-muted">
+      <span className={`size-2 shrink-0 rounded-full ${active?.task.status === "succeeded" ? "bg-emerald-500" : active?.task.status === "failed" ? "bg-red-500" : active && ["queued", "running"].includes(active.task.status) ? "bg-primary animate-pulse" : "bg-muted-foreground"}`} />
+      <span className="truncate">{active ? `${statuses[active.task.status]} · ${active.task.title}` : "选择任务"}</span>
+      <span className="ml-auto text-muted-foreground">{open ? "▲" : "▼"}</span>
+    </button>
+    {open && <div role="listbox" className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-md border bg-popover shadow-md">{views.map(({ task }) => <button key={task.id} type="button" role="option" aria-selected={task.id === current} onClick={() => { onSelect(task.id); setOpen(false); }} className={`flex w-full items-center gap-2 px-2 py-2 text-left text-xs hover:bg-muted ${task.id === current ? "bg-primary/10 text-primary" : ""}`}><span className={`size-2 shrink-0 rounded-full ${task.status === "succeeded" ? "bg-emerald-500" : task.status === "failed" ? "bg-red-500" : ["queued", "running"].includes(task.status) ? "bg-primary" : "bg-muted-foreground"}`} /><span className="truncate">{statuses[task.status]} · {task.title}</span></button>)}</div>}
+  </div>;
+}
 function ContextTab({ session, task, events }: { session: ChatSession; task: AgentTask; events: Array<{ type: string; payload: Record<string, unknown> }> }) {
   const last = task.modelRuntime?.lastRequest;
   const turns = events.filter((e) => e.type === "llm.request").length;

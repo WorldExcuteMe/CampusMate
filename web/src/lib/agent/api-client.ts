@@ -89,7 +89,7 @@ export async function decideApproval(id: string, decision: "approved" | "rejecte
 
 export interface DocumentArtifact { id: string; taskId: string; documentId: string; revision: number; sha256: string; kind: string; filename?: string; inline: unknown; }
 export async function getArtifact(id: string): Promise<{ artifact: DocumentArtifact; availableFormats: string[] }> { return req(`/v1/artifacts/${encodeURIComponent(id)}`); }
-export async function downloadArtifact(id: string, format: "md" | "docx" | "pdf"): Promise<{ blob: Blob; filename: string; sha256: string | null }> {
+export async function downloadArtifact(id: string, format: string): Promise<{ blob: Blob; filename: string; sha256: string | null }> {
   const base = backendUrl(); if (!base) throw new Error("尚未配置文档后端");
   const response = await fetch(`${base}/v1/artifacts/${encodeURIComponent(id)}/download?format=${format}`, { headers: await authHeader() });
   if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error ?? `下载失败（${response.status}）`); }

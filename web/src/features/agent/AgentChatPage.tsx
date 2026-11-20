@@ -35,6 +35,7 @@ import { ChatMessageRow } from './ChatMessageRow';
 import { AgentActivityCard } from "./AgentActivityCard";
 import { MessageWorkSteps } from "./MessageWorkSteps";
 import { ContextUsage } from "./ContextUsage";
+import { ThinkingStream } from "./ThinkingStream";
 import type { AgentActivity } from "@/lib/agent/progress";
 import { IMAGE_LIMIT_HINT, imageLimitError } from '../../../../shared/attachments';
 import { ATTACHMENT_ACCEPT, ATTACHMENT_LIMIT_DETAILS, ATTACHMENT_LIMIT_HINT, attachmentSendError, composeAttachmentText } from '@/lib/ingest/limits';
@@ -108,6 +109,9 @@ export function AgentChatPage() {
   const [picking, setPicking] = useState(false);
   const [showOnboard, setShowOnboard] = useState(() => !localStorage.getItem("campusmate.onboarded"));
   const [wsPath, setWsPath] = useState(() => localStorage.getItem(`campusmate.workspace:${owner}`) || "");
+  const [sidebarWidth, setSidebarWidth] = useState(() => Math.min(560, Math.max(280, Number(localStorage.getItem("campusmate.sidebarWidth")) || 320)));
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("campusmate.sidebarCollapsed") === "1");
+  const [composerHeight, setComposerHeight] = useState(() => Math.min(320, Math.max(64, Number(localStorage.getItem("campusmate.composerHeight")) || 96)));
   const workspaceKey = ["local-workspace", owner];
   const workspace = useQuery({ queryKey: workspaceKey, queryFn: () => getLocalWorkspace(), enabled: Boolean(local) });
   const [savingPermission, setSavingPermission] = useState(false);
@@ -310,6 +314,14 @@ export function AgentChatPage() {
     }
   }
 
+  function startComposerResize(e: { preventDefault: () => void; clientY: number }) {
+    e.preventDefault();
+    const startY = e.clientY, startH = composerHeight;
+    const move = (ev: PointerEvent) => { const h = Math.min(320, Math.max(64, startH + (startY - ev.clientY))); setComposerHeight(h); localStorage.setItem("campusmate.composerHeight", String(h)); };
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  }
+  function toggleSidebar() { setSidebarCollapsed(v => { localStorage.setItem("campusmate.sidebarCollapsed", v ? "0" : "1"); return !v; }); }
   async function saveName() {
     const value = await composer.finishTitle(); // CAS before metadata; Enter+blur commits once
     if (value !== undefined) rename(active.id, value.trim() || active.name);
@@ -378,7 +390,8 @@ export function AgentChatPage() {
       )}
 
       {/* 无边框消息流 */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col">
       <div ref={messageScroll} className="min-h-0 flex-1 overflow-y-auto scroll-pb-6">
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-5 px-4 pb-8 pt-6">
           {active.historyPage?.hasMore && <button type="button" className="self-center rounded-md border px-3 py-1 text-xs text-muted-foreground disabled:opacity-50" disabled={loadingOlder} onClick={requestOlder}>{loadingOlder?'正在加载更早消息…':'加载更早消息'}</button>}
@@ -401,7 +414,7 @@ export function AgentChatPage() {
           {busyUI && currentTask && !active.messages.some((message) => message.taskId === active.currentTaskId && message.role === "assistant") && (
             <div className="rounded-lg border border-border/70 bg-background p-3" aria-label="实时执行进度">
               <p className="flex items-center gap-2 text-xs font-medium text-primary"><Loader2 className="size-3.5 animate-spin" /> 正在执行 · 实时进度</p>
-              {liveThinking && <div className="mt-2 rounded-md border border-primary/20 bg-primary/5 p-2"><p className="text-[11px] font-medium text-primary">思考中（实时）</p><p className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">{liveThinking}</p></div>}
+              <ThinkingStream text={liveThinking} active={busyUI} />
               {liveDraft && <p className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">{liveDraft}</p>}
               <MessageWorkSteps events={currentEvents} status={currentTask.status} />
             </div>
@@ -410,12 +423,11 @@ export function AgentChatPage() {
           <div ref={endRef} />
         </div>
       </div>
-      {hasWorkbench && <TaskWorkspace key={active.id} session={active} sending={busy} loadError={monitor.error} onSelect={(id) => update(active.id, (s) => ({ ...s, currentTaskId: id }))} onTask={(task) => update(active.id, (s) => mergeTask(s, task))} onRefresh={monitor.refresh} onContinue={(title) => setInput(`请基于已有记录继续：${title}`)} />}
-      </div>
 
       {/* 输入区：工作区在输入栏左；模型选择在输入框下、Enter 左；上下文状态 */}
       <div className="border-t border-border bg-background px-3 py-2">
         <div className="mx-auto max-w-3xl">
+          <div role="separator" aria-label="调整输入区高度" title="拖拽调整输入区高度" onPointerDown={startComposerResize} className="mx-auto -mt-1 mb-1 h-1.5 w-16 cursor-row-resize rounded-full bg-border hover:bg-primary/50" />
           {storageError && <p role="alert" className="mb-2 text-xs text-destructive">{storageError}</p>}
           {composer.error && <p role="alert" className="mb-2 text-xs text-destructive">{composer.error}</p>}
           {composer.conflict && <section role="alert" aria-label="草稿版本冲突" className="mb-3 space-y-2 rounded-md border border-amber-500/50 bg-amber-50/30 p-3 text-xs dark:bg-amber-950/10">
@@ -450,7 +462,8 @@ export function AgentChatPage() {
           <Textarea
             disabled={initialLoading || !composer.ready || composer.resolving}
             rows={1}
-            className="min-h-9 max-h-32 resize-none border-0 bg-muted py-2 text-sm focus-visible:ring-1"
+            style={{ height: composerHeight }}
+            className="resize-none border-0 bg-muted py-2 text-sm focus-visible:ring-1"
             placeholder="输入消息 / 粘贴群通知 / 拖拽或粘贴图片文档…（Enter 发送）"
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -538,6 +551,9 @@ export function AgentChatPage() {
             </div>
           </div>
         </div>
+      </div>
+      </div>
+      {hasWorkbench && <TaskWorkspace key={active.id} session={active} sending={busy} loadError={monitor.error} width={sidebarWidth} collapsed={sidebarCollapsed} onWidth={(w) => { setSidebarWidth(w); localStorage.setItem("campusmate.sidebarWidth", String(w)); }} onToggle={toggleSidebar} onSelect={(id) => update(active.id, (s) => ({ ...s, currentTaskId: id }))} onTask={(task) => update(active.id, (s) => mergeTask(s, task))} onRefresh={monitor.refresh} onContinue={(title) => setInput(`请基于已有记录继续：${title}`)} />}
       </div>
       <SetupWizard open={showSetup} onClose={() => setShowSetup(false)} />
     </div>

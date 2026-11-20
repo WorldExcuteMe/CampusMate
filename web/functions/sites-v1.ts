@@ -3,6 +3,7 @@
 import { CloudAgentError } from "./cloud-agents.ts";
 import { beijingTimeContext } from "./current-time.ts";
 import { parseDocumentText } from "./document-parser.ts";
+import { exportArtifact, availableFormats, type ExportSource } from "./export-formats.ts";
 import { readCloudEvents, type CloudStreamEvent } from "./cloud-events.ts";
 
 type Row = Record<string, unknown>;
@@ -793,6 +794,19 @@ export function createSitesV1(deps: SitesV1Deps) {
     artifact.size = served.byteLength;
     return { text, sha256 };
   }
+  function artifactSource(row: Row): ExportSource {
+    const inline = jsonObject(row.inline);
+    const src = inline.source && typeof inline.source === "object" && !Array.isArray(inline.source) ? inline.source as Row : {};
+    return {
+      title: textOf(src.title) || textOf(row.filename).replace(/\.[^.]*$/, "") || "campusmate",
+      markdown: textOf(inline.text),
+      ...(src.table && typeof src.table === "object" ? { table: src.table as ExportSource["table"] } : {}),
+      ...(Array.isArray(src.slides) ? { slides: src.slides as ExportSource["slides"] } : {}),
+      ...(src.chart && typeof src.chart === "object" ? { chart: src.chart as ExportSource["chart"] } : {}),
+      ...(typeof src.mermaid === "string" ? { mermaid: src.mermaid } : {}),
+      ...(src.json !== undefined ? { json: src.json } : {}),
+    };
+  }
   function artifactView(row: Row, inline?: { text: string; sha256: string }) {
     const source = inline ?? (jsonObject(row.inline).text !== undefined
       ? { text: textOf(jsonObject(row.inline).text), sha256: textOf(row.sha256) } : null);
@@ -801,6 +815,7 @@ export function createSitesV1(deps: SitesV1Deps) {
       sha256: textOf(row.sha256), kind: "markdown", filename: textOf(row.filename), contentType: textOf(row.content_type),
       size: integerOr(row.size),
       inline: source ? { format: "md", text: source.text } : null,
+      availableFormats: availableFormats(artifactSource(row)),
     };
   }
 
@@ -1502,20 +1517,34 @@ export function createSitesV1(deps: SitesV1Deps) {
         const artifact = found[0];
         const inline = await loadArtifactInline(owner, artifact);
         if (artifactMatch[2]) {
-          const format = url.searchParams.get("format") ?? "md";
-          if (format !== "md") return json(400, { error: "unsupported_format" });
-          const filename = safeFilename(artifact.filename).replace(/\.(md|markdown)$/i, "") + ".md";
-          return new Response(new TextEncoder().encode(inline.text), {
+          const format = (url.searchParams.get("format") ?? "md") as Parameters<typeof exportArtifact>[1];
+          const allowed = availableFormats(artifactSource(artifact));
+          if (!allowed.includes(format)) return json(400, { error: "unsupported_format" });
+          if (format === "md") {
+            const filename = safeFilename(artifact.filename).replace(/\.(md|markdown)$/i, "") + ".md";
+            return new Response(new TextEncoder().encode(inline.text), {
+              status: 200,
+              headers: {
+                "Content-Type": "text/markdown; charset=utf-8",
+                "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+                "X-File-Sha256": inline.sha256,
+                "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+              },
+            });
+          }
+          const exported = exportArtifact(artifactSource(artifact), format);
+          const digest = await sha256Bytes(exported.bytes);
+          return new Response(exported.bytes.slice().buffer as ArrayBuffer, {
             status: 200,
             headers: {
-              "Content-Type": "text/markdown; charset=utf-8",
-              "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
-              "X-File-Sha256": inline.sha256,
+              "Content-Type": exported.contentType,
+              "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(exported.filename)}`,
+              "X-File-Sha256": digest,
               "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
             },
           });
         }
-        return json(200, { artifact: artifactView(artifact, inline), availableFormats: ["md"] });
+        return json(200, { artifact: artifactView(artifact, inline), availableFormats: availableFormats(artifactSource(artifact)) });
       }
 
       // 托管 Provider（只读）+ 用户 BYOK（可写）

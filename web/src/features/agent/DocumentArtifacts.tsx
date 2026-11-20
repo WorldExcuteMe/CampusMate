@@ -18,15 +18,25 @@ function ArtifactDialog({ id, owner, index, partial }: { id: string; owner: stri
   const markdownText = markdown ? String(inline?.text ?? "") : "";
   const invalid = artifact && !markdown && (artifact.kind !== "document" || documentErrors(artifact.inline).length > 0);
   const ast = artifact && !invalid && !markdown ? artifact.inline as DocumentAst : undefined;
-  async function download(format: "md" | "docx" | "pdf") {
+  async function download(format: string) {
     setDownloading(format); setError("");
     try { const file = await downloadArtifact(id, format), url = URL.createObjectURL(file.blob), a = document.createElement("a"); a.href = url; a.download = file.filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setDownloading(""); }
   }
+  async function printPdf() {
+    setDownloading("pdf"); setError("");
+    try {
+      const file = await downloadArtifact(id, "html");
+      const url = URL.createObjectURL(file.blob);
+      const win = window.open(url, "_blank");
+      if (win) { win.addEventListener("load", () => { win.focus(); win.print(); }); }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setDownloading(""); }
+  }
   return <Dialog open={open} onOpenChange={setOpen}><DialogTrigger asChild><Button variant="outline" className="h-auto w-full justify-start gap-2 py-3 text-left text-xs"><FileText className="size-4 shrink-0 text-primary" /><span>查看{partial ? "未完成草稿" : "文档"}{index > 0 ? ` ${index + 1}` : ""}<span className="mt-0.5 block text-[10px] font-normal text-muted-foreground">预览与下载</span></span></Button></DialogTrigger><DialogContent className="flex max-h-[90dvh] flex-col gap-4 sm:max-w-4xl">
     <DialogHeader><DialogTitle>{ast?.title ?? artifact?.filename ?? "文档预览"}</DialogTitle><DialogDescription>{partial ? "这是未完成草稿，请查看任务检查中的具体差距。" : "同一版本的正文与引用；关键事实、方案和估算仍需核对。"}</DialogDescription></DialogHeader>
     {query.isLoading && <p role="status" className="text-sm text-muted-foreground">正在读取文档…</p>}{query.isError && <p role="alert" className="text-sm text-destructive">读取失败：{query.error.message}<button className="ml-2 underline" onClick={() => void query.refetch()}>重试</button></p>}{invalid && <p role="alert" className="text-sm text-destructive">产物结构无法安全预览，请检查执行记录。</p>}
-    {markdown && <><div className="flex flex-wrap items-center gap-2 border-b pb-3"><span className="mr-auto break-all text-xs text-muted-foreground">{artifact!.filename} · {markdownText.length} 字符</span><Button size="sm" variant="outline" disabled={Boolean(downloading)} onClick={() => void download("md")}><Download className="mr-1 size-3" />{downloading === "md" ? "生成下载…" : "下载 MD"}</Button></div><pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/30 p-3 text-xs leading-6">{markdownText}</pre></>}
+    {markdown && <><div className="flex flex-wrap items-center gap-2 border-b pb-3"><span className="mr-auto break-all text-xs text-muted-foreground">{artifact!.filename} · {markdownText.length} 字符</span>{(query.data?.availableFormats ?? ["md"]).map((format) => <Button key={format} size="sm" variant="outline" disabled={Boolean(downloading)} onClick={() => void download(format)}><Download className="mr-1 size-3" />{downloading === format ? "生成…" : format.toUpperCase()}</Button>)}<Button size="sm" variant="outline" disabled={Boolean(downloading)} onClick={() => void printPdf()}><Download className="mr-1 size-3" />PDF(打印)</Button></div><pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/30 p-3 text-xs leading-6">{markdownText}</pre></>}
     {ast && <><div className="flex flex-wrap items-center gap-2 border-b pb-3"><span className="mr-auto text-xs text-muted-foreground">版本 {artifact!.revision} · 正文 {bodyChars(ast)} 字符 · {ast.sources.length} 条来源</span>{(["md", "docx", "pdf"] as const).filter((format) => query.data!.availableFormats.includes(format)).map((format) => <Button key={format} size="sm" variant="outline" disabled={Boolean(downloading)} onClick={() => void download(format)}><Download className="mr-1 size-3" />{downloading === format ? "生成下载…" : `下载 ${format.toUpperCase()}`}</Button>)}</div><article aria-label="文档正文" className="min-h-0 flex-1 space-y-4 overflow-auto pr-2 text-sm leading-7">{ast.blocks.map((b, i) => <Block key={i} block={b} />)}{ast.sources.length > 0 && <section className="space-y-3 border-t pt-5"><h2 className="text-lg font-semibold">参考来源</h2>{ast.sources.map((s) => <div key={s.id} className="rounded-lg bg-muted/40 p-3 text-xs leading-6"><a href={s.url} target="_blank" rel="noreferrer" className="break-all font-medium text-primary">[{s.id}] {s.title}</a><p className="text-muted-foreground">取得于 {new Date(s.retrievedAt).toLocaleString()} · 网页已取得，事实仍需核对</p><details><summary className="cursor-pointer">查看来源摘录</summary><p className="mt-2 whitespace-pre-wrap">{s.excerpt}</p></details></div>)}</section>}</article><p className="truncate border-t pt-2 font-mono text-[10px] text-muted-foreground" title={artifact!.sha256}>内容 SHA-256：{artifact!.sha256}</p></>}
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
   </DialogContent></Dialog>;

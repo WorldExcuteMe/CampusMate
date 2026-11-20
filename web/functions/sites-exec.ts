@@ -330,6 +330,11 @@ const TOOL_DEFS = [
         properties: {
           filename: { type: "string", description: "文件名，建议以 .md 结尾" },
           markdown: { type: "string", description: "Markdown 正文" },
+          table: { type: "object", description: "可选表格 {headers,rows}，用于 CSV/XLSX/HTML" },
+          slides: { type: "array", description: "可选幻灯片 [{title,bullets}]，用于 PPTX" },
+          chart: { type: "object", description: "可选图表 {type,title,labels,values}，用于 SVG" },
+          mermaid: { type: "string", description: "可选 Mermaid 源码" },
+          json: { type: "object", description: "可选结构化 JSON 数据" },
         },
         required: ["filename", "markdown"],
         additionalProperties: false,
@@ -997,6 +1002,25 @@ async function setGrowthGoal(ctx: ToolContext, args: Row): Promise<Row> {
   return { ok: true, summary: "已更新成长目标", goals };
 }
 
+function exportSourceFromArgs(args: Row, title: string, markdown: string): Row {
+  const source: Row = { title, markdown };
+  const strArr = (v: unknown): string[] => Array.isArray(v) ? v.slice(0, 60).map(x => String(x ?? "").slice(0, 500)) : [];
+  if (args.table && typeof args.table === "object" && !Array.isArray(args.table)) {
+    const t = args.table as Row;
+    source.table = { headers: strArr(t.headers).slice(0, 20), rows: (Array.isArray(t.rows) ? t.rows.slice(0, 200) : []).map(r => strArr(r).slice(0, 20)) };
+  }
+  if (Array.isArray(args.slides)) source.slides = args.slides.slice(0, 30).map(sl => {
+    const o = (sl && typeof sl === "object" ? sl : {}) as Row;
+    return { title: String(o.title ?? "").slice(0, 200), bullets: strArr(o.bullets).slice(0, 12) };
+  });
+  if (args.chart && typeof args.chart === "object" && !Array.isArray(args.chart)) {
+    const c = args.chart as Row;
+    source.chart = { type: c.type === "line" ? "line" : "bar", title: String(c.title ?? title).slice(0, 120), labels: strArr(c.labels).slice(0, 24), values: (Array.isArray(c.values) ? c.values.slice(0, 24) : []).map(v => Number(v) || 0) };
+  }
+  if (typeof args.mermaid === "string") source.mermaid = args.mermaid.slice(0, 20_000);
+  if (args.json !== undefined) source.json = args.json;
+  return source;
+}
 async function createDocument(ctx: ToolContext, args: Row): Promise<Row> {
   const markdown = typeof args.markdown === "string" ? args.markdown : "";
   if (!markdown.trim()) return { ok: false, error: "markdown_required" };
@@ -1013,7 +1037,7 @@ async function createDocument(ctx: ToolContext, args: Row): Promise<Row> {
       cloud_file_id: `local_${digest.slice(0, 32)}`,
       filename, content_type: "text/markdown; charset=utf-8",
       size: bytes.byteLength, sha256: digest,
-      inline: { format: "md", text: content },
+      inline: { format: "md", text: content, source: exportSourceFromArgs(args, filename.replace(/\.md$/i, ""), content) },
       created_at: ctx.now(),
     }, { onConflict: "id" }).select("id");
   }
@@ -1089,18 +1113,40 @@ async function readBounded(response: Response, limit: number): Promise<Uint8Arra
   return out;
 }
 
+// ── 工具性能：TTL 缓存 + 并发限流，减少重复网络调用与突发拥塞 ────────────────
+const TOOL_CACHE_TTL = 5 * 60_000;
+const toolCache = new Map<string, { at: number; value: Row }>();
+function cacheGet(key: string): Row | null {
+  const hit = toolCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > TOOL_CACHE_TTL) { toolCache.delete(key); return null; }
+  return hit.value;
+}
+function cacheSet(key: string, value: Row) {
+  if (toolCache.size > 200) { const oldest = [...toolCache.entries()].sort((a, b) => a[1].at - b[1].at)[0]; if (oldest) toolCache.delete(oldest[0]); }
+  toolCache.set(key, { at: Date.now(), value });
+}
+let toolRunning = 0; const toolWaiters: Array<() => void> = [];
+async function toolLimited<T>(work: () => Promise<T>): Promise<T> {
+  if (toolRunning >= 4) await new Promise<void>(resolve => toolWaiters.push(resolve));
+  toolRunning++;
+  try { return await work(); } finally { toolRunning--; toolWaiters.shift()?.(); }
+}
 async function webSearch(ctx: ToolContext, args: Row): Promise<Row> {
   const query = asString(args.query, 300);
   if (!query) return { ok: false, error: "query_required" };
   const max = Math.min(Math.max(Math.round(Number(args.maxResults) || 6), 1), 8);
+  const searchKey = `search:${query}:${max}`;
+  const cachedSearch = cacheGet(searchKey);
+  if (cachedSearch) return cachedSearch;
   let response: Response;
   try {
-    response = await ctx.fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+    response = await toolLimited(() => ctx.fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
       method: "GET",
       redirect: "follow",
       headers: { "User-Agent": "Mozilla/5.0 (compatible; CampusMate/1.0)", Accept: "text/html" },
       signal: AbortSignal.timeout(12_000),
-    });
+    }));
   } catch {
     return { ok: false, error: "search_unavailable" };
   }
@@ -1122,23 +1168,28 @@ async function webSearch(ctx: ToolContext, args: Row): Promise<Row> {
     if (!url) continue;
     results.push({ title: sanitiseHtml(match[2]).slice(0, 200), url: url.href, snippet: clamp(snippets[results.length] ?? "", 500) });
   }
-  return { ok: true, query, results, note: "搜索标题与摘要不是正文证据，需用 web_fetch 读取后核验。" };
+  const searchOut = { ok: true, query, results, note: "搜索标题与摘要不是正文证据，需用 web_fetch 读取后核验。" };
+  cacheSet(searchKey, searchOut);
+  return searchOut;
 }
 
 async function webFetch(ctx: ToolContext, args: Row): Promise<Row> {
   const raw = asString(args.url, 2000);
   let url: URL | null = isPublicHttpUrl(raw);
   if (!url) return { ok: false, error: "invalid_url" };
+  const fetchKey = `fetch:${url.href}`;
+  const cachedFetch = cacheGet(fetchKey);
+  if (cachedFetch) return cachedFetch;
   let response: Response | null = null;
   // 手动跟随最多 3 次重定向，每一跳都重新做公网地址校验。
   for (let hop = 0; hop <= 3; hop++) {
     try {
       const current = url as URL;
-      response = await ctx.fetch(current.href, {
+      response = await toolLimited(() => ctx.fetch(current.href, {
         method: "GET", redirect: "manual",
         headers: { "User-Agent": "Mozilla/5.0 (compatible; CampusMate/1.0)", Accept: "text/html,text/plain,application/json" },
         signal: AbortSignal.timeout(15_000),
-      });
+      }));
     } catch {
       return { ok: false, error: "fetch_unavailable" };
     }
@@ -1163,13 +1214,15 @@ async function webFetch(ctx: ToolContext, args: Row): Promise<Row> {
   const body = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
   const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(body)?.[1];
   const content = /json/.test(contentType) ? body : sanitiseHtml(body);
-  return {
+  const fetched = {
     ok: true, url: response.url || (url as URL).href, status: response.status,
     contentType: contentType.slice(0, 100),
     ...(title ? { title: sanitiseHtml(title).slice(0, 200) } : {}),
     text: content.slice(0, 14_000),
     truncated: content.length > 14_000,
   };
+  cacheSet(fetchKey, fetched);
+  return fetched;
 }
 
 function readAttachment(ctx: ToolContext, args: Row): Row {
@@ -1450,7 +1503,7 @@ async function advanceInternal(taskId: string, owner: string, deps: ServerExecDe
     const MAX_THINKING_EVENT_CHARS = 6_000;
     const flushThinking = (force = false) => {
       if (!pendingThinking) return flushThinkingChain;
-      if (!force && now() - lastThinkingFlush < 300 && pendingThinking.length < 240) return flushThinkingChain;
+      if (!force && now() - lastThinkingFlush < 120 && pendingThinking.length < 120) return flushThinkingChain;
       const text = pendingThinking;
       pendingThinking = "";
       lastThinkingFlush = now();

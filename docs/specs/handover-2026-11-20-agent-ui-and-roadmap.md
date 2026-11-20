@@ -619,3 +619,13 @@ node scripts/build-sites.mjs
   - 任务请求体上限 8MB；原始文档 data URL 有大小预算，图片较多时自动退回文本。
 - 测试：496 项通过；视觉基线 7/7。
 - 最终发布：action `ab7ce74c-ddc0-444c-bc1c-86bbaa3e7a91`，`publication_completed`。
+## 29. 性能优化与功能扩展六方向（2026-11-20，第十七轮）
+
+1. 图片识别效率：客户端视觉预处理流水线（<=1600px + JPEG 0.85 重编码，失败回退原图），降低视觉 token 与上传体积；服务端保持 append-only 历史以利于前缀缓存；无 canvas 环境直接回退避免挂起。
+2. 富产物：新增 `functions/export-formats.ts`，从单一 Markdown/结构化源生成 DOCX/XLSX/PPTX（stored-zip OOXML，无需压缩库）、CSV、HTML、SVG 图表、Mermaid、JSON；`create_document` 工具新增 table/slides/chart/mermaid/json 参数；下载端点按 format 导出并校验 sha256；前端产物面板按 availableFormats 渲染多格式下载 + “PDF(打印)”（HTML 经浏览器打印）。PDF 亦可通过 HTML 打印获得。
+3. 工具链审计：web_search/web_fetch 增加 5 分钟 TTL 缓存 + 并发限流(4) + 既有超时/重定向校验，减少重复网络调用与突发拥塞。
+4. UI 重构：聊天列独立居中（输入框移入聊天列，max-w-3xl mx-auto，不受侧边栏影响）；侧边栏可拖拽宽度(280–560)+收起/展开按钮；轮次选择器改为 DeepSeek 式状态点+下拉列表。
+5. 输入框高度可拖拽(64–320)，持久化。
+6. 思考流：服务端增量粒度 300ms/240 → 120ms/120；新增 ThinkingStream 组件以 rAF 稳定逐字揭示+光标+自动滚动+可折叠，DeepSeek 式顺滑体验。
+- 测试：496 项通过；视觉基线 7/7。
+- 发布：action `956fa541-6124-4112-99bc-fc9c23071a0d`，`publication_completed`。

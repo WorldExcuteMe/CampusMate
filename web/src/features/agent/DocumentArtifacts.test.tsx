@@ -33,6 +33,6 @@ it("markdown 产物直接展示正文并可下载，不再误报结构无法预�
   fireEvent.click(screen.getByRole("button", { name: /查看文档/ }));
   expect(await screen.findByText(/正文内容/)).toBeVisible();
   expect(screen.queryByText(/结构无法安全预览/)).toBeNull();
-  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "下载 MD" })); });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "MD" })); });
   await vi.waitFor(() => expect(api.download).toHaveBeenCalledWith("md", "md"));
 });

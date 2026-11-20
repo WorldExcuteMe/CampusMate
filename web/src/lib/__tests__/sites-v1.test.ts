@@ -287,7 +287,7 @@ describe("Sites V1 产物与审批", () => {
     const view = await response.json();
     expect(view.artifact.inline).toEqual({ format: "md", text: body });
     expect(view.artifact.sha256).toBe(digest);
-    expect(view.availableFormats).toEqual(["md"]);
+    expect(view.availableFormats).toEqual(["md", "html", "docx", "csv", "pptx"]);
     expect(f.cloud.getDownloadLink).toHaveBeenCalledWith("file_1");
 
     const download = await f.call("GET", "/v1/artifacts/file_1/download?format=md");

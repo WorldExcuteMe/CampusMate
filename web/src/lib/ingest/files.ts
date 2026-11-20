@@ -18,6 +18,30 @@ async function limited<T>(work: () => Promise<T>, signal?: AbortSignal): Promise
   try { cancelled(signal); return await work(); }
   finally { const next = waiting.shift(); if (next) next(); else active--; }
 }
+// 视觉预处理流水线：缩放到 <=1600px 并重编码 JPEG，显著降低视觉 token 与上传体积，
+// 提升识别吞吐与首字速度；失败时回退原图，绝不丢图。
+const VISION_MAX_DIM = 1600;
+async function compressImageDataUrl(dataUrl: string): Promise<string> {
+  if (typeof document === "undefined" || typeof Image === "undefined") return dataUrl;
+  try {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return dataUrl; // 无 canvas 环境（如测试）直接回退原图，避免挂起。
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("image_decode_failed"));
+      el.src = dataUrl;
+    });
+    const scale = Math.min(1, VISION_MAX_DIM / Math.max(img.naturalWidth, img.naturalHeight));
+    if (scale >= 1 && dataUrl.length < 700_000) return dataUrl;
+    canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const out = canvas.toDataURL("image/jpeg", 0.85);
+    return out.length < dataUrl.length ? out : dataUrl;
+  } catch { return dataUrl; }
+}
 export async function parseFile(file: File, signal?: AbortSignal): Promise<Attachment> {
   const format = validateAttachmentFile(file); // Before reads, imports or workers.
   return limited(async () => {
@@ -33,7 +57,10 @@ export async function parseFile(file: File, signal?: AbortSignal): Promise<Attac
       if (!valid) throw new AttachmentPolicyError('图片内容与格式不符或文件损坏，请使用正确格式的图片。');
       const url = await readAsDataURL(file);
       cancelled(signal);
-      return { ...base, kind: 'image', dataUrl: `data:${mime};base64,${url.slice(url.indexOf(',') + 1)}` };
+      const raw = `data:${mime};base64,${url.slice(url.indexOf(',') + 1)}`;
+      const dataUrl = await compressImageDataUrl(raw);
+      cancelled(signal);
+      return { ...base, kind: 'image', dataUrl };
     }
     if (format === 'text') {
       const buf = await readBuffer(file); let text: string;
