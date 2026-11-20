@@ -11,15 +11,18 @@
     "prebuild": "node scripts/check-node.mjs",
     "dev": "node dev/serve.mjs dev",
     "build": "tsc --noEmit && node scripts/build.mjs",
+    "build:sites": "node scripts/build-sites.mjs",
     "preview": "node dev/serve.mjs preview",
     "start:all": "node dev/start-all.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "dev:function": "deno run --allow-net --allow-env=SUPABASE_URL,SUPABASE_ANON_KEY,LLM_API_KEY,LLM_DISPLAY_NAME,LLM_BASE_URL,LLM_MODEL,AI_ALLOWED_ORIGINS dev/function-local.ts",
-    "check:function": "npx --yes deno@2.9.6 check functions/index.ts dev/function-local.ts",
+    "check:function": "npx --yes deno@2.9.6 check dev/function-local.ts functions/runtime.ts functions/sites-app.ts functions/sites-database.ts functions/sites-production.ts functions/sites-config.ts",
+    "test:function": "npx --yes deno@2.9.6 test functions/sites-app.deno.test.ts",
     "benchmark": "vitest run benchmark",
-    "dev:api": "node --experimental-strip-types dev/llm-proxy.mjs"
+    "dev:api": "node --experimental-strip-types dev/llm-proxy.mjs",
+    "probe:cloud": "node scripts/probe-cloud-agents.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

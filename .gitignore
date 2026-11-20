@@ -5,6 +5,8 @@ supabase/.temp/
 supabase/.branches/
 web/node_modules/
 web/dist/
+web/dist-sites/
+web/dist-sites-function/
 backend/node_modules/
 web/coverage/
 backend/coverage/

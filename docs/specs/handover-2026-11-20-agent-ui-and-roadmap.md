@@ -265,3 +265,220 @@ API Key/PAT 放 Sites Secrets，前端不可见；平台登录态由 Sites 托�
 验收：tsc + web vitest + build + Playwright 视觉基线；后端改动跑 node --test。提交 conventional commits，
 不要 git add -A；推送用 git -c http.proxy=http://127.0.0.1:7890 push。中文汇报：改了什么/证据/下一步。
 ```
+
+## 13. P0 接任核实（2026-11-20，首轮记录）
+
+后续验证状态见第 14 节，Sites 解阻路径见第 15 节；本节保留首轮证据，pdfjs 环境问题及 Deno 验证缺口已在第二轮解决。
+
+- 接任起点：`feature/agent-local-workspaces` / `bd99c7a`，工作树干净；已按顺序阅读五份指定文档。
+- 本轮重新运行 web `tsc --noEmit` 与 `node scripts/build.mjs` 均通过；构建仍有 500 kB chunk 警告。全量 Vitest：**372 项通过，57 个文件通过，1 个文件导入失败**；失败仍为 `attachment-documents.test.ts` 的 pdfjs worker 经 node_modules junction 超出 Vite 文件访问范围（`Denied ID ...pdf.worker.min.mjs?url`）。新增 Cloud Agents 契约测试 62 项、探针控制流测试 10 项全部通过，均为 fixture，不是真实云端证据。
+- 官方 Sites 文档确认 Agent App 与 DB/存储能力，但创建与发布入口是 Sites 面板；本机 `qoder --help` 为 IDE 启动器，没有 `sites` 子命令，不能照旧文档假设 CLI 发布可用。
+- 当前会话未提供 Sites 发布、DB、Secrets 工具，也没有已确认的函数身份/数据库 SDK 契约；进程环境未配置 `QODER_ACCESS_TOKEN` / `QODER_PAT`。没有读取 IDE 登录凭据，也未进行云端资源创建或付费调用。
+- Cloud Agents 官方契约已核实：`/api/v1/cloud`；创建 Session 绑定 Agent 版本与 Environment；以 `events` 数组提交 `user.message`；SSE 使用 `Last-Event-ID` 重放；历史事件使用 `page` / `next_page`；产物事件为 `agent.artifact_delivered`，以 `file_id` 请求 `/files/{file_id}/content` 获得限时 `url` / `expires_at`。
+- 官方示例地址为 `https://api.qoder.com`；国内账号的区域地址与可用性仍需实际配置确认，不猜测区域域名，不把 PAT 发送到未确认端点。
+- `idle` 不等于产物验收成功，必须核验工具结果、交付事件与下载内容；`rescheduling` 仍属于当前轮次，不重发消息。`agent.thinking` 没有正文，不生成虚构思考摘要。
+- 用户已授权目标 worktree 写入，现已成功落盘；不改原始 `qoder比赛` 仓库。仍需 Sites 上下文，在 Sites Secrets 配置凭据并接好平台身份和 owner 隔离后，才能做真实黄金流及超时/并发/限流实测。契约测试不能代替这些验收。
+- backend 回归：`node --test --test-concurrency=2`，**685 通过、0 失败、1 跳过**（未配置隔离 `TEST_DATABASE_URL`）；耗时约 70 秒。本轮未改 UI，未重拍视觉截图；没有可用 Deno 命令，尚未进行 Deno 原生运行验证。
+- 参考：[Sites](https://docs.qoder.com/qoder/sites)、[Cloud Agents 快速开始](https://docs.qoder.com/cloud-agents/quickstart)、[Session 事件](https://docs.qoder.com/cloud-agents/api/sessions/events/list)、[产物下载](https://docs.qoder.com/cloud-agents/api/files/download)。
+
+### 本轮代码与运行入口
+
+- `web/functions/cloud-agents.ts`：服务端 REST/SSE 传输；Environment、最小通知 Agent、固定版本 Session、消息、历史分页、取消和产物链接。只开放 `Read/Write/DeliverArtifacts`，没有向沙箱注入 PAT；禁止重定向，过滤私密 Session 字段，写请求失败不自动重发。
+- `web/functions/cloud-events.ts`：UTF-8 跨块解析、LF/CRLF/CR、heartbeat、帧大小限制及半帧断线处理；提前结束消费会释放 reader。`agent.thinking` 不生成正文。
+- 单连接默认 25 秒，调用方携带最后完整事件 ID 重连；这是应用侧保护值，**不是 Sites 平台超时的实测结果**。连接关闭不取消 Cloud Agent，显式取消走 Session cancel。
+- `web/scripts/probe-cloud-agents.mjs`：Node 24 技术探针，默认只读 `--check`；显式 `--run` 才创建独立 Environment/Agent/Session 并消耗额度。探针本身不放进 Edge Function，其 360 秒监听循环不代表在 Edge 中运行 Agent 循环。
+- 探针检查成功的 Write/Read/DeliverArtifacts 工具结果、`end_turn`、真实交付事件、限时链接、下载字节数、Markdown 与 SHA-256；不打印原文、PAT、工具参数或签名 URL。失败后请求取消本次新建 Session，保留资源和 ID 供核查，不自动删除；成功也保留资源，后续由管理员在控制台管理。
+- 新增文件均未接入浏览器或 `functions/runtime.ts`。旧的 Supabase/LLM 路由保持原样，**尚未新增 Sites 公开 API、登录、数据库表或前端云模式**，避免在身份/owner 隔离未知时暴露账号级 Cloud Agents API。
+
+在 `web` 目录、仅服务端进程中配置 `QODER_ACCESS_TOKEN` 或 `QODER_PAT`（不要在聊天中粘贴密钥，不写入 `VITE_*`）：
+
+```powershell
+node scripts/probe-cloud-agents.mjs --help
+node scripts/probe-cloud-agents.mjs --check
+# 以下会真实创建云资源并消耗额度；默认输入是明确标记的虚构测试通知。
+node scripts/probe-cloud-agents.mjs --run
+# 或使用自行提供的 UTF-8 通知文件，最大 64 KiB。
+node scripts/probe-cloud-agents.mjs --run --notice C:\path\notice.txt
+```
+
+本轮实际执行的是 `--check`，结果：`status=blocked`、`error=cloud_token_missing_or_invalid`、`liveAttempted=false`、`sitesVerified=false`。没有创建云资源，没有获得公开部署链接，没有完成真实黄金流；没有进行外部测评。
+
+### 下一步接入门禁
+
+1. 在带 Sites 能力的任务上下文中取得真实发布、身份、DB 和 Secrets 接口；确认账号所在区域的 Cloud Agents 地址和权限。当前客户端仅接受已核实的 `https://api.qoder.com`，其他区域须先补官方依据与测试。
+2. Sites 函数使用可信平台身份，落一张 owner 隔离的 Session/运行映射表；DB 和身份均缺省拒绝访问，不能信任浏览器传入的 userId/Session ID。完成这些后才把适配器接入 `/functions/v1/app`。
+3. 先做管理员真实探针，再做 Sites 登录→DB→Session→SSE→产物预览/下载；两者分开记录证据。实测函数断流重连、长任务、并发冲突、限流与产物链接有效期后再进入 P1 UI 接线。
+
+## 14. P0 Edge 接入层与原生验证（2026-11-20，第二轮）
+
+### 已落地代码（仍未挂载生产入口）
+
+- 新增 `web/functions/sites-app.ts` / `createSitesApp`。缺少可信身份、持久化存储、全局额度、Cloud Agents 客户端、固定 Agent/Environment 或站点 Origin 中任一项时，受保护 API 返回 `503 sites_not_configured`；没有匿名收费回退和内存 DB 回退。
+- 身份从注入的可信平台适配器取得，不读取猜测的 `X-Qoder-*` 身份头，也不接受浏览器提供 owner/Agent/Environment。未登录返回 `401 login_required`；站点 Origin 检查独立于来访 Host，拒绝跨站读写。
+- 运行以 `(owner, requestId)` 绑定正文 SHA-256；创建与发送拆成两个短请求。必须由 Sites 存储实现原子 reserve 与 state CAS；重复请求不重复执行，同键不同正文冲突，响应丢失后进入 `uncertain`/保留 `sending`，不自动重放收费操作。
+- 创建/发送前后持久化状态失败时不声明成功；已取得的 Session ID 尽可能保留用于对账。`creating/sending/uncertain` 的恢复需要核对真实 Cloud Agents 状态，不能以租约过期为由重新执行。
+- 事件历史与 SSE 都先核对 run owner；对外不暴露账号级 Session ID、工具参数/结果正文、思考原文、上游错误正文或未知载荷。消息预览有界，裁剪时返回 `contentTruncated=true`。
+- SSE 每请求仅代理一条上游连接，不自动续跑 Agent；保留事件 ID，断流产生不带 ID 的 `stream_interrupted` 信号，取消订阅释放上游但不取消云端任务。显式取消先封住再次发送入口，再请求平台取消。
+- 产物链接只能从当前用户 Session 的 `agent.artifact_delivered` 事件兑换，不能仅凭账号级 file ID 下载别人的文件。查询一次历史页，超出第一页时调用方提供该事件所在页的游标，不在 Edge 遍历全部历史。
+- `run.state=cancelled` 表示应用发送入口已封住；实际 Agent 是否已停止仍读取 `session.status`，不能把取消请求回执当作完成。
+
+### 待平台接入的 HTTP 契约
+
+根路径为 `/functions/v1/app`，当前仅由导出的 handler 实现，没有改动 `functions/runtime.ts` 或发布路由：
+
+| 路径 | 用途 |
+|---|---|
+| `GET /health` | 配置状态；`deploymentVerified=false`，不是平台健康证明 |
+| `GET /me` | 已验证用户身份 |
+| `POST /runs` | `{requestId, notice}` → 创建绑定的 Session，不发消息 |
+| `POST /runs/:id/message` | `{notice}` → 同哈希正文只发送一次 |
+| `GET /runs/:id` | 应用运行状态 + 平台 Session 状态 |
+| `GET /runs/:id/events?page=...` | 单页安全事件 + `nextPage` |
+| `GET /runs/:id/stream` | `Last-Event-ID` 重连；下游事件名 `cloud_event`，JSON 中保留原始事件 type |
+| `POST /runs/:id/cancel` | 封住发送后请求取消，可显式重试取消 |
+| `GET /runs/:id/artifacts/:fileId?page=...` | 校验当前会话交付记录后换取限时下载链接 |
+
+**存储与配额只有接口契约，没有 Sites DB 实现或建表迁移**。测试使用明确标记的内存 fixture，仅证明应用控制流；不能据此宣称平台持久化、多用户登录、跨实例限流或云端黄金流通过。`reserve` 的实际实现必须原子执行唯一键、请求/并发额度与插入，`transition` 必须以 owner/id/旧 state 约束更新。
+
+### 最新验证结果
+
+- web TypeScript：`tsc --noEmit -p tsconfig.json` 通过；为 Deno 源文件的显式 `.ts` 导入开启 `allowImportingTsExtensions`，继续保持 `noEmit`。
+- web 全量 Vitest：**59 个文件、416 项全部通过，0 失败**。其中本轮 Edge 契约测试 40 项，前轮 Cloud Agents/探针测试 72 项。
+- pdfjs 原有失败已修复：Vitest 内的 Vite 会同时检查真实文件及带 `?url` 路径；`vitest.config.ts` 仅增加真实 pdfjs `build` 目录的访问许可，不修改生产 Vite 配置、不关闭文件系统安全检查、不 mock 掉 worker URL。原文件 4 项测试全部执行并通过。
+- 构建：`node scripts/build.mjs` 成功，仍有现存 500 kB chunk 提示。未修改 UI，没有新增视觉截图。
+- Deno 2.9.6：现有函数入口、本地函数入口、新 Edge handler 均 `deno check` 通过；**5 项原生 Deno 测试通过**（无网络和环境变量权限）。修复了 `document` 标识符在 Deno 默认类型库中不存在的问题。
+- backend：本轮重新执行 `node --test --test-concurrency=2`，**685 通过、0 失败、1 跳过**，约 81 秒；未配置隔离 PostgreSQL 的用例依然跳过。
+- `git diff --check` 通过。没有提交或推送，基点仍为 `bd99c7a`。
+- 当前 PATH 的 `npm` 包装器返回路径不存在；`npx` 可用。实际 Deno 验证命令如下，package.json 也已添加相应脚本：
+
+```powershell
+npx --yes deno@2.9.6 check functions/index.ts dev/function-local.ts functions/sites-app.ts
+npx --yes deno@2.9.6 test functions/sites-app.deno.test.ts
+```
+
+### 剩余真实阻断
+
+继续执行时复核：当前 MCP 列表仍无 Sites 发布/DB/Secrets 工具，浏览器 MCP 连接超时，进程仍未配置 PAT。未读取 IDE 私有凭据，未创建云资源，也没有公开部署链接。下一步必须在带 Sites 能力的任务上下文取得平台身份/DB/Secrets 契约，完成持久化与额度适配，再挂载上述 handler 和跑真实登录→通知→文档→下载闭环。**第三轮已找到并验证官方独立 CLI 路径，详见下一节，不必继续等待 IDE 出现 Sites MCP。**
+
+## 15. Sites 缺口的官方解决路径（2026-11-20，第三轮）
+
+### 更正与实际证据
+
+- 此前仅检查 PATH 中的 `qoder`（Qoder IDE 启动器），不足以判断独立 Qoder CLI 的 Sites 能力；“只能通过 Sites 面板”不是完整结论。
+- [官方 CLI Sites 文档](https://docs.qoder.com/zh/cli/sites)明确提供独立 CLI 的交互式 Sites 工作流、`/sites` 面板及 `qoder sites` 操作接口。它们属于独立 CLI，不能把 IDE 启动器当作同一个命令。
+- 本机已通过官方 npm 兼容包运行独立 CLI **1.1.93**，没有替换 IDE 启动器或修改系统 PATH。
+- `sites operations` 实际成功列出 **32 项操作**；`sites describe get_context`、`sites describe get_database_schema`、`sites describe prepare_site` 均取得真实输入 Schema。
+- `sites list` 实际失败为 `sites_auth_required` / `No credential was supplied`。这证明操作接口存在，但本次独立 CLI 还未取得登录凭据，**不是已登录、已连接站点或已部署**。
+- 进程中的 `QODER_PERSONAL_ACCESS_TOKEN` 也未设置。未读取 CLI/IDE 私有认证文件，未手工构造会话身份，未调用发布、建表、Secret 写入等操作。
+
+### 一次性启用步骤
+
+1. 在自己的 PowerShell 中执行下面的官方 CLI 登录命令，按引导在浏览器中登录与目标 Sites 相同区域的账号。该步骤不能以聊天授权代替真实登录。
+2. 登录后使用站点列表核对账号和目标站点；如列表为空或权限不足，不自动新建替代站点。原请求已要求的最小验证站点可按官方会话流程创建，避免覆盖既有项目。
+3. 在目标 worktree 启动同一个 CLI 的交互会话，使用 `/sites` 或自然语言进入内置 Agent App 流程。让流程取得平台上下文、数据库 Schema 与官方函数模板，复用本仓库的接入层。
+
+```powershell
+npx --yes --package @qoder-ai/qodercli@1.1.93 -- qoder login
+npx --yes --package @qoder-ai/qodercli@1.1.93 -- qoder sites list
+npx --yes --package @qoder-ai/qodercli@1.1.93 -- qoder --cwd "C:\Users\Asus\CodeBuddy\campusmate-builds\agent-local-workspaces"
+```
+
+官方推荐原生安装器；这里用仍受官方支持的 npm 兼容入口避免与 IDE 命令重名。已验证的是公开 npm 包，国内/专有环境须以登录后的官方运行上下文为准，不能擅自回退到另一服务区域。
+
+### 三类身份不能混淆
+
+| 层次 | 解决方式 | 不可替代的边界 |
+|---|---|---|
+| 开发者管理 Sites | 独立 CLI 浏览器登录，或标准 `QODER_PERSONAL_ACCESS_TOKEN` | IDE 登录不等于独立 CLI 已取得登录凭据 |
+| 网站访客登录 | Sites 官方函数模板/运行契约中已验证的用户身份 | 不能信任浏览器提交的 userId 或自造身份头 |
+| Edge 调用 Cloud Agents | 同区域 PAT，或组织 Service Account Key 换取 `qca.access` SAT；仅放服务端 Secrets | CLI 浏览器登录不会自动把长期 API 密钥注入部署函数 |
+
+- PAT 官方获取说明：[CLI 认证](https://docs.qoder.com/cli/authentication)、[Cloud Agents 认证](https://docs.qoder.com/cloud-agents/api/conventions/authentication)。公开版文档链接是 `https://qoder.com/account/integrations`；国区使用对应区域的官方控制台，不跨区域发送凭据。
+- 本项目探针与客户端当前读取 `QODER_ACCESS_TOKEN` / `QODER_PAT`；CLI 标准 PAT 环境变量为 `QODER_PERSONAL_ACCESS_TOKEN`，两者不是自动同步的配置。不要把密钥写入命令参数、聊天、源码或 `VITE_*`。
+  **更正（2026-11-20）**：手工创建/粘贴 PAT 不能解除 Sites 部署阻断，也不应作为恢复步骤；请走官方 CLI 登录与平台托管凭据，详见第 16 节。
+- `/sites` 面板提供只写不可回读的 Secrets 管理。若平台 Agent App 流程已经提供托管调用凭据，先核实其真实接口再适配；公开文档不能证明本账号已经自动配好凭据。
+
+### 登录后如何挂载现有代码
+
+- 在正式 Sites 会话里读取 `get_context` 返回的产品、区域、环境及 Cloud Agents origin；原客户端仅允许已核实的公开地址，国区须依据该可信上下文补配置和测试，不能临时关掉端点校验。
+- 由官方 Agent App 流程取得身份/数据库接入模板，实现 `createSitesApp` 的 `authorize`、`runs`、`allowRequest`。只有真实存储能满足唯一键/CAS 与跨实例额度，才挂到函数 `index.ts`。
+- 已取得的 `prepare_site` Schema 明确支持 `functionDirectory`（包含 `index.ts`）、`databaseAccess=read_write`、`secretNames`；数据库依赖需要同项目的 `schemaRef`。这说明函数可以随静态站点交付，不需要伪造 Vite 代理为生产后端。
+- 建表、草稿准备、Secrets 与发布由官方会话工作流编排；不手写 `.qoder.site`，不伪造 `--session`/`schemaRef`/确认值。公开发布须走平台确认，然后读取发布终态和实际 URL。
+- 若使用个人 Free 方案，官方文档说明不支持数据库/存储；Teams/Enterprise 不支持组织外公开链接。当前账号方案未知，登录后需核查，不能提前假设比赛公开发布权限可用。
+
+本轮只进行了工具验证和交接更正，应用代码与上一轮 416 项 web 测试通过的版本一致。当前下一项真实阻断已明确为：**完成独立 CLI 的账号登录，然后核查站点上下文与部署函数所用凭据**。
+
+## 16. 恢复点与事实更正（2026-11-20，第四轮）
+
+> 本节为追加恢复点；除此以外仅对第 15 节"手工 PAT"表述做一处更正，其余历史记录保持原样。
+> 事实来源：本轮 `.local/sites` 下的四份回执与主会话验证输出；本节结论以这些回执及验证输出为准。
+
+### 16.1 本轮已确认
+
+- 当前 CLI 已登录且托管 PAT 就绪；恢复时先取只读回执与 `get_context`、`list`，认证失效才重新登录，不重复创建站点或资源。
+- Sites DB：**两张私有表已 applied**。
+- P0：**代码与打包完成**。
+- 主会话验证（全部通过）：
+  - web `tsc --noEmit` 通过、`node scripts/build.mjs` 通过；
+  - web Vitest **451 通过**；
+  - Deno **5 通过**；
+  - Playwright **9 通过**；
+  - backend `node --test --test-concurrency=2` **685 通过、1 跳过**。
+- 完整 action `0f2fe3a8-04f2-46a0-ab75-966cbb2e4777` 的 `prepare` 返回 **`sites_invalid_request`**；**没有部署，没有发布**。
+- "schema 版本范围不兼容"**只是未证实推测**，不是已确认根因，不得写入结论，也不得据此修改配置。
+- 版本事实：**官方 npm 包与原生 manifest 最新版本均为 `1.1.93`**。已是官方最新，没有可升级版本，也没有换版本解阻的空间。
+
+### 16.2 截图清单（证据）
+
+Playwright **9 项通过** = `web/e2e/visual-system.spec.ts` **7 项** + `web/e2e/sites-p0.spec.ts` **2 项**。运行输出在 `web/test-results/visual/` 与 `web/test-results/sites-p0/`；`docs/design/visual-baseline/` 仅为历史基线，本轮未归档。
+
+- 对话页：`agent-light-1440.png`、`agent-light-1440-steps.png`（步骤摘要存在时才生成）、`agent-light-1024.png`、`agent-dark-1440.png`、`agent-dark-1440-steps.png`、`agent-dark-1024.png`
+- 设置页：`settings-light-1440.png`、`settings-dark-1440.png`
+- 功能页（浅色 1440）：`dashboard-light-1440.png`、`inbox-light-1440.png`、`calendar-light-1440.png`、`radar-light-1440.png`、`daily-light-1440.png`、`trust-light-1440.png`、`growth-light-1440.png`、`profile-light-1440.png`
+- 入口页（浅色 1440）：`landing-light-1440.png`、`login-light-1440.png`
+- 移动端：`agent-light-390.png`
+- Sites P0（本轮）：`web/test-results/sites-p0/{before-desktop,after-desktop,after-dark,after-mobile}.png`
+
+复现命令：
+
+```powershell
+cd C:\Users\Asus\CodeBuddy\campusmate-builds\agent-local-workspaces\web
+node node_modules/playwright/cli.js test e2e/visual-system.spec.ts e2e/sites-p0.spec.ts
+```
+
+### 16.3 恢复路径（按顺序，不绕过校验）
+
+1. 当前已登录且托管 PAT 就绪：先取只读回执并执行 `qoder sites list`、`get_context`，核对账号区域与目标站点；只有认证失效（如 `sites_auth_required`）才重新走官方 CLI 浏览器登录，不重复创建站点或资源。不要手工 PAT。
+2. 在官方 `/sites` 会话中读取 `get_context`、`get_database_schema`、`prepare_site` 的真实输入 Schema，按其字段组装参数。
+3. 对照 `prepare_site` Schema 检查本次请求（如 `functionDirectory`、`databaseAccess`、`secretNames`、`schemaRef` 等）。`sites_invalid_request` 表示请求不满足 Schema，不是网络或额度问题。
+4. 修正输入后重试；保留 action id 与被拒请求体（脱敏），**不得改 CLI 源码、打补丁或加包装层绕过校验**。
+5. 仅在 `prepare` 通过后执行部署/发布，并读取终态与实际 URL 作为唯一验收证据；在此之前不得宣称已部署或可公开访问。
+6. 若仍为 `sites_invalid_request`，记录真实 Schema 与请求差异并交由平台工作流；**不得把"schema 版本范围不兼容"当作结论**。
+
+```powershell
+# 已登录时：只做只读核对，不重复创建
+npx --yes --package @qoder-ai/qodercli@1.1.93 -- qoder sites list
+npx --yes --package @qoder-ai/qodercli@1.1.93 -- qoder sites describe prepare_site
+# 仅在认证失效（sites_auth_required）时执行
+npx --yes --package @qoder-ai/qodercli@1.1.93 -- qoder login
+```
+
+### 16.4 禁止事项
+
+- 禁止私改 Qoder CLI（源码/补丁/包装/伪造子命令）绕过校验。
+- 禁止降级数据库或篡改 schema 版本范围来规避校验。
+- 禁止手工构造 PAT、session、`schemaRef`、确认值或身份头。
+- 禁止把未证实推测写成根因；禁止跨区域发送凭据。
+- 禁止在 `.local/sites` 结果与主会话验证之外宣称"已部署/已发布/已可公开访问"。
+
+### 16.5 更正：手工 PAT 说法
+
+更正第 15 节及此前口径：**"手工配置/粘贴 PAT"不是 Sites 部署的解阻路径**。应通过官方 CLI 浏览器登录取得开发者会话，再由 Sites 平台工作流托管函数调用所需凭据。`QODER_PERSONAL_ACCESS_TOKEN`（CLI 标准）与探针读取的 `QODER_ACCESS_TOKEN` / `QODER_PAT` 不是同一配置，不能互相替代或手工拼接。当前阻断是 `prepare` 的 `sites_invalid_request`，与 PAT 是否存在无关。
+
+### 16.6 恢复入口文件
+
+- 交接文档：`docs/specs/handover-2026-11-20-agent-ui-and-roadmap.md`
+- Sites 接入层：`web/functions/sites-app.ts`、`web/functions/sites-database.ts`、`web/functions/sites-production.ts`、`web/functions/sites-config.ts`
+- 构建/探针：`web/scripts/build-sites.mjs`、`web/scripts/probe-cloud-agents.mjs`
+- 本轮结果目录：`.local/sites/`（四份只读回执）
+- 视觉输出：`web/test-results/visual/`、`web/test-results/sites-p0/`；`docs/design/visual-baseline/` 仅为历史基线，本轮未归档

@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <meta name="description" content="CampusMate P0 通知整理：粘贴校园通知，云端 Agent 提取待办并交付 Markdown 文档。">
+  <title>CampusMate · P0 通知整理</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="CampusMate 通知整理首页">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 4.5h14v15H5z"></path>
+            <path d="M8.5 9h7M8.5 12.5h7M8.5 16h4.5"></path>
+            <path d="M7.5 4.5v-1M16.5 4.5v-1"></path>
+          </svg>
+        </span>
+        <span class="brand-text">
+          <span class="brand-name">CampusMate</span>
+          <span class="brand-sub">通知整理 · P0</span>
+        </span>
+      </a>
+
+      <div class="topbar-actions">
+        <span class="chip quota-chip" id="quota-chip" title="P0 演示额度：全站 20 次，每位用户 4 次">
+          <span class="chip-key">P0</span>
+          <span class="chip-value">全站 20 · 每人 4</span>
+        </span>
+        <span class="chip connection-chip" id="connection-chip" data-state="idle">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="connection-label">未连接</span>
+        </span>
+        <span class="user-chip" id="user-chip" title="当前登录身份">未登录</span>
+        <button class="icon-button" id="theme-button" type="button" aria-label="切换主题">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4.2"></circle>
+            <path d="M12 2.8v2.1M12 19.1v2.1M4.8 4.8l1.5 1.5M17.7 17.7l1.5 1.5M2.8 12h2.1M19.1 12h2.1M4.8 19.2l1.5-1.5M17.7 6.3l1.5-1.5"></path>
+          </svg>
+          <span class="visually-hidden" id="theme-label">主题：跟随系统</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="auth-slot" id="auth-slot" hidden>
+      <div class="banner banner-auth" role="region" aria-label="登录状态">
+        <span class="banner-mark" aria-hidden="true"></span>
+        <div class="banner-copy">
+          <p class="banner-title" id="auth-title">需要 Qoder 账号</p>
+          <p class="banner-text" id="auth-text">登录后才会创建云端沙箱，并使用当前账号的独立额度。</p>
+        </div>
+        <div class="banner-actions" id="auth-actions"></div>
+      </div>
+    </div>
+
+    <main class="workspace">
+      <section class="panel composer" aria-labelledby="composer-title">
+        <div class="panel-heading">
+          <p class="eyebrow">输入</p>
+          <h1 id="composer-title">通知整理</h1>
+          <p class="lede">粘贴通知全文。云端 Agent 会提取事项、时间、地点和行动清单，写入 Markdown 文档并交付下载。</p>
+        </div>
+
+        <form id="notice-form" novalidate>
+          <div class="field">
+            <div class="field-label-row">
+              <label for="notice">通知原文</label>
+              <span class="mono counter" id="byte-count">0 字节 / 64 KiB</span>
+            </div>
+            <textarea id="notice" name="notice" rows="12" spellcheck="false" autocomplete="off"
+              aria-describedby="notice-hint" placeholder="粘贴通知全文…"></textarea>
+            <p class="field-hint" id="notice-hint">仅用于本次运行；SSE 断线只重连，不会重发通知。刷新页面只恢复读取。</p>
+          </div>
+
+          <div class="inline-alert" id="composer-alert" role="alert" hidden></div>
+
+          <div class="composer-actions">
+            <div class="init-status" id="init-status" data-state="checking">
+              <span class="dot" aria-hidden="true"></span>
+              <span id="init-label">正在检查服务…</span>
+              <button class="init-retry" id="init-retry" type="button" hidden>重新检查</button>
+            </div>
+            <div class="button-row">
+              <button class="button danger-ghost" id="cancel-button" type="button" hidden>取消运行</button>
+              <button class="button primary" id="submit-button" type="submit" disabled>服务检查中…</button>
+            </div>
+          </div>
+          <p class="kbd-hint">按 <kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>Enter</kbd> 提交</p>
+        </form>
+
+        <aside class="quota-note" aria-label="P0 额度说明">
+          <div class="quota-head">
+            <span class="quota-title">P0 演示额度</span>
+            <span class="mono quota-value">全站 20 · 每人 4</span>
+          </div>
+          <p>全站最多 <strong>20 次</strong>运行，每位用户最多 <strong>4 次</strong>。达到上限后，服务端返回额度错误，页面不会绕过限制继续创建。</p>
+          <details>
+            <summary>数据边界与请求频率</summary>
+            <p>请求频率默认全站 120 次/分、每位用户 30 次/分。Agent 运行在 Qoder 云端沙箱，不读取本机文件；产物通过限时签名链接预览与下载。</p>
+          </details>
+        </aside>
+
+        <p class="footnote">同源 API · 无本地模拟数据 · 密钥不进入浏览器</p>
+      </section>
+
+      <section class="panel run-panel" id="run-panel" data-has-run="false" aria-labelledby="run-title">
+        <header class="run-heading">
+          <div class="run-heading-copy">
+            <p class="eyebrow">运行</p>
+            <h2 id="run-title">整理过程</h2>
+            <p class="run-meta" id="run-meta">在左侧粘贴通知后开始。工具步骤、回复和产物会显示在这里。</p>
+          </div>
+          <div class="run-badges">
+            <span class="status-pill" id="run-status" data-tone="neutral">
+              <span class="dot" aria-hidden="true"></span>
+              <span id="run-status-label">未开始</span>
+            </span>
+            <button class="icon-button" id="refresh-button" type="button" hidden aria-label="刷新运行状态" title="刷新运行状态（只读）">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 11.5a8 8 0 1 1-2.3-5.6"></path>
+                <path d="M20 4.5v6h-6"></path>
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <div class="run-empty" id="run-empty">
+          <span class="empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 3.5h8l4 4v13H6z"></path>
+              <path d="M14 3.5v4h4M9 12h6M9 15.5h6M9 19h3.5"></path>
+            </svg>
+          </span>
+          <p class="empty-title">等待第一份通知</p>
+          <p class="empty-text">运行开始后，这里会实时显示工具时间线、整理回复和 Markdown 产物。</p>
+        </div>
+
+        <div class="inline-alert run-alert" id="run-alert" role="alert" hidden></div>
+
+        <div class="run-content">
+          <section class="block" aria-labelledby="tools-title">
+            <div class="block-heading">
+              <h3 id="tools-title">工具时间线</h3>
+              <span class="block-meta" id="tool-count">0 步</span>
+            </div>
+            <ol class="tool-timeline" id="tool-timeline"></ol>
+            <div class="empty-line" id="tool-empty">还没有工具调用。Agent 开始工作后会逐步显示。</div>
+          </section>
+
+          <section class="block" aria-labelledby="output-title">
+            <div class="block-heading">
+              <h3 id="output-title">整理结果</h3>
+              <span class="block-meta" id="event-count">0 条事件</span>
+            </div>
+            <div class="message-list" id="message-list"></div>
+            <div class="empty-line" id="message-empty">尚未收到整理回复。</div>
+          </section>
+
+          <section class="block" aria-labelledby="artifact-title">
+            <div class="block-heading">
+              <h3 id="artifact-title">Markdown 产物</h3>
+              <span class="block-meta" id="artifact-count">0 个</span>
+            </div>
+            <div class="artifact-list" id="artifact-list"></div>
+            <div class="empty-line" id="artifact-empty">Agent 交付文档后会在这里提供预览和下载。</div>
+
+            <article class="preview" id="preview-panel" hidden aria-labelledby="preview-title">
+              <header class="preview-head">
+                <div>
+                  <p class="eyebrow">预览</p>
+                  <h4 id="preview-title">产物</h4>
+                  <p class="preview-meta" id="preview-meta"></p>
+                </div>
+                <div class="preview-actions">
+                  <button class="button secondary small" id="preview-download" type="button">下载</button>
+                  <button class="button ghost small" id="preview-close" type="button">关闭</button>
+                </div>
+              </header>
+              <div class="preview-status" id="preview-status" role="status"></div>
+              <div class="markdown preview-body" id="preview-body"></div>
+            </article>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>CampusMate · Qoder Sites P0</span>
+      <span>演示版运行在 Qoder 云端沙箱；本机文件与群数据请使用本地版。</span>
+    </footer>
+  </div>
+</body>
+</html>
