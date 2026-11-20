@@ -8,8 +8,11 @@
 
 - CampusMate 是**本地优先的 Web Agent**（类似 DeepSeek Harness / Hermes 的开源形态）：用户在自己机器上启动进程，
   浏览器打开 `127.0.0.1`，账号/会话/工作区/文档/密钥留在本机。
-- 比赛交付形态：**本地完整版为主** + **Qoder Sites 公开演示版为辅**（内置 Qoder 登录 + Deno Edge Function + Sites DB/对象存储 +
-  Qoder Cloud Agents，只跑云端受限工具）。云页面不能让评委远程操作本机文件/终端，作品帖要写清边界。
+- 比赛交付形态（用户 2026-11-20 更正）：**以 Qoder Sites 部署版为主要交付**，本地版作为完整能力补充。
+  Qoder Sites 部署版 = 静态前端 + Deno Edge Functions + Sites DB/对象存储 + 平台内置 Qoder 登录 +
+  **Qoder Cloud Agents（托管云沙箱，含 Bash/Read/Write/WebFetch/WebSearch/Browser Use/MCP/Memory/Schedules/DeliverArtifacts）**。
+  真正的"云上不能做"的只有**绑定用户本机**的能力：本机任意文件/本机终端/本机 QQ 微信数据/离线/本地 PGlite；
+  这些属于本地版，云端用"云沙箱文件 + 粘贴通知 + 上传文件"等价替代并在作品帖写清边界。
 - 本仓库是 worktree；`C:\Users\Asus\CodeBuddy\qoder比赛` 是原始主工作区（Supabase 旧架构），**不要**把两者混着改。
 
 ## 2. 当前状态（2026-11-20 10:40）
@@ -84,7 +87,7 @@ node --test --test-concurrency=2
 - 审计事件表（登录、审批、风险工具）、限流/成本护栏。
 - 每项都必须：后端 api 测试 + 前端组件测试 + 真实接口（无死按钮）。
 
-### P2 · Qoder Sites 云端演示（比赛公开链接）
+### P2 · Qoder Sites 云端版（比赛公开链接，用户强调这是主交付，可前移到 P0）
 - 最小 Agent App 验证：Deno Edge Function + Sites DB + 对象存储 + 平台 Qoder 登录；函数里取用户身份、限流/超时/4MB 实测；
 - 云端受限工具集：web_search/web_fetch、document_create/inspect/export、云文件、RAG、审批、设置；
 - **分步执行器**：每次函数请求 = 1 次 LLM + 一批工具 + checkpoint（30–60s 内），前端自动续跑，长任务可断点；
@@ -175,4 +178,90 @@ node node_modules/playwright/cli.js test e2e/visual-system.spec.ts 出 before/af
 提交用 conventional commits，只 add 明确文件；推送通过 git -c http.proxy=http://127.0.0.1:7890 push。
 外部测评规则：真实测评走我们 agent + DeepSeek V4 Flash(reasoning=max, 360s, 冻结快照)，canary 3 次，
 不把 mock 当证据。遇到阻断先记录并继续可做的部分，最终用中文汇报：改了什么、证据、下一步。
+```
+
+## 11. Qoder Sites 部署版能力矩阵（2026-11-20 更正）
+
+用户强调"我指的是 Qoder Sites 上部署的"。此前说"完整 Agent 不能部署到 Sites"需要更正为：
+**我们自己的 Node Worker 不能原样部署，但 Qoder Cloud Agents 提供了托管云沙箱**，因此部署到 Sites 的应用可以拥有真实
+Agent 运行能力（在 Qoder 云沙箱里，而非访客电脑上）。
+
+| 能力 | Qoder Sites 部署版 | 说明 |
+|---|---|---|
+| 静态 UI / 路由 / 设计系统 | ✅ | Sites 静态托管 |
+| 平台内置 Qoder 账号登录 | ✅ | `/__qoder_auth/start` → `qoder.cn/oauth/authorize`（PKCE），Edge Function 未登录返回 401 `login_required` |
+| 应用数据/设置/会话元数据 | ✅ | Sites DB（函数里访问） |
+| 对象存储/产物下载 | ✅ | Sites 对象存储；Cloud Agents `DeliverArtifacts` 产出下载链接 |
+| Agent 运行/长任务/SSE | ✅ | Qoder Cloud Agents：Agent + Environment + Session，SSE 事件流，scheduled/webhook 也可用 |
+| 云沙箱文件/云终端 | ✅ | Cloud Agents 内置 Bash/Read/Write/Edit/Glob/Grep（在云容器 `/data` 里，不是用户电脑） |
+| Web 搜索/抓取/图片搜索 | ✅ | WebSearch/WebFetch/ImageSearch/ImageGen |
+| 浏览器自动化 | ✅（Beta） | `browser_toolset_20260714` + `x-qoder-beta: browser-use-2026-07-14` |
+| MCP 工具 | ✅ | Cloud Agents MCP 连接器；Sites 函数侧也可接 HTTP MCP |
+| 记忆/技能 | ✅ | Memory Stores / Agent Skills |
+| 文档生成/导出 | ✅ | 沙箱写文件 + DeliverArtifacts；前端只负责预览/下载 |
+| 群通知导入（QQ/微信本机数据） | ❌（部署版） | 云端无法读访客本机群数据；用"粘贴通知/上传截图"替代，保留本地版能力 |
+| 用户本机任意文件/本机终端 | ❌（部署版） | 云沙箱只能操作云文件；本地版可用 |
+| 离线/本机 PGlite/本机密钥 | ❌（部署版） | 本地版特性；云端密钥放 Sites Secrets |
+| 自定义 DeepSeek 模型 | ⚠️ | Cloud Agents 用其模型配置；我们的 provider 配置在本地版生效。云端如需 BYO Key，可在 Sites Secrets/DB 加密存储，但 Agent 运行时仍是 Cloud Agents（或 Edge Function 自己跑循环，受函数时限约束） |
+
+### 推荐的 Qoder Sites 架构
+
+```
+Qoder Sites 静态前端（VITE_RUNTIME=cloud，复用同一套 UI/设计系统）
+   │ 内置 Qoder 登录；/functions/v1/app 同源 API
+Edge Function（Deno）
+   ├─ 校验平台登录身份 / 会话与设置（Sites DB）
+   ├─ 创建/查询 Cloud Agents Agent、Environment、Session
+   ├─ 代理 SSE 事件流 → 前端（工具调用/思考/产物）
+   └─ 产物：DeliverArtifacts → 对象存储/下载链接
+Qoder Cloud Agents（托管）
+   ├─ 云沙箱：Bash/Read/Write/Edit/Glob/Grep、/data 文件
+   ├─ WebSearch/WebFetch/ImageSearch/ImageGen/VideoGen、Browser Use(Beta)
+   ├─ MCP 连接器、Memory Stores、Skills、Schedules/Webhook
+   └─ SSE：thinking / message / tool / artifact / status
+```
+
+### 部署版产品形态（比赛用）
+
+- 页面入口：Qoder 账号一键登录 → 首页/工作台 → 3 分钟黄金流（粘贴通知→整理待办→生成文档→下载产物）；
+- 数据边界说明：页面标注"演示版运行在 Qoder 云端沙箱；本机文件/群数据请使用本地版"；
+- 本地版仍保留完整能力（本机文件/终端/QQ 微信群/离线），作品帖用视频展示，并附一键启动说明。
+
+### 实施顺序（部署版优先）
+
+1. Qoder Sites 最小 Agent App 技术验证：登录、Edge Function 读取用户身份、Sites DB、云函数超时/流式/限流、Cloud Agents 连通性；
+2. 用 Qoder Cloud Agents 跑通一条真实黄金流（粘贴通知→Cloud Agent 整理→Write 文档→DeliverArtifacts→前端下载）；
+3. 前端 `VITE_RUNTIME=cloud`：复用对话/工作步骤/上下文 UI，数据源换成 Sites API + Cloud Agents SSE；
+4. 补齐设置/会话/产物/审批映射；作品帖 + 视频 + 公开链接；
+5. 本地版（better-auth/PGlite/本机工具）作为第二形态继续完善。
+
+## 12. 启动提示词 v2（以 Qoder Sites 部署版为核心）
+
+```
+你是 CampusMate 项目的接任 Agent。仓库：C:\Users\Asus\CodeBuddy\campusmate-builds\agent-local-workspaces，
+分支 feature/agent-local-workspaces（已推送）。先 git status/log，读 handover-2026-11-20-agent-ui-and-roadmap.md
+（含 Qoder Sites 部署版能力矩阵）与 frontend-design-system.md，再开始。
+
+核心交付：**Qoder Sites 部署版**（比赛公开链接），不是只做本地版。
+架构：Sites 静态前端 + Deno Edge Functions + Sites DB/对象存储 + 平台内置 Qoder 登录
+（/__qoder_auth/start）+ Qoder Cloud Agents 托管云沙箱（Bash/Read/Write/Edit/Glob/Grep/WebSearch/WebFetch/
+ImageGen/VideoGen/Browser Use(Beta)/MCP/Memory/Skills/DeliverArtifacts，SSE 事件流）。
+云沙箱能力可以在部署版真实运行；不能上云的是"用户本机数据/本机终端/离线/本地 PGlite/QQ微信本机数据"，
+这些保留本地版并在作品帖说明用本地版/视频展示。
+
+当前状态：web tsc 通过、300 测试通过（1 个 pdfjs 既有环境失败）、build 通过；设计系统与所有页面第一轮视觉统一完成；
+视觉基线 docs/design/visual-baseline/；对话页已有 work-step 时间线。
+
+优先级：
+P0 部署版技术验证 + 黄金流：Sites Agent App 最小闭环（Qoder 登录→Edge Function→Sites DB→Cloud Agents Agent/
+Environment/Session→SSE→Write 文档→DeliverArtifacts→前端下载），确认函数超时/流式/限流/并发；
+P1 前端 VITE_RUNTIME=cloud 双模式：复用对话/工作步骤/上下文 UI，数据源切 Sites API + Cloud Agents SSE；
+设置/会话/产物/审批映射；云端隐藏本地专属入口；页面标注演示边界；
+P2 深化部署版 Agent 能力：MCP、Memory、Skills、Browser Use、Schedules/Webhook、多智能体（按比赛需要）；
+P3 本地版（better-auth/PGlite/本机工具）与作品帖/视频/一键启动并行推进。
+
+约束：Qoder Sites 函数不能常驻，长任务交给 Cloud Agents Session（SSE/轮询），不要让 Edge Function 自己跑长循环；
+API Key/PAT 放 Sites Secrets，前端不可见；平台登录态由 Sites 托管；遵守 docs/specs/frontend-design-system.md。
+验收：tsc + web vitest + build + Playwright 视觉基线；后端改动跑 node --test。提交 conventional commits，
+不要 git add -A；推送用 git -c http.proxy=http://127.0.0.1:7890 push。中文汇报：改了什么/证据/下一步。
 ```
