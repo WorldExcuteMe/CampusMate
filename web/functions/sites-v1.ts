@@ -1,6 +1,7 @@
 // Sites V1 数据面：在已鉴权的 Sites 函数内提供 /v1/* 的会话、任务、审批、
 // 产物与领域数据接口。所有查询都带 owner 谓词；上游错误只映射为安全码。
 import { CloudAgentError } from "./cloud-agents.ts";
+import { beijingTimeContext } from "./current-time.ts";
 import { readCloudEvents, type CloudStreamEvent } from "./cloud-events.ts";
 
 type Row = Record<string, unknown>;
@@ -957,7 +958,8 @@ export function createSitesV1(deps: SitesV1Deps) {
         return json(201, { taskId, status: textOf(latest?.status) || "running" });
       }
       const cloudSessionId = await ensureCloudSession(owner, sessionId);
-      await cloud.sendMessage(cloudSessionId, prompt);
+      // 每条用户消息都附带权威时间，防止平台 Agent 用训练记忆猜日期。
+      await cloud.sendMessage(cloudSessionId, `${beijingTimeContext()}\n\n【用户消息】\n${prompt}`);
       await patchTask(task, { status: "running" });
       return json(201, { taskId, status: "running" });
       return json(201, { taskId, status: "running" });
@@ -1425,7 +1427,7 @@ export function createSitesV1(deps: SitesV1Deps) {
               const latest = await readTask(owner, id);
               return json(200, { task: taskView(latest ?? current) });
             }
-            await cloud.sendMessage(textOf(session.cloud_session_id), "继续");
+            await cloud.sendMessage(textOf(session.cloud_session_id), `${beijingTimeContext()}\n\n继续`);
             await patchTask(current, { status: "running", error: null, cancel_requested: false });
             return json(200, { task: taskView(current) });
           });

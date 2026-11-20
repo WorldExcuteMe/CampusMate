@@ -553,3 +553,12 @@ node scripts/build-sites.mjs
 - 上游实测（只记录字段与耗时，不记录内容/密钥）：Qwen3.8-27B 首个 reasoning 约 4.1s；MiMo-V2.6-Flash 约 17.9s；nex-n2.6 约 1.7s；三者 SSE 均返回 `reasoning_content`。
 - 测试：`489` 项通过（新增截断续跑、SSE 时间窗自动重连）；视觉基线 7/7。
 - 发布：action `ab1d70a1-8fc7-4d78-affc-78ff730e4e21`，`publication_completed`；线上资源 `index-CpTkqZoL.js`。
+## 21. 权威时间注入与日期幻觉修复（2026-11-20，第九轮）
+
+- 根因：服务端模型与 Cloud Agents 的系统提示没有当前时间，模型用训练记忆猜日期（实测思考链出现“2026年6月19日”）。
+- 新增 `web/functions/current-time.ts`：统一输出北京时间的日期、时分秒、星期与反幻觉规则。
+- 服务端模型：每轮 `requestMessages()` 动态注入权威时间（跨午夜续跑也正确）；`llm.request` 事件记录 `serverNow` 便于审计；系统提示新增【时间】规则，时效信息必须检索核验。
+- Cloud Agents：每条用户消息（含“继续”）前置权威时间与【用户消息】分隔；P0 `/runs` 通知原文同样前置；`sites-config` 的 Agent system 增加时间规则（新 Agent 生效）。
+- 本地浏览器对话原本已注入北京时间；本机 Node 后端也在 taskContext 注入北京时间，无需改动。
+- 测试：`490` 项通过（新增 system 时间注入、Cloud 消息前缀、P0 通知前缀断言）；视觉基线 7/7。
+- 发布：action `7d922b46-52f7-4561-bad1-93171b6c30de`，`publication_completed`。

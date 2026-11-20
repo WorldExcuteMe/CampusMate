@@ -61,7 +61,7 @@ function fakeDb() {
 function fakeCloud() {
   return {
     createSession: vi.fn(async () => ({ id: "sess_cloud_1" })),
-    sendMessage: vi.fn(async () => []),
+    sendMessage: vi.fn(async (_sessionId: string, _text: string) => []),
     sendEvent: vi.fn(async () => ({})),
     listEvents: vi.fn(async () => ({ data: [] as unknown[], next_page: null })),
     streamEvents: vi.fn(async () => new Response("", { headers: { "Content-Type": "text/event-stream" } })),
@@ -136,6 +136,9 @@ describe("Sites V1 会话 CAS 与任务幂等", () => {
 
     expect(f.cloud.createSession).toHaveBeenCalledTimes(1);
     expect(f.cloud.sendMessage).toHaveBeenCalledTimes(1);
+    const sentText = String(vi.mocked(f.cloud.sendMessage).mock.calls[0][1]);
+    expect(sentText).toContain("权威当前时间");
+    expect(sentText).toContain("整理通知");
     const tasks = await (await f.call("GET", "/v1/sessions/sess_1/tasks")).json();
     expect(tasks.tasks).toHaveLength(1);
     const session = f.db.tables.get("campusmate_conversations")?.[0];

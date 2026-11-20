@@ -445,3 +445,19 @@ describe("长任务自动续跑", () => {
     expect(String(messages.at(-1)?.content)).toContain("继续");
   });
 });
+
+describe("权威时间注入", () => {
+  it("system 消息带北京时间与反幻觉规则，不依赖模型记忆", async () => {
+    const ctx = await fixture();
+    const endpoint = fakeFetch([chatFinal("好的")]);
+    const deps = { ...depsOf(ctx, endpoint.fetch), now: () => Date.parse("2026-11-20T10:00:00+08:00") };
+    await advance("task_exec_1", "owner-a", deps);
+    const body = JSON.parse(String(endpoint.calls[0].init!.body)) as Row;
+    const system = body.messages as Array<Row>;
+    expect(system[0].role).toBe("system");
+    expect(String(system[0].content)).toContain("权威当前时间");
+    expect(String(system[0].content)).toContain("2026-11-20");
+    expect(String(system[0].content)).toContain("星期五");
+    expect(String(system[0].content)).toContain("不得凭训练记忆");
+  });
+});

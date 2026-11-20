@@ -1,5 +1,6 @@
 import { CloudAgentError, type CloudAgent, type createCloudAgentsClient } from "./cloud-agents.ts";
 import { publicCloudEvent, readCloudEvents } from "./cloud-events.ts";
+import { beijingTimeContext } from "./current-time.ts";
 
 type Client = ReturnType<typeof createCloudAgentsClient>;
 export type RunState = "creating" | "ready" | "sending" | "submitted" | "uncertain" | "cancelled";
@@ -184,7 +185,7 @@ export function createSitesApp(options: SitesAppOptions = {}) {
         if (run.state === "submitted") return json(200, { run: runView(run), deduped: true });
         if (run.state !== "ready" || !await runs.transition(owner, runId, "ready", { state: "sending" })) return json(409, { error: "run_reconciliation_required" });
         try {
-          const events = await client.sendMessage(run.sessionId, data.notice as string);
+          const events = await client.sendMessage(run.sessionId, `${beijingTimeContext()}\n\n【通知原文】\n${data.notice as string}`);
           if (!await runs.transition(owner, runId, "sending", { state: "submitted" })) throw new AppError(503, "run_reconciliation_required");
           return json(202, { run: { id: runId, state: "submitted" }, events: events.map(publicCloudEvent) });
         } catch (error) {

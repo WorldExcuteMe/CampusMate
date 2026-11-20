@@ -129,7 +129,9 @@ describe("Sites Run 持久化边界与幂等契约", () => {
     expect(f.client.sendMessage).not.toHaveBeenCalled();
     const sent = await f.handler(request(`/runs/${runId}/message`, { notice }));
     expect(sent.status).toBe(202);
-    expect(f.client.sendMessage).toHaveBeenCalledWith("sess_test", notice);
+    const sentText = vi.mocked(f.client.sendMessage).mock.calls[0][1];
+    expect(sentText).toContain("权威当前时间");
+    expect(sentText).toContain(notice);
     const snapshot = await f.handler(request(`/runs/${runId}`));
     expect(await snapshot.json()).toEqual({ run: { id: runId, state: "submitted" }, session: { status: "running", archived: false } });
     expect(f.rows.get(`owner-a:${runId}`)).not.toHaveProperty("notice");
